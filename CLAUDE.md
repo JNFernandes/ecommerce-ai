@@ -119,6 +119,7 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   token passthrough, 0002 human-in-the-loop, 0003 fallback and cost caps, 0004 evals as release
   gate.
 - Keep `README.md`, this file and the `Dockerfile` up to date with every behaviour change.
-- Cross-repo follow-ups before the triage worker publishes (ecommerce-infra): the
-  `ai.order-triage-completed` contract in `docs/events.md`, its topic in `kafka-init`, a
-  PostgreSQL service on `5436` and this service in compose.
+- ecommerce-infra has the `ai.order-triage-completed` contract (`docs/events.md`: `cause` and
+  `suggestedAction` enums, consumer group `ai-triage`, the HTTP exception for calls with the
+  caller's token), the topic in `kafka-init`, `postgres-ai` on `5436` and the `ai` compose service.
+  No gateway route yet: add it with the first API, with a longer write timeout for SSE.

@@ -106,7 +106,7 @@ docker run --rm -p 8002:8002 --network ecommerce_default \
 
 Multi-stage build: uv installs the locked dependencies in a build stage; the runtime stage is
 `python:3.12-slim` with only the virtual environment, running as non-root user `10001`. Its health
-check calls `/health`. The service is not in the `ecommerce-infra` compose file yet.
+check calls `/health`. In `ecommerce-infra` it is the `ai` service (`apps` profile, no host port; `docker-compose.dev.yml` publishes 8002, `gateway-debug` serves its docs on 127.0.0.1:9002), with `postgres-ai` (`ai_user` / `ai_pass`, local only) and the `ai.order-triage-completed` topic.
 
 ## Quality gate
 
