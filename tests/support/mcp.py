@@ -1,10 +1,19 @@
-"""JSON-RPC helpers to drive the stateless MCP endpoint with raw HTTP requests."""
+"""JSON-RPC helpers to drive the stateless MCP endpoint with raw HTTP requests.
+
+Requests use the stateless 2026-07-28 protocol: no ``initialize`` handshake, and every request
+carries the ``_meta`` envelope (protocol version, client info and capabilities).
+"""
 
 from itertools import count
 from typing import Final
 
 import httpx
 from mcp.types import LATEST_PROTOCOL_VERSION
+from mcp_types import (
+    CLIENT_CAPABILITIES_META_KEY,
+    CLIENT_INFO_META_KEY,
+    PROTOCOL_VERSION_META_KEY,
+)
 
 MCP_PATH: Final = "/mcp"
 """Exact path of the MCP endpoint (no trailing slash)."""
@@ -24,24 +33,28 @@ def mcp_headers(token: str | None) -> dict[str, str]:
     return headers
 
 
+def request_meta() -> dict[str, object]:
+    """Return the per-request ``_meta`` envelope of the stateless protocol."""
+    return {
+        PROTOCOL_VERSION_META_KEY: LATEST_PROTOCOL_VERSION,
+        CLIENT_INFO_META_KEY: {"name": "tests", "version": "0"},
+        CLIENT_CAPABILITIES_META_KEY: {},
+    }
+
+
 def rpc_request(method: str, params: dict[str, object] | None = None) -> dict[str, object]:
-    """Return a JSON-RPC 2.0 request with a fresh id."""
-    request: dict[str, object] = {"jsonrpc": "2.0", "id": next(_ids), "method": method}
-    if params is not None:
-        request["params"] = params
-    return request
+    """Return a JSON-RPC 2.0 request with a fresh id and the ``_meta`` envelope."""
+    return {
+        "jsonrpc": "2.0",
+        "id": next(_ids),
+        "method": method,
+        "params": {**(params or {}), "_meta": request_meta()},
+    }
 
 
-def initialize_request() -> dict[str, object]:
-    """Return an ``initialize`` request."""
-    return rpc_request(
-        "initialize",
-        {
-            "protocolVersion": LATEST_PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": {"name": "tests", "version": "0"},
-        },
-    )
+def discover_request() -> dict[str, object]:
+    """Return a ``server/discover`` request (the stateless replacement of ``initialize``)."""
+    return rpc_request("server/discover")
 
 
 def tools_list_request() -> dict[str, object]:
@@ -54,11 +67,24 @@ def tools_call_request(name: str, arguments: dict[str, object] | None = None) ->
     return rpc_request("tools/call", {"name": name, "arguments": arguments or {}})
 
 
+def routing_headers(request: dict[str, object]) -> dict[str, str]:
+    """Return the ``Mcp-Method`` (and, for ``tools/call``, ``Mcp-Name``) headers of ``request``."""
+    headers = {"Mcp-Method": str(request["method"])}
+    params = request.get("params")
+    if request["method"] == "tools/call" and isinstance(params, dict):
+        headers["Mcp-Name"] = str(params["name"])
+    return headers
+
+
 async def post_rpc(
-    client: httpx.AsyncClient, request: dict[str, object], token: str | None
+    client: httpx.AsyncClient,
+    request: dict[str, object],
+    token: str | None,
+    extra_headers: dict[str, str] | None = None,
 ) -> httpx.Response:
-    """POST one JSON-RPC request to the MCP endpoint."""
-    return await client.post(MCP_PATH, json=request, headers=mcp_headers(token))
+    """POST one JSON-RPC request to the MCP endpoint with every header the protocol requires."""
+    headers = {**mcp_headers(token), **routing_headers(request), **(extra_headers or {})}
+    return await client.post(MCP_PATH, json=request, headers=headers)
 
 
 def rpc_result(response: httpx.Response) -> dict[str, object]:

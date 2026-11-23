@@ -45,8 +45,8 @@ then one gate + commit.
 - [X] T016 Implement `AllowlistEntry`, `ALLOWLIST` (`order`, `orders` on `POST /api/graphql`), `ToolDefinition`, `ToolRegistryError`, `ToolRegistry.build()` in `src/ecommerce_ai/tools/registry.py` → gate
 - [X] T017 [P] Tests in `tests/unit/test_route_policy.py`: an ASGI `Route` or `Mount` without policy fails `assert_route_policies`; one with `x-roles` passes; existing `APIRoute` behaviour unchanged
 - [X] T018 Extend `src/ecommerce_ai/api/route_policy.py` to check ASGI `Route` and `Mount` routes (policy metadata on the route) → gate
-- [ ] T019 Tests in `tests/unit/test_mcp_server.py`: `build_mcp_server(registry)` lists registered tools with `readOnlyHint`; middleware maps `ToolFailure` and argument `ValidationError` to `isError: true` + `{error, message}`; unknown tool → JSON-RPC `-32602`; logs tool, outcome, duration, `request_id`, no token (fake tool, no network)
-- [ ] T020 Implement `src/ecommerce_ai/tools/server.py` (FastMCP, `on_call_tool` error/logging middleware, `http_app(stateless_http=True, json_response=True)`, path per research 2) → gate
+- [X] T019 Tests in `tests/unit/test_mcp_server.py`: `build_mcp_server(registry)` lists registered tools with `readOnlyHint`; middleware maps `ToolFailure` and argument `ValidationError` to `isError: true` + `{error, message}`; unknown tool → JSON-RPC `-32602`; logs tool, outcome, duration, `request_id`, no token (fake tool, no network)
+- [X] T020 Implement `src/ecommerce_ai/tools/server.py` (FastMCP, `on_call_tool` error/logging middleware, `http_app(stateless_http=True, json_response=True)`, path per research 2) → gate
 
 **Checkpoint**: building blocks ready; no route mounted yet.
 
