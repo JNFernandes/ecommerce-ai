@@ -1,38 +1,28 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change:    (template) → 1.0.0
-Bump rationale:    Initial ratification. The template placeholders are replaced by eleven
-                   principles, the Technology Stack, Documentation Standards and Governance
-                   sections, modelled on ecommerce-notifications v1.2.0 and adapted to an AI
-                   service (MCP server, triage worker, conversational assistant).
+Version change:    1.0.0 → 1.1.0
+Bump rationale:    MINOR. Materially expanded guidance: the tool allowlist gains the Orders
+                   GraphQL `order` query (needed by `get_order`, US-01), and Principle VI states
+                   how tools are gated before any LLM-backed agent exists (TODO(EVAL_SUITE)).
 
 Modified principles:
-  - [PRINCIPLE_1..5] placeholders → I. Layered Architecture; II. Security First
-    (NON-NEGOTIABLE); III. AI Safety & Human-in-the-Loop (NON-NEGOTIABLE); IV. Reliability &
-    Cost Control; V. Event Contracts; VI. Evals as Release Gate (NON-NEGOTIABLE);
-    VII. Observability; VIII. Test Coverage; IX. Testing Strategy; X. Branching Strategy;
-    XI. Build & Code Quality Integrity (NON-NEGOTIABLE).
+  - II. Security First — allowlist: `POST /api/graphql` "(`orders` query only)" → "(`order` and
+    `orders` queries)". Both are documented in the ecommerce-orders README.
+  - VI. Evals as Release Gate — adds the pre-LLM rule: until an LLM-backed agent exists, tools
+    are gated by unit and contract tests only; the first LLM story's suite MUST include cases
+    for every tool registered by then.
 
-Added sections:
-  - Technology Stack (replaces [SECTION_2_NAME])
-  - Documentation Standards (replaces [SECTION_3_NAME])
-  - Governance (filled)
+Added sections:   (none)
+Removed sections: (none)
 
-Removed sections:
-  - (none)
+Migration note:   none. No code existed that depends on the changed rules.
 
 Templates reviewed:
-  ✅ .specify/templates/plan-template.md  — Constitution Check gates derive from this file at runtime; no static change needed.
-  ✅ .specify/templates/spec-template.md  — Generic structure; no change needed.
-  ✅ .specify/templates/tasks-template.md — Generic task categories cover the principle-driven work (evals, observability, contract tests); no change needed.
-  ✅ .specify/templates/commands/*.md     — Directory not present in this project; nothing to update.
+  ✅ .specify/templates/plan-template.md, spec-template.md, tasks-template.md — no change needed.
 
 Runtime guidance:
-  ⚠ README.md — not created yet; MUST exist before the first user story is merged.
-  ⚠ CLAUDE.md — not created yet; MUST exist before the first user story is merged.
-  ⚠ Dockerfile — not created yet (multi-stage, non-root, port 8002).
-  ⚠ docs/adr — 0001 to 0004 MUST be written and indexed before the code they govern.
+  ✅ README.md, CLAUDE.md, Dockerfile, docs/adr 0001–0004 — present (bootstrap, PR #1).
 
 Cross-repository follow-ups (ecommerce-infra, before use):
   ⚠ docs/events.md — add `ai.order-triage-completed` (topic table, payload, enums for `cause` and
@@ -49,6 +39,9 @@ Deferred TODOs:
   - TODO(WORKER_SERVICE_IDENTITY): ecommerce-identity documents no service-account or
     client-credentials flow. Until one is documented in its README, the triage worker MUST work
     from event payloads only and MUST NOT call any tool (Principle II).
+  - TODO(EVAL_SUITE): no LLM-backed agent exists yet, so tools added before it (US-01:
+    `get_order`, `list_my_orders`) have no eval run; the story that introduces the suite MUST
+    add their cases (Principle VI).
   - TODO(EVAL_THRESHOLD): the composite-score threshold value is agreed in the story that
     introduces the eval suite and recorded in the suite configuration (Principle VI).
 -->
@@ -134,7 +127,7 @@ Tool allowlist:
 - Each tool maps to exactly one endpoint documented in the owning service's README. The initial
   allowlist is limited to:
   - `GET /api/inventory/products`, `GET /api/inventory/products/{id}` — read.
-  - `POST /api/graphql` (`orders` query only) — read.
+  - `POST /api/graphql` (`order` and `orders` queries) — read.
   - `GET /api/notifications`, `GET /api/notifications/{id}` — read.
   - `GET /api/identity/users/me` — read.
   - `POST /api/orders/{orderId}/cancel` — **mutating**, governed by Principle III.
@@ -246,7 +239,9 @@ for every topic and payload.
   than **5%** against the last recorded run on `main` (ADR 0004). The threshold and the baseline
   are stored in the repository; changing either requires a PR.
 - Any change to a prompt, the model id, a tool or the gatekeeper MUST be accompanied by a suite
-  run whose result is attached to the PR.
+  run whose result is attached to the PR. Until an LLM-backed agent exists, tools are gated by
+  unit and contract tests only; the first LLM story's suite MUST include cases for every tool
+  registered by then (TODO(EVAL_SUITE)).
 - A failing safety case (forbidden tool use, ownership leak, prompt injection, missing approval
   interrupt) MUST block the merge regardless of the composite score.
 
@@ -434,4 +429,4 @@ note if existing code must change.
 Reviewers are empowered to block merges for violations without exception. New principles take
 effect immediately upon merge.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-23 | **Last Amended**: 2026-11-23
+**Version**: 1.1.0 | **Ratified**: 2026-11-23 | **Last Amended**: 2026-11-23
