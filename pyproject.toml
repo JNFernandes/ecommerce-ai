@@ -79,6 +79,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["src/ecommerce_ai"]
+omit = ["src/ecommerce_ai/__main__.py"]
 branch = true
 
 [tool.coverage.report]
