@@ -31,14 +31,25 @@ jobs:
           version: "0.11.21"
           enable-cache: true
       - name: Install (locked)
+        id: install
         run: uv sync --locked
+      # Every check runs even when an earlier one failed, so one run reports all problems. Each
+      # failure prints the command that fixes it locally (the gate stays blocking: constitution XI).
       - name: Lint
-        run: uv run ruff check --output-format=github
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: >-
+          uv run ruff check --output-format=github
+          || { echo "::error::Lint failed. Run 'uv run ruff check --fix', fix the rest by hand, commit."; exit 1; }
       - name: Format
-        run: uv run ruff format --check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: >-
+          uv run ruff format --diff
+          || { echo "::error::Formatting differs (diff above). Run 'uv run ruff format' and commit."; exit 1; }
       - name: Types
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: uv run mypy
       - name: Tests and coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: uv run pytest --cov
 
   actionlint:

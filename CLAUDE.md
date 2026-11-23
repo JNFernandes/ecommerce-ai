@@ -28,7 +28,10 @@ uv run mypy                  # strict, over src and tests; zero errors
 uv run pytest --cov          # 80% line+branch coverage; live_llm excluded by default
 ```
 
-Never commit a red gate. A task is not done until all four pass. Unit tests never touch the
+Never commit a red gate. A task is not done until all four pass. Lint and format stay blocking in
+CI (the user confirmed this; constitution XI). `.githooks/pre-commit` (enabled with
+`git config core.hooksPath .githooks`) auto-fixes style on staged files and stops the commit when
+it changed one: re-add and commit again. Unit tests never touch the
 network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/probes.py`).
 
 ## Token economy

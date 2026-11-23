@@ -120,6 +120,13 @@ uv run pytest --cov
 ```
 
 - `ruff format` (without `--check`) fixes formatting; `ruff check --fix` fixes fixable findings.
+- All four are blocking in CI (constitution XI). Lint is more than style: it also catches
+  undefined names, likely bugs and security issues. CI runs every check even after one fails and
+  prints the fix command.
+- Optional pre-commit hook, once per clone: `git config core.hooksPath .githooks`. It runs
+  `ruff format` and `ruff check --fix` on the staged files and stops the commit when it changed
+  something, so you review, `git add` and commit again (it never stages for you). Disable with
+  `git config --unset core.hooksPath`.
 - `mypy` runs in strict mode over `src` and `tests`.
 - `pytest --cov` fails below 80% line and branch coverage. Tests never touch the network; the
   `live_llm` marker is excluded by default (`-m live_llm` to run those).
