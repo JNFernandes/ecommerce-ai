@@ -76,3 +76,52 @@ def test_should_reject_an_invalid_value(
 
     with pytest.raises(ValidationError, match=variable.lower()):
         Settings()
+
+
+def test_should_use_mcp_tool_defaults_when_the_environment_is_empty() -> None:
+    settings = Settings()
+
+    assert settings.orders_graphql_url == "http://localhost:8090/api/graphql"
+    assert settings.jwks_timeout_seconds == 3.0
+    assert settings.jwks_refetch_cooldown_seconds == 30.0
+    assert settings.tool_timeout_seconds == 5.0
+    assert settings.tool_max_response_bytes == 262_144
+    assert settings.tool_text_max_chars == 500
+    assert settings.upstream_max_retries == 2
+    assert settings.upstream_backoff_base_seconds == 0.2
+
+
+def test_should_read_mcp_tool_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ORDERS_GRAPHQL_URL", "http://gateway:8090/api/graphql/")
+    monkeypatch.setenv("TOOL_TIMEOUT_SECONDS", "0.5")
+    monkeypatch.setenv("UPSTREAM_MAX_RETRIES", "0")
+
+    settings = Settings()
+
+    assert settings.orders_graphql_url == "http://gateway:8090/api/graphql"
+    assert settings.tool_timeout_seconds == 0.5
+    assert settings.upstream_max_retries == 0
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("ORDERS_GRAPHQL_URL", "graphql"),
+        ("JWKS_TIMEOUT_SECONDS", "0"),
+        ("JWKS_REFETCH_COOLDOWN_SECONDS", "0"),
+        ("TOOL_TIMEOUT_SECONDS", "0"),
+        ("TOOL_MAX_RESPONSE_BYTES", "0"),
+        ("TOOL_TEXT_MAX_CHARS", "0"),
+        ("UPSTREAM_MAX_RETRIES", "-1"),
+        ("UPSTREAM_BACKOFF_BASE_SECONDS", "0"),
+    ],
+)
+def test_should_reject_an_invalid_mcp_tool_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()

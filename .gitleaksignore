@@ -1,0 +1,5 @@
+# Reviewed gitleaks findings that are not secrets. One fingerprint per line:
+# <commit>:<file>:<rule>:<line>. Add an entry only for a verified false positive.
+
+# Fake JWT-shaped test token (no key, never valid); replaced in a later commit.
+7bfd0904b97423a18e6abe52950e56f109816a6c:tests/unit/test_mcp_server.py:generic-api-key:32

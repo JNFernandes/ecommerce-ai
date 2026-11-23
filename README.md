@@ -32,7 +32,23 @@ Releases are gated by an eval suite ([ADR 0004](docs/adr/0004-evals-as-release-g
 |---|---|---|
 | `GET /health` | public | Liveness: always `200 {"status": "UP"}` while the process answers; checks no dependency. |
 | `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. The LLM provider will be reported (never failing) once its client exists. |
+| `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools: `get_order(orderId)` and `list_my_orders(limit=20 (1–50), status?)`, both read-only. |
 | `GET /docs`, `GET /openapi.json` | public | API documentation. |
+
+### MCP endpoint
+
+`/mcp` (exact path, no trailing slash) needs `Authorization: Bearer <Identity access token>`,
+verified locally (RS256 only) against `IDENTITY_JWKS_URL`, which is fetched on first use and
+cached; an unknown `kid` refetches at most once per `JWKS_REFETCH_COOLDOWN_SECONDS`. Every
+missing or invalid token gets the same `401 {"detail":"Not authenticated"}` with
+`WWW-Authenticate: Bearer`; no obtainable key gives `503`; a token without `CUSTOMER` gives `403`.
+Tools call Orders GraphQL (`ORDERS_GRAPHQL_URL`) with the caller's own token and `X-Request-Id`
+(never a service account); if Orders rejects that token the whole call answers `401`. Results are
+`{source, trust: "untrusted_data", data, truncated}`, with free text cut to `TOOL_TEXT_MAX_CHARS`;
+errors are `isError` results with a fixed `{error, message}` (`not_found`, `not_allowed`,
+`invalid_input`, `upstream_error`). Each call has a `TOOL_TIMEOUT_SECONDS` budget, retries
+included, and reads at most `TOOL_MAX_RESPONSE_BYTES`. Tool schemas are pinned in
+`tests/contract/snapshots/tools.json`. Example: `specs/001-mcp-foundation/quickstart.md`.
 
 Every route must declare its access (public or required roles); building the app fails for a route
 that declares neither (default deny). Probes are TCP connects with a 1 s timeout, made only when
@@ -87,6 +103,14 @@ stops the service at startup with an error naming the variable.
 | `ORDERS_BASE_URL` | `http://localhost:8090/api/orders` | Orders API through the gateway |
 | `INVENTORY_BASE_URL` | `http://localhost:8090/api/inventory` | Inventory API through the gateway |
 | `NOTIFICATIONS_BASE_URL` | `http://localhost:8090/api/notifications` | Notifications API through the gateway |
+| `ORDERS_GRAPHQL_URL` | `http://localhost:8090/api/graphql` | Orders GraphQL (`order`, `orders`) used by the MCP tools |
+| `JWKS_TIMEOUT_SECONDS` | `3` | Timeout of one JWKS fetch |
+| `JWKS_REFETCH_COOLDOWN_SECONDS` | `30` | Minimum gap between refetches on an unknown `kid` |
+| `TOOL_TIMEOUT_SECONDS` | `5` | Budget of one tool call, retries included |
+| `TOOL_MAX_RESPONSE_BYTES` | `262144` | Largest upstream body a tool reads |
+| `TOOL_TEXT_MAX_CHARS` | `500` | Length limit of free-text fields in tool results |
+| `UPSTREAM_MAX_RETRIES` | `2` | Retries of a read after the first attempt (`0`–`5`) |
+| `UPSTREAM_BACKOFF_BASE_SECONDS` | `0.2` | First retry delay; doubles per retry, full jitter |
 | `DATABASE_URL` | `postgresql://localhost:5436/ecommerce_ai` | PostgreSQL 16 URL; put credentials in the environment only. Treated as a secret (never logged) |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated `host:port` (`kafka:29092` in the compose network) |
 | `ANTHROPIC_MODEL` | unset | LLM model id; unset = every LLM step uses its fallback |
@@ -101,6 +125,7 @@ docker run --rm -p 8002:8002 --network ecommerce_default \
   -e DATABASE_URL='postgresql://<user>:<password>@postgres-ai:5432/ecommerce_ai' \
   -e KAFKA_BROKERS=kafka:29092 \
   -e IDENTITY_JWKS_URL=http://identity:3001/.well-known/jwks.json \
+  -e ORDERS_GRAPHQL_URL=http://gateway:8090/api/graphql \
   ecommerce-ai
 ```
 
@@ -156,11 +181,13 @@ Actions are pinned by commit SHA and every job has least-privilege permissions.
 src/ecommerce_ai/
   main.py            Composition root: settings, logging, readiness probes, the app factory
   __main__.py        `python -m ecommerce_ai`
-  api/               FastAPI app, routers, request-id middleware, route access policy
+  api/               FastAPI app, routers, request-id middleware, route access policy, /mcp auth
   agents/            LangGraph graphs, nodes and versioned prompts (empty)
-  tools/             MCP server and tool definitions (empty)
+  tools/             MCP server, tool registry/allowlist, Orders tools
   messaging/         Kafka consumers, producers, dead letters (empty)
-  infrastructure/    Settings, JSON logging and redaction, dependency probes
+  infrastructure/    Settings, logging/redaction, probes, JWKS cache, token verifier, Orders client
 tests/unit/          Unit tests (no network)
+tests/contract/      Tool schema snapshot and Orders queries checked against its vendored schema
+tests/support/       Test tokens/JWKS, Orders stub, MCP JSON-RPC helpers, fake probes
 docs/adr/            Architecture Decision Records
 ```
