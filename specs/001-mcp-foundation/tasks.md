@@ -65,7 +65,7 @@ then one gate + commit.
 - [X] T024 [US3] Implement `TokenVerifier` in `src/ecommerce_ai/infrastructure/auth.py` (`jwt.decode(algorithms=["RS256"], issuer, audience, leeway)`) → gate
 - [X] T025 [US3] Tests in `tests/unit/test_mcp_auth.py` via `create_app` + `ASGITransport` + lifespan: no header and every bad-token case get byte-identical 401 with `WWW-Authenticate: Bearer` (SC-001); no keys → 503; valid non-`CUSTOMER` token → 403, no tool runs; valid `CUSTOMER` `tools/list` → 200; `POST /mcp` (no trailing slash) reaches auth directly, with no 3xx; caller ContextVar reset after request
 - [X] T026 [US3] Implement `BearerAuthMiddleware` + `mcp_route()` at exactly `/mcp` (research 2, with `x-roles: [CUSTOMER]`) in `src/ecommerce_ai/api/mcp.py`; accept the MCP ASGI app and chain its lifespan in `src/ecommerce_ai/api/app.py`; wire `JwksCache`, `TokenVerifier`, shared `httpx.AsyncClient` (created in lifespan, closed at shutdown), empty registry → server in `src/ecommerce_ai/main.py` → gate
-- [ ] T027 [US3] Tests in `tests/unit/test_main.py`: `create_app` starts and `/health` 200 with Identity and Orders unreachable, no connection at startup (SC-005); invalid registry makes `create_app` raise `ToolRegistryError` → gate (fix wiring if red)
+- [X] T027 [US3] Tests in `tests/unit/test_main.py`: `create_app` starts and `/health` 200 with Identity and Orders unreachable, no connection at startup (SC-005); invalid registry makes `create_app` raise `ToolRegistryError` → gate (fix wiring if red)
 
 **Checkpoint**: secured, empty MCP endpoint.
 
