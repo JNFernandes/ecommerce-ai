@@ -104,7 +104,7 @@ class Order(_UpstreamModel):
 
 
 class GetOrderInput(_InputModel):
-    """Arguments of ``get_order``."""
+    """Arguments of get_order."""
 
     order_id: UUID = Field(description="Identifier (UUID) of one of the caller's orders.")
 
@@ -118,7 +118,7 @@ class OrdersPage(_UpstreamModel):
 
 
 class ListMyOrdersInput(_InputModel):
-    """Arguments of ``list_my_orders``."""
+    """Arguments of list_my_orders."""
 
     limit: int = Field(
         default=20, ge=1, le=MAX_PAGE_SIZE, description="Page size, 1-50 (default 20)."

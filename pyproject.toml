@@ -24,6 +24,7 @@ module-name = "ecommerce_ai"
 
 [dependency-groups]
 dev = [
+    "graphql-core>=3.3.2",
     "mypy>=2.4.1",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
