@@ -1,0 +1,88 @@
+[project]
+name = "ecommerce-ai"
+version = "0.1.0"
+description = "AI service of the ecommerce system: MCP tools, order triage and a conversational assistant."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.165.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.14.4",
+    "pydantic-settings>=2.16.3",
+    "pyjwt[crypto]>=2.15.1",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "ecommerce_ai"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+include = ["src/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ANN", "S", "C4", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is the pytest assertion mechanism.
+"tests/**/*.py" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ecommerce_ai"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+# Live-LLM tests are opt-in (constitution IX): run them with `-m live_llm`.
+addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not live_llm", "--cov-fail-under=80"]
+markers = [
+    "integration: needs real PostgreSQL or Kafka (Testcontainers)",
+    "live_llm: calls the real LLM provider; excluded from the default run",
+]
+
+[tool.coverage.run]
+source = ["src/ecommerce_ai"]
+omit = ["src/ecommerce_ai/__main__.py"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", '^\s*\.\.\.$', "if __name__ == .__main__.:"]

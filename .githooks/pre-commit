@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pre-commit hook: fixes style on the staged Python files before CI has to complain about it.
+# Enable once per clone:  git config core.hooksPath .githooks   (disable: git config --unset core.hooksPath)
+# It runs `ruff format` and `ruff check --fix` on the staged *.py files. When that changes a file,
+# or a lint finding needs a manual fix, the commit stops: review, `git add`, commit again.
+# It never stages anything itself, so partially staged files stay as you staged them.
+set -eu
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+[ -n "$files" ] || exit 0
+
+# shellcheck disable=SC2086 # word splitting is intended: one argument per file (no spaces in paths)
+uv run -q ruff format -q $files
+# shellcheck disable=SC2086
+if ! uv run -q ruff check -q --fix $files; then
+    echo "pre-commit: lint findings above need a manual fix; then git add and commit again." >&2
+    exit 1
+fi
+# shellcheck disable=SC2086
+if ! git diff --quiet -- $files; then
+    echo "pre-commit: ruff reformatted or fixed staged files; review them, git add, commit again." >&2
+    exit 1
+fi
