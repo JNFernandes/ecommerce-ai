@@ -124,13 +124,22 @@ uv run pytest --cov
 - `pytest --cov` fails below 80% line and branch coverage. Tests never touch the network; the
   `live_llm` marker is excluded by default (`-m live_llm` to run those).
 
-## CI and security
+## CI/CD and security
 
 - `.github/workflows/ci.yml`: the quality gate above, plus actionlint on the workflows.
 - `.github/workflows/security.yml`: gitleaks over the full history, pip-audit over every locked
   package, CodeQL (Python and Actions), and Trivy on the built image (SARIF to the Security tab;
   fails on fixable HIGH/CRITICAL). Also weekly on Mondays.
+- `.github/workflows/cd.yml`: publishes the image to GitHub Container Registry after the
+  quality gate (the same `ci.yml`, reused) and a Trivy gate pass. Every push to `main` publishes
+  `ghcr.io/<owner>/ecommerce-ai:main` and `:sha-<short>`; a release tag `vX.Y.Z` publishes `:X.Y.Z`,
+  `:X.Y` and `:latest`. Images carry SLSA provenance and an SBOM.
 - `.github/dependabot.yml`: weekly grouped updates for uv, Docker and GitHub Actions.
+
+To release: set `version` in `pyproject.toml` (the tag must match it, or CD fails), merge, then
+`git tag v0.1.0 && git push origin v0.1.0`. Pull with `docker pull ghcr.io/<owner>/ecommerce-ai:0.1.0`
+(log in to ghcr.io first if the package is private; its visibility is set in the package's
+settings on GitHub).
 
 Actions are pinned by commit SHA and every job has least-privilege permissions.
 

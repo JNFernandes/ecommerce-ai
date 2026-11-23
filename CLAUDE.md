@@ -104,6 +104,14 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - No `time.sleep` or bare `asyncio.sleep`; use a polling helper with a timeout.
 - Names describe behaviour: `test_should_..._when_...`.
 
+## CI/CD
+
+`ci.yml` (the gate above + actionlint), `security.yml` (gitleaks, pip-audit, CodeQL, Trivy),
+`cd.yml` (reuses `ci.yml`, Trivy gate, then pushes to `ghcr.io/<owner>/ecommerce-ai`: `main` and
+`sha-*` on `main`, semver tags on `vX.Y.Z`, which must equal `pyproject.toml`'s version). Actions
+pinned by SHA, least-privilege permissions; check every workflow change with actionlint. New test
+layers (integration, evals) extend `ci.yml` in the story that adds them.
+
 ## Branches and commits
 
 - Branches: `feature/US-XX-short-description`, `fix/US-XX-short-description`,
