@@ -4,10 +4,13 @@ Requests use the stateless 2026-07-28 protocol: no ``initialize`` handshake, and
 carries the ``_meta`` envelope (protocol version, client info and capabilities).
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from itertools import count
 from typing import Final
 
 import httpx
+from fastapi import FastAPI
 from mcp.types import LATEST_PROTOCOL_VERSION
 from mcp_types import (
     CLIENT_CAPABILITIES_META_KEY,
@@ -109,3 +112,14 @@ def tool_result(response: httpx.Response) -> tuple[bool, dict[str, object]]:
     structured = result.get("structuredContent")
     assert isinstance(structured, dict), result
     return bool(result.get("isError", False)), structured
+
+
+@asynccontextmanager
+async def serve_app(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """Run ``app``'s lifespan in the calling task and yield a client bound to it."""
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=transport, base_url="http://localhost") as client,
+    ):
+        yield client

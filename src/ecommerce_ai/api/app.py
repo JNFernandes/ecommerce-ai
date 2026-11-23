@@ -1,24 +1,51 @@
-"""FastAPI application assembly: routers and middleware, without any I/O wiring."""
+"""FastAPI application assembly: routers, the MCP endpoint and middleware, without I/O wiring."""
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ecommerce_ai.api import health
+from ecommerce_ai.api.mcp import McpEndpoint
 from ecommerce_ai.api.middleware import REQUEST_ID_HEADER, RequestIdMiddleware
 from ecommerce_ai.api.route_policy import assert_route_policies
 from ecommerce_ai.infrastructure.health import ReadinessChecker
 
+Resources = Callable[[], AbstractAsyncContextManager[None]]
+"""Factory of the application's own resources (shared HTTP client), opened for its lifetime."""
 
-def build_api(cors_allowed_origins: Sequence[str], readiness_checker: ReadinessChecker) -> FastAPI:
+
+def _lifespan(
+    mcp: McpEndpoint, resources: Resources
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    """Return a lifespan that opens ``resources``, then runs the MCP app's lifespan inside it."""
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        async with resources(), mcp.app.router.lifespan_context(mcp.app):
+            yield
+
+    return lifespan
+
+
+def build_api(
+    cors_allowed_origins: Sequence[str],
+    readiness_checker: ReadinessChecker,
+    *,
+    mcp: McpEndpoint,
+    resources: Resources,
+) -> FastAPI:
     """Create the FastAPI application.
 
-    CORS is enabled only for the configured origins. Every route must declare its access, or this
-    raises ``RoutePolicyError`` (default deny). The request-id middleware is outermost, so every
-    log line of a request carries its ``request_id``.
+    CORS is enabled only for the configured origins. ``mcp`` adds the secured MCP route and
+    chains the MCP app's lifespan; ``resources`` is opened around it for the app's lifetime.
+    Every route must declare its access, or this raises ``RoutePolicyError`` (default deny). The
+    request-id middleware is outermost, so every log line of a request carries its
+    ``request_id``.
     """
     app = FastAPI(
+        lifespan=_lifespan(mcp, resources),
         title="ecommerce-ai",
         summary="MCP tools, order triage and a conversational assistant for the ecommerce system.",
         version="0.1.0",
@@ -34,5 +61,6 @@ def build_api(cors_allowed_origins: Sequence[str], readiness_checker: ReadinessC
         )
     app.add_middleware(RequestIdMiddleware)
     app.include_router(health.router)
+    app.router.routes.append(mcp.route)
     assert_route_policies(app)
     return app
