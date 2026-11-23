@@ -6,6 +6,10 @@ when the token lacks the required role, so no tool runs for a rejected caller. F
 caller it binds a ``RequestCaller`` (identity, raw token, request id) for the request only, so
 tools can forward the caller's own token (ADR 0001). ``mcp_route`` serves it at exactly
 ``/mcp`` with ``x-roles: [CUSTOMER]``, so a POST without a trailing slash never gets a redirect.
+
+When Orders rejects the forwarded token during a call, the tool flags the caller; the middleware
+then replaces the MCP response with the same 401 (research 8). The response is buffered for
+that: it is one JSON body (``json_response=True``) built from size-capped tool results.
 """
 
 from dataclasses import dataclass
@@ -16,7 +20,7 @@ from pydantic import SecretStr
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ecommerce_ai.api.middleware import REQUEST_ID_HEADER, accept_request_id
 from ecommerce_ai.api.route_policy import PolicyRoute, roles
@@ -97,8 +101,19 @@ class BearerAuthMiddleware:
         caller = RequestCaller(
             identity=identity, token=SecretStr(token), request_id=_request_id(headers)
         )
+        buffered: list[Message] = []
+
+        async def buffer(message: Message) -> None:
+            buffered.append(message)
+
         with bind_caller(caller):
-            await self._app(scope, receive, send)
+            await self._app(scope, receive, buffer)
+        if caller.upstream_unauthenticated:
+            _logger.info("mcp_auth_rejected", reason="upstream_unauthenticated")
+            await unauthenticated_response()(scope, receive, send)
+            return
+        for message in buffered:
+            await send(message)
 
 
 @dataclass(frozen=True, slots=True)
