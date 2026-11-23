@@ -22,15 +22,17 @@ from ecommerce_ai.infrastructure.jwks import JwksCache
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.settings import Settings
+from ecommerce_ai.tools.orders import get_order_tool
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 from ecommerce_ai.tools.server import build_mcp_app, build_mcp_server
 
 
-def build_tool_definitions(
-    _settings: Settings, _orders: OrdersClient
-) -> Sequence[AnyToolDefinition]:
+def build_tool_definitions(settings: Settings, orders: OrdersClient) -> Sequence[AnyToolDefinition]:
     """Return the definitions of every tool the MCP server serves."""
-    return []
+    timeout = settings.tool_timeout_seconds
+    max_bytes = settings.tool_max_response_bytes
+    text_limit = settings.tool_text_max_chars
+    return [get_order_tool(orders, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit)]
 
 
 def create_app(
