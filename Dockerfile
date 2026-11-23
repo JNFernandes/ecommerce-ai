@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- Build stage: resolve the locked dependencies and install the project into a venv with uv.
-FROM python:3.12-slim AS build
+FROM python:3.15-slim AS build
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.21 /uv /uvx /bin/
 
@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 
 # ---- Runtime stage: slim Python with the venv only, running as a non-root user.
-FROM python:3.12-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # Apply Debian security updates released after the base image was built (the image scan fails on
 # fixable HIGH/CRITICAL findings), and drop the base image's pip: the service runs from its own
