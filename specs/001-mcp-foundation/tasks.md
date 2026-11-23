@@ -22,7 +22,7 @@ then one gate + commit.
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm `fastmcp==4.2.5` is in `pyproject.toml` and `uv.lock` (already added with `uv add fastmcp`), run `uv sync`; commit `build(US-01): add fastmcp` → gate
+- [X] T001 Confirm `fastmcp==4.2.5` is in `pyproject.toml` and `uv.lock` (already added with `uv add fastmcp`), run `uv sync`; commit `build(US-01): add fastmcp` → gate
 - [ ] T002 Amend `.specify/memory/constitution.md` to 1.1.0 (MINOR): (a) the allowlist line becomes "`POST /api/graphql` (`order` and `orders` queries) — read"; (b) Principle VI gains "Until an LLM-backed agent exists, tools are gated by unit and contract tests only; the first LLM story's suite MUST include cases for every tool registered by then", and `TODO(EVAL_SUITE)` is added to Deferred TODOs; (c) update the sync impact report (migration note: none, no code changes) and the version/date. The amendment goes in its own PR (or is called out in the US-01 PR) and needs a second maintainer's approval; commit `docs(US-01): amend constitution to 1.1.0` → gate
 - [ ] T003 [P] Add `tests/support/tokens.py`: session RSA key (`cryptography`), `jwks()` dict, `make_token(**claims, kid=, alg=, key=)` covering valid, expired, wrong iss/aud, unknown kid, HS256, `alg=none`, tampered → gate
 - [ ] T004 [P] Add `tests/support/orders_stub.py`: respx helpers for `POST {ORDERS_GRAPHQL_URL}` returning order/page/null/GraphQL error codes/HTTP status/oversize/hang, recording request headers; add `tests/support/mcp.py` (JSON-RPC `initialize`/`tools/list`/`tools/call` request builders and result parsers) → gate
