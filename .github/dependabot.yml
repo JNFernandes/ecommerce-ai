@@ -18,6 +18,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # The service is pinned to Python 3.12 (constitution, .python-version): a Python upgrade is
+    # a planned change, not a weekly bump. Patch-level image updates still come through.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: chore
       include: scope
