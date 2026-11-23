@@ -25,7 +25,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---- Runtime stage: slim Python with the venv only, running as a non-root user.
 FROM python:3.12-slim AS runtime
 
-RUN groupadd --system --gid 10001 app \
+# Apply Debian security updates released after the base image was built (the image scan fails on
+# fixable HIGH/CRITICAL findings), and drop the base image's pip: the service runs from its own
+# venv and never installs anything at run time.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y -q pip \
+    && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 
 WORKDIR /app
