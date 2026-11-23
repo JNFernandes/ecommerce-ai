@@ -98,7 +98,7 @@ class Settings(BaseSettings):
         default=30.0, gt=0, le=300, description="Timeout of one LLM call."
     )
     daily_token_budget: int = Field(
-        default=200_000, ge=0, description="Hard cap on LLM tokens per UTC day (0 disables LLM)."
+        default=50_000, ge=0, description="Hard cap on LLM tokens per UTC day (0 disables LLM)."
     )
 
     @field_validator("cors_allowed_origins", "kafka_brokers", mode="before")

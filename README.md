@@ -91,7 +91,7 @@ stops the service at startup with an error naming the variable.
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated `host:port` (`kafka:29092` in the compose network) |
 | `ANTHROPIC_MODEL` | unset | LLM model id; unset = every LLM step uses its fallback |
 | `LLM_TIMEOUT_SECONDS` | `30` | Timeout of one LLM call (`> 0`, `≤ 300`) |
-| `DAILY_TOKEN_BUDGET` | `200000` | Hard cap on LLM tokens per UTC day (`0` = no LLM calls) |
+| `DAILY_TOKEN_BUDGET` | `50000` | Hard cap on LLM tokens per UTC day (`0` = no LLM calls) |
 
 ### Docker
 
