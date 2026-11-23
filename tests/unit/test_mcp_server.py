@@ -29,7 +29,7 @@ from tests.support.mcp import (
     tools_list_request,
 )
 
-TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJl"  # noqa: S105  # fake, test-only
+TOKEN = "header.payload.signature"  # noqa: S105  # fake, test-only
 ENTRY = AllowlistEntry("ecommerce-orders", "POST", "/api/graphql", "order")
 
 
