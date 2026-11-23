@@ -103,7 +103,7 @@ stub; check bounds and scoping.
 ## Phase 6: Polish & cross-cutting
 
 - [X] T035 [P] Add `tests/contract/test_tool_schemas.py`, `tests/contract/snapshots/tools.json` (input/output schemas, annotations of both tools) and `tests/contract/orders_schema.gql` (vendored Orders `docs/schema.gql`, source commit in a header comment); assert requested GraphQL fields exist in the schema; assert every tool has a non-empty description and every input-schema property has a `description` (constitution Documentation Standards); add `tests/contract/__init__.py`; ensure pytest collects it → gate
-- [ ] T036 [P] Update `README.md`, `CLAUDE.md` (HTTP section: `/mcp`, `x-roles: [CUSTOMER]`, new settings; replace the "No gateway route yet… longer write timeout for SSE" line: `/api/mcp` is a follow-up in ecommerce-infra, plain JSON, default timeout) and `.env.example` comments; check `Dockerfile` needs no change → gate
+- [X] T036 [P] Update `README.md`, `CLAUDE.md` (HTTP section: `/mcp`, `x-roles: [CUSTOMER]`, new settings; replace the "No gateway route yet… longer write timeout for SSE" line: `/api/mcp` is a follow-up in ecommerce-infra, plain JSON, default timeout) and `.env.example` comments; check `Dockerfile` needs no change → gate
 - [ ] T037 Run `specs/001-mcp-foundation/quickstart.md` offline section; draft the ecommerce-infra follow-up issue text for the `/api/mcp` gateway route (plain JSON, default timeout) in the PR description → gate
 
 ---

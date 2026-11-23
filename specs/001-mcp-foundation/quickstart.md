@@ -22,9 +22,9 @@ List tools, then call one:
 
 ```sh
 H='-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream"'
-curl -s localhost:8002/mcp/ -H "Authorization: Bearer $TOKEN" $H \
+curl -s localhost:8002/mcp -H "Authorization: Bearer $TOKEN" $H \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-curl -s localhost:8002/mcp/ -H "Authorization: Bearer $TOKEN" $H \
+curl -s localhost:8002/mcp -H "Authorization: Bearer $TOKEN" $H \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_my_orders","arguments":{"limit":5}}}'
 ```
 

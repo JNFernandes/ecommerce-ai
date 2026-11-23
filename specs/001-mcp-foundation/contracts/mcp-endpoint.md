@@ -2,7 +2,7 @@
 
 ## HTTP
 
-`POST /mcp/` — MCP Streamable HTTP, stateless, JSON responses (no `Mcp-Session-Id`).
+`POST /mcp` (exact path; `/mcp/` redirects) — MCP Streamable HTTP, stateless, JSON responses (no `Mcp-Session-Id`).
 Request headers: `Authorization: Bearer <jwt>`, `Content-Type: application/json`,
 `Accept: application/json, text/event-stream`, optional `X-Request-Id`. Policy `x-roles: [CUSTOMER]`.
 

@@ -70,9 +70,16 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - Now: `GET /health` (liveness, no dependencies, always 200) and `GET /ready` (TCP probes:
   `database` critical → 503 when down; `kafka` reported only). Probes live in
   `infrastructure/health.py`; nothing connects at startup.
+- `POST /mcp` (exact path, `x-roles: [CUSTOMER]`): stateless FastMCP, plain JSON, tools
+  `get_order` and `list_my_orders` (read-only, Orders GraphQL via `ORDERS_GRAPHQL_URL`).
+  `api/mcp.py::BearerAuthMiddleware` gives 401/503/403 and binds `RequestCaller`
+  (`infrastructure/caller.py`); an Orders 401 turns the whole call into 401. Tools register in
+  `main.py::build_tool_definitions`, are checked against `tools/registry.py::ALLOWLIST` at
+  startup, and their schemas are pinned in `tests/contract/snapshots/tools.json`
+  (`UPDATE_SNAPSHOTS=1` regenerates it). Settings: `JWKS_*`, `TOOL_*`, `UPSTREAM_*`.
 - Every route declares access through `openapi_extra`: `PUBLIC` (`api/route_policy.py`) or
   `x-roles`. `assert_route_policies` fails `build_api` for an undeclared route (default deny).
-- Protected routes (future): RS256 bearer from ecommerce-identity, verified locally against
+- Protected routes (`/mcp` now): RS256 bearer from ecommerce-identity, verified locally against
   `IDENTITY_JWKS_URL` (lazy, cached), same 401 for every bad token, 403 without a role, 503 without
   keys. Tools forward the caller's JWT; never a service account (ADR 0001).
 - Mutating tools pause for approval of the exact call (ADR 0002). Every LLM step has a timeout,
@@ -133,4 +140,5 @@ layers (integration, evals) extend `ci.yml` in the story that adds them.
 - ecommerce-infra has the `ai.order-triage-completed` contract (`docs/events.md`: `cause` and
   `suggestedAction` enums, consumer group `ai-triage`, the HTTP exception for calls with the
   caller's token), the topic in `kafka-init`, `postgres-ai` on `5436` and the `ai` compose service.
-  No gateway route yet: add it with the first API, with a longer write timeout for SSE.
+  No gateway route yet: `/api/mcp` is a follow-up in ecommerce-infra (plain JSON, default
+  timeout), which also adds `ORDERS_GRAPHQL_URL` to the `ai` service.
