@@ -55,7 +55,7 @@ async def test_should_serve_the_snapshotted_tool_schemas() -> None:
 
     if os.environ.get("UPDATE_SNAPSHOTS") == "1":
         text = json.dumps(served, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-        SNAPSHOT.write_text(text, encoding="utf-8")
+        SNAPSHOT.write_text(text, encoding="utf-8", newline="\n")
     snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 
     assert served == snapshot
