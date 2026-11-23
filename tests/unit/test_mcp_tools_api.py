@@ -1,4 +1,4 @@
-"""Tools end to end over ``/mcp``: caller's token forwarded, fixed errors, untrusted data (US1)."""
+"""Tools end to end over ``/mcp``: caller's token forwarded, fixed errors, untrusted data."""
 
 import io
 import time
@@ -15,7 +15,7 @@ from ecommerce_ai.main import create_app
 from tests.support.mcp import post_rpc, rpc_result, serve_app, tool_result, tools_call_request
 from tests.support.mcp import tools_list_request as list_request
 from tests.support.orders_stub import ORDER_ID, OrdersStub, sample_order
-from tests.support.tokens import jwks, make_token
+from tests.support.tokens import CUSTOMER_ID, jwks, make_token
 
 JWKS_URL: str = Settings.model_fields["identity_jwks_url"].default
 TOOL_TIMEOUT = 0.5
@@ -169,3 +169,53 @@ async def test_should_return_injected_text_as_untrusted_data_and_keep_tools_unch
     assert data["cancellationReason"] == injection
     assert before == after
     assert len(stub.requests) == 1
+
+
+async def _list_my_orders(
+    log_output: io.StringIO, token: str, arguments: dict[str, object]
+) -> httpx.Response:
+    async with _serve(log_output) as client:
+        return await post_rpc(client, tools_call_request("list_my_orders", arguments), token)
+
+
+async def test_should_return_callers_page_in_untrusted_envelope_when_listing(
+    stub: OrdersStub, log_output: io.StringIO
+) -> None:
+    stub.respond_page([sample_order()], total=3, has_next=True)
+
+    response = await _list_my_orders(log_output, make_token(), {})
+
+    is_error, content = tool_result(response)
+    assert is_error is False
+    assert content["trust"] == "untrusted_data"
+    data = content["data"]
+    assert isinstance(data, dict)
+    assert (data["totalCount"], data["hasNextPage"], len(data["items"])) == (3, True, 1)
+    assert stub.request_body()["variables"] == {
+        "customerId": str(CUSTOMER_ID),
+        "status": None,
+        "limit": 20,
+        "offset": 0,
+    }
+
+
+async def test_should_forward_status_filter_when_listing_pending_orders(
+    stub: OrdersStub, log_output: io.StringIO
+) -> None:
+    stub.respond_page([], total=0, has_next=False)
+
+    response = await _list_my_orders(log_output, make_token(), {"status": "PENDING", "limit": 5})
+
+    assert tool_result(response)[0] is False
+    variables = stub.request_body()["variables"]
+    assert isinstance(variables, dict)
+    assert (variables["status"], variables["limit"]) == ("PENDING", 5)
+
+
+async def test_should_fail_not_allowed_without_orders_request_when_token_has_no_customer_id(
+    stub: OrdersStub, log_output: io.StringIO
+) -> None:
+    response = await _list_my_orders(log_output, make_token(omit=["customerId"]), {})
+
+    assert tool_result(response) == (True, {"error": "not_allowed", "message": "not allowed"})
+    assert stub.requests == []
