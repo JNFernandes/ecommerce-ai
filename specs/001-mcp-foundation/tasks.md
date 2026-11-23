@@ -31,8 +31,8 @@ then one gate + commit.
 
 ## Phase 2: Foundational (blocks all stories)
 
-- [ ] T005 Tests in `tests/unit/test_settings.py` for new settings and defaults: `orders_graphql_url` (`http://localhost:8090/api/graphql`), `jwks_timeout_seconds` 3, `jwks_refetch_cooldown_seconds` 30, `tool_timeout_seconds` 5, `tool_max_response_bytes` 262144, `tool_text_max_chars` 500, `upstream_max_retries` 2, `upstream_backoff_base_seconds` 0.2, all > 0 (retries ≥ 0)
-- [ ] T006 Implement those fields in `src/ecommerce_ai/infrastructure/settings.py`; add them to the env-clearing list in `tests/conftest.py` and to `.env.example` → gate
+- [X] T005 Tests in `tests/unit/test_settings.py` for new settings and defaults: `orders_graphql_url` (`http://localhost:8090/api/graphql`), `jwks_timeout_seconds` 3, `jwks_refetch_cooldown_seconds` 30, `tool_timeout_seconds` 5, `tool_max_response_bytes` 262144, `tool_text_max_chars` 500, `upstream_max_retries` 2, `upstream_backoff_base_seconds` 0.2, all > 0 (retries ≥ 0)
+- [X] T006 Implement those fields in `src/ecommerce_ai/infrastructure/settings.py`; add them to the env-clearing list in `tests/conftest.py` and to `.env.example` → gate
 - [ ] T007 [P] Tests in `tests/unit/test_caller.py`: `RequestCaller` ContextVar set/get/reset, unset access raises, `token` is `SecretStr` and absent from `repr`
 - [ ] T008 Implement `CallerIdentity`, `RequestCaller` (+ `current_caller()`, `bind_caller()` context manager) in `src/ecommerce_ai/infrastructure/caller.py` → gate
 - [ ] T009 [P] Tests in `tests/unit/test_retry.py`: retries only retryable `UpstreamError`, max `1 + retries` attempts, backoff `base·2^n` with full jitter (injected RNG/sleep), per-attempt timeout = min(remaining, tool timeout), no attempt past the deadline, non-retryable errors raised at once

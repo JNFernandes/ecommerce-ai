@@ -80,6 +80,37 @@ class Settings(BaseSettings):
         description="Notifications API base URL, through the gateway.",
     )
 
+    orders_graphql_url: str = Field(
+        default="http://localhost:8090/api/graphql",
+        description="Orders GraphQL endpoint (`order`, `orders` queries), through the gateway.",
+    )
+
+    jwks_timeout_seconds: float = Field(
+        default=3.0, gt=0, le=30, description="Timeout of one JWKS fetch from Identity."
+    )
+    jwks_refetch_cooldown_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=3600,
+        description="Minimum time between JWKS refetches triggered by an unknown `kid`.",
+    )
+
+    tool_timeout_seconds: float = Field(
+        default=5.0, gt=0, le=60, description="Overall budget of one tool call, retries included."
+    )
+    tool_max_response_bytes: int = Field(
+        default=262_144, gt=0, le=10_485_760, description="Largest upstream body a tool accepts."
+    )
+    tool_text_max_chars: int = Field(
+        default=500, gt=0, le=10_000, description="Length limit of free-text fields in results."
+    )
+    upstream_max_retries: int = Field(
+        default=2, ge=0, le=5, description="Retries after the first attempt of a read call."
+    )
+    upstream_backoff_base_seconds: float = Field(
+        default=0.2, gt=0, le=5, description="First retry delay; doubles per retry, full jitter."
+    )
+
     database_url: SecretStr = Field(
         default=SecretStr("postgresql://localhost:5436/ecommerce_ai"),
         description="PostgreSQL connection URL. Credentials come from the environment only.",
@@ -107,7 +138,11 @@ class Settings(BaseSettings):
         return _split_csv(value)
 
     @field_validator(
-        "identity_jwks_url", "orders_base_url", "inventory_base_url", "notifications_base_url"
+        "identity_jwks_url",
+        "orders_base_url",
+        "orders_graphql_url",
+        "inventory_base_url",
+        "notifications_base_url",
     )
     @classmethod
     def _check_http_url(cls, value: str) -> str:
