@@ -43,8 +43,8 @@ then one gate + commit.
 - [X] T014 Implement `src/ecommerce_ai/tools/envelope.py` → gate
 - [X] T015 [P] Tests in `tests/unit/test_registry.py`: valid definition builds; one failing test each for missing allowlist entry, entry not in `ALLOWLIST`, missing input model, missing output model, timeout ≤ 0, max size ≤ 0 (SC-006); duplicate name rejected
 - [X] T016 Implement `AllowlistEntry`, `ALLOWLIST` (`order`, `orders` on `POST /api/graphql`), `ToolDefinition`, `ToolRegistryError`, `ToolRegistry.build()` in `src/ecommerce_ai/tools/registry.py` → gate
-- [ ] T017 [P] Tests in `tests/unit/test_route_policy.py`: an ASGI `Route` or `Mount` without policy fails `assert_route_policies`; one with `x-roles` passes; existing `APIRoute` behaviour unchanged
-- [ ] T018 Extend `src/ecommerce_ai/api/route_policy.py` to check ASGI `Route` and `Mount` routes (policy metadata on the route) → gate
+- [X] T017 [P] Tests in `tests/unit/test_route_policy.py`: an ASGI `Route` or `Mount` without policy fails `assert_route_policies`; one with `x-roles` passes; existing `APIRoute` behaviour unchanged
+- [X] T018 Extend `src/ecommerce_ai/api/route_policy.py` to check ASGI `Route` and `Mount` routes (policy metadata on the route) → gate
 - [ ] T019 Tests in `tests/unit/test_mcp_server.py`: `build_mcp_server(registry)` lists registered tools with `readOnlyHint`; middleware maps `ToolFailure` and argument `ValidationError` to `isError: true` + `{error, message}`; unknown tool → JSON-RPC `-32602`; logs tool, outcome, duration, `request_id`, no token (fake tool, no network)
 - [ ] T020 Implement `src/ecommerce_ai/tools/server.py` (FastMCP, `on_call_tool` error/logging middleware, `http_app(stateless_http=True, json_response=True)`, path per research 2) → gate
 
