@@ -59,8 +59,8 @@ then one gate + commit.
 **Independent test**: MCP requests with bad tokens / no keys / wrong role get 401/503/403;
 `/health` is 200 with Identity down.
 
-- [ ] T021 [P] [US3] Tests in `tests/unit/test_jwks.py`: lazy fetch on first use, cache hit, unknown `kid` refetches at most once per cooldown, cached keys kept when Identity down, single-flight under concurrency, no keys + fetch failure → `KeysUnavailable`
-- [ ] T022 [US3] Implement `JwksCache` in `src/ecommerce_ai/infrastructure/jwks.py` (`PyJWK`, `asyncio.Lock`, injectable clock) → gate
+- [X] T021 [P] [US3] Tests in `tests/unit/test_jwks.py`: lazy fetch on first use, cache hit, unknown `kid` refetches at most once per cooldown, cached keys kept when Identity down, single-flight under concurrency, no keys + fetch failure → `KeysUnavailable`
+- [X] T022 [US3] Implement `JwksCache` in `src/ecommerce_ai/infrastructure/jwks.py` (`PyJWK`, `asyncio.Lock`, injectable clock) → gate
 - [ ] T023 [P] [US3] Tests in `tests/unit/test_auth.py`: valid token → `CallerIdentity` (sub, roles, customerId); expired, wrong iss, wrong aud, unknown kid, HS256, `alg=none`, tampered, missing `sub`/`exp`/`iat`/`roles` → `InvalidToken`; `alg` checked before key lookup
 - [ ] T024 [US3] Implement `TokenVerifier` in `src/ecommerce_ai/infrastructure/auth.py` (`jwt.decode(algorithms=["RS256"], issuer, audience, leeway)`) → gate
 - [ ] T025 [US3] Tests in `tests/unit/test_mcp_auth.py` via `create_app` + `ASGITransport` + lifespan: no header and every bad-token case get byte-identical 401 with `WWW-Authenticate: Bearer` (SC-001); no keys → 503; valid non-`CUSTOMER` token → 403, no tool runs; valid `CUSTOMER` `tools/list` → 200; `POST /mcp` (no trailing slash) reaches auth directly, with no 3xx; caller ContextVar reset after request
