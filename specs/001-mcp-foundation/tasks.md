@@ -94,8 +94,8 @@ forwarded token and error cases.
 **Independent test**: `tools/call list_my_orders` with and without `limit`/`status` against the
 stub; check bounds and scoping.
 
-- [ ] T032 [P] [US2] Tests in `tests/unit/test_list_my_orders.py` (handler level with a fake client): default limit 20; limit 50 ok; 0, 51 and unknown status → `invalid_input`, client not called; variables carry the token's `customerId`, `offset: 0`, status; no `customerId` claim → `not_allowed`, client not called; `OrdersPage` parsing with `totalCount`/`hasNextPage`; truncation inside items
-- [ ] T033 [US2] Implement `ListMyOrdersInput`, `OrdersPage`, `LIST_ORDERS` document, `list_my_orders` handler (calls `OrdersClient.execute`) + `ToolDefinition` in `src/ecommerce_ai/tools/orders.py`; register in `src/ecommerce_ai/main.py` → gate
+- [X] T032 [P] [US2] Tests in `tests/unit/test_list_my_orders.py` (handler level with a fake client): default limit 20; limit 50 ok; 0, 51 and unknown status → `invalid_input`, client not called; variables carry the token's `customerId`, `offset: 0`, status; no `customerId` claim → `not_allowed`, client not called; `OrdersPage` parsing with `totalCount`/`hasNextPage`; truncation inside items
+- [X] T033 [US2] Implement `ListMyOrdersInput`, `OrdersPage`, `LIST_ORDERS` document, `list_my_orders` handler (calls `OrdersClient.execute`) + `ToolDefinition` in `src/ecommerce_ai/tools/orders.py`; register in `src/ecommerce_ai/main.py` → gate
 - [ ] T034 [US2] Add end-to-end cases to `tests/unit/test_mcp_tools_api.py`: `list_my_orders` success envelope, `PENDING` filter forwarded, token without `customerId` → `not_allowed` and no Orders request → gate
 
 ---
