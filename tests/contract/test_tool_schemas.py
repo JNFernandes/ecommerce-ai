@@ -36,6 +36,10 @@ DOCUMENTS: Final[dict[str, tuple[str, AllowlistEntry]]] = {
     "get_order": (GET_ORDER, GET_ORDER_ENTRY),
     "list_my_orders": (LIST_ORDERS, LIST_ORDERS_ENTRY),
 }
+"""GraphQL tools and the one document each sends."""
+
+TOOL_NAMES: Final = frozenset({*DOCUMENTS, "list_products", "get_product"})
+"""Every tool ``tools/list`` serves."""
 
 
 async def _served_tools() -> dict[str, dict[str, object]]:
@@ -64,7 +68,7 @@ async def test_should_serve_the_snapshotted_tool_schemas() -> None:
 async def test_should_describe_every_tool_and_input_property() -> None:
     served = await _served_tools()
 
-    assert set(served) == set(DOCUMENTS)
+    assert set(served) == TOOL_NAMES
     for name, tool in served.items():
         description = tool["description"]
         assert isinstance(description, str), name

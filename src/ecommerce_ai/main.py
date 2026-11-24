@@ -26,6 +26,7 @@ from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport
+from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
 from ecommerce_ai.tools.orders import get_order_tool, list_my_orders_tool
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 from ecommerce_ai.tools.server import build_mcp_app, build_mcp_server
@@ -41,10 +42,12 @@ def build_tool_definitions(
     timeout = settings.tool_timeout_seconds
     max_bytes = settings.tool_max_response_bytes
     text_limit = settings.tool_text_max_chars
-    del inventory, notifications  # their tools are registered by the US-02 story tasks
+    del notifications  # its tool is registered by the US-02 story tasks
     return [
         get_order_tool(orders, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
         list_my_orders_tool(orders, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
+        list_products_tool(inventory, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
+        get_product_tool(inventory, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
     ]
 
 
