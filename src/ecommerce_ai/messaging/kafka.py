@@ -1,8 +1,9 @@
-"""Kafka consumer port and its aiokafka adapter (research 5).
+"""Kafka consumer and producer ports and their aiokafka adapters (research 5, 7).
 
 The triage consumer depends only on ``ConsumerPort`` and the plain ``TopicPartition`` and
-``ConsumedRecord`` types below, so unit tests drive it with a fake. This is the only module that
-imports aiokafka, which ships no type information: its values are converted to typed ones here.
+``ConsumedRecord`` types below, and the outbox relay only on ``ProducerPort``, so unit tests drive
+both with fakes. This is the only module that imports aiokafka, which ships no type information:
+its values are converted to typed ones here.
 """
 
 from collections.abc import Callable, Iterable, Mapping
@@ -130,3 +131,48 @@ class AIOKafkaConsumerAdapter:
     async def position(self, partition: TopicPartition) -> int:
         """Offset of the next record this consumer will read from ``partition``."""
         return int(await self._consumer.position(_to_kafka(partition)))
+
+
+class ProducerPort(Protocol):
+    """The producer operations the outbox relay uses."""
+
+    async def start(self) -> None:
+        """Connect to the cluster."""
+        ...
+
+    async def stop(self) -> None:
+        """Flush pending records and close the connections."""
+        ...
+
+    async def send(self, topic: str, key: bytes, value: bytes) -> None:
+        """Send one record and return once every in-sync replica has acknowledged it."""
+        ...
+
+
+type ProducerFactory = Callable[[], ProducerPort]
+"""Builds a fresh, not yet started producer (one per connection attempt)."""
+
+
+class AIOKafkaProducerAdapter:
+    """``ProducerPort`` over ``aiokafka.AIOKafkaProducer`` with ``acks=all`` and idempotence."""
+
+    def __init__(self, settings: Settings) -> None:
+        """Configure the producer; nothing connects until ``start``."""
+        # Untyped library object; nothing is read back from it.
+        self._producer = aiokafka.AIOKafkaProducer(
+            bootstrap_servers=",".join(settings.kafka_brokers),
+            acks="all",
+            enable_idempotence=True,
+        )
+
+    async def start(self) -> None:
+        """Connect to the cluster."""
+        await self._producer.start()
+
+    async def stop(self) -> None:
+        """Flush pending records and close the connections."""
+        await self._producer.stop()
+
+    async def send(self, topic: str, key: bytes, value: bytes) -> None:
+        """Send one record and wait for the acknowledgement of every in-sync replica."""
+        await self._producer.send_and_wait(topic, value=value, key=key)
