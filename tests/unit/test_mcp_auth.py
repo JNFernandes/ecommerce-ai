@@ -16,6 +16,7 @@ from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.caller import NoCallerError, RequestCaller, current_caller
 from ecommerce_ai.infrastructure.jwks import JwksCache
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
 from ecommerce_ai.tools.registry import AllowlistEntry, AnyToolDefinition, ToolDefinition
@@ -52,7 +53,11 @@ class Recorder:
         return WhoAmI(subject=caller.identity.subject)
 
     def definitions(
-        self, _settings: Settings, _orders: OrdersClient
+        self,
+        _settings: Settings,
+        _orders: OrdersClient,
+        _inventory: RestClient,
+        _notifications: RestClient,
     ) -> Sequence[AnyToolDefinition]:
         return [
             ToolDefinition(
