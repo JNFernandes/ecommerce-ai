@@ -1,49 +1,48 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change:    1.0.0 → 1.1.0
-Bump rationale:    MINOR. Materially expanded guidance: the tool allowlist gains the Orders
-                   GraphQL `order` query (needed by `get_order`, US-01), and Principle VI states
-                   how tools are gated before any LLM-backed agent exists (TODO(EVAL_SUITE)).
+Version change:    1.1.0 → 2.0.0
+Bump rationale:    MAJOR. Principle IV's triage-worker rules are redefined (US-04): one result per
+                   order instead of per consumed `eventId`, an outbox instead of an outbound
+                   dead-letter table, and `modelId` null on a fallback. VI and VII gain interim
+                   rules until US-09 (evals) and US-08 (tracing).
+Approval:          sole maintainer (self-approved in the US-04 PR).
 
 Modified principles:
-  - II. Security First — allowlist: `POST /api/graphql` "(`orders` query only)" → "(`order` and
-    `orders` queries)". Both are documented in the ecommerce-orders README.
-  - VI. Evals as Release Gate — adds the pre-LLM rule: until an LLM-backed agent exists, tools
-    are gated by unit and contract tests only; the first LLM story's suite MUST include cases
-    for every tool registered by then.
+  - IV. Reliability & Cost Control — fallback marked by `source = FALLBACK_TEMPLATE` and
+    `modelId = null`; intake idempotent by `eventId`; one result per order; flow split into
+    intake (evidence → commit) and triage (result + outbox + status in one transaction →
+    publish); outbox relay replaces the outbound dead-letter table.
+  - VI. Evals as Release Gate — suite introduced by US-09; interim gate: gatekeeper and injection
+    unit tests, pinned prompt hashes, a `live_llm` test.
+  - VII. Observability — until US-08, one structured log line per graph run with latency, tokens,
+    `promptVersion`, `modelId`, `orderId`.
 
 Added sections:   (none)
 Removed sections: (none)
 
-Migration note:   none. No code existed that depends on the changed rules.
+Migration note:   no existing code depends on the replaced rules (no result or publish existed
+                  before US-04); US-03 intake already matches the new intake rule.
 
 Templates reviewed:
   ✅ .specify/templates/plan-template.md, spec-template.md, tasks-template.md — no change needed.
 
 Runtime guidance:
-  ✅ README.md, CLAUDE.md, Dockerfile, docs/adr 0001–0004 — present (bootstrap, PR #1).
+  ⚠ README.md, CLAUDE.md — updated by US-04 (T037).
 
-Cross-repository follow-ups (ecommerce-infra, before use):
-  ⚠ docs/events.md — add `ai.order-triage-completed` (topic table, payload, enums for `cause` and
-    `suggestedAction`) and list ecommerce-ai as a consumer of `orders.order-cancelled`,
-    `payments.payment-failed` and `inventory.stock-rejected`.
-  ⚠ docs/events.md "HTTP APIs" — it states that no service calls another's API. The AI service
-    calls the platform APIs through the gateway as a client on behalf of the caller, with the
-    caller's own token (Principle II); this MUST be recorded there as a documented exception.
-  ⚠ docker-compose.yml — add `ai.order-triage-completed` to the `kafka-init` topic list, a
-    PostgreSQL 16 service for this service on host port 5436, and the ecommerce-ai service on
-    port 8002 behind the gateway.
+Cross-repository follow-ups (ecommerce-infra, before merge):
+  ⚠ docs/events.md — `ai.order-triage-completed`: one result per order (case), outbox
+    redelivery instead of "dead-lettered", `modelId` null only for `FALLBACK_TEMPLATE`.
 
 Deferred TODOs:
   - TODO(WORKER_SERVICE_IDENTITY): ecommerce-identity documents no service-account or
     client-credentials flow. Until one is documented in its README, the triage worker MUST work
     from event payloads only and MUST NOT call any tool (Principle II).
-  - TODO(EVAL_SUITE): no LLM-backed agent exists yet, so tools added before it (US-01:
-    `get_order`, `list_my_orders`) have no eval run; the story that introduces the suite MUST
-    add their cases (Principle VI).
+  - TODO(EVAL_SUITE): US-09 introduces the suite; it MUST include cases for the triage prompt, the
+    gatekeeper and every tool registered by then (Principle VI).
   - TODO(EVAL_THRESHOLD): the composite-score threshold value is agreed in the story that
     introduces the eval suite and recorded in the suite configuration (Principle VI).
+  - TODO(TRACING): US-08 adds the trace backend (LangSmith or OpenTelemetry) (Principle VII).
 -->
 
 # ecommerce-ai Constitution
@@ -179,7 +178,8 @@ Timeouts, retries and fallback (ADR 0003):
   backoff. Unbounded retries are prohibited.
 - Every LLM-backed step MUST have a deterministic fallback. For triage, the fallback is a template
   explanation derived from the event alone, so a provider outage never blocks the event flow. A
-  fallback result MUST be recognisable (its `modelId` names the template, never a model).
+  fallback result MUST be recognisable: its `source` is `FALLBACK_TEMPLATE` and its `modelId` is
+  `null`, never a model id.
 
 Cost budgets:
 - Per-request and per-day token and cost budgets MUST be enforced from configuration, with a hard
@@ -187,15 +187,19 @@ Cost budgets:
   is reached, every LLM-backed step uses its fallback until the next day (UTC).
 
 Triage worker:
-- The worker MUST be idempotent by `eventId`: at most one triage result is stored per consumed
-  `eventId` (UNIQUE constraint), and a redelivery is a recognised no-op.
-- The flow MUST be: consume → validate → triage → save the result in PostgreSQL → commit the
-  offset → publish. Committing an offset before the save is a critical violation.
-- A failed publish MUST be stored in the outbound dead-letter table (topic, key, payload,
-  `eventId`, error, attempts, timestamps), and a retry worker MUST redeliver it with the same
-  `eventId`, key and payload, like the other services. Unparseable or invalid inbound messages
-  MUST be stored in an inbound dead-letter table without retries, after which the offset is
-  committed.
+- Intake MUST be idempotent by `eventId`: each consumed event is stored at most once as evidence
+  (UNIQUE constraint), and a redelivery is a recognised no-op.
+- At most one triage result MUST exist per order (triage case, UNIQUE constraint); evidence
+  arriving after it never produces a second result.
+- The flow MUST be: consume → validate → save the evidence → commit the offset; then, once the
+  case has settled: triage → save the result, its outgoing event and the case status in one
+  transaction → publish. Committing an offset before the evidence is saved is a critical
+  violation.
+- Every outgoing event MUST be saved in an outbox table (topic, key, payload, `eventId`, status,
+  attempts, last error, timestamps) in the same transaction as the result. A relay MUST publish
+  it, retrying with bounded exponential backoff with the same `eventId`, key and payload until it
+  is resolved or the attempts run out. Unparseable or invalid inbound messages MUST be stored in
+  an inbound dead-letter table without retries, after which the offset is committed.
 - All timestamps MUST be UTC, timezone-aware, and serialized as ISO 8601.
 
 ### V. Event Contracts
@@ -242,13 +246,19 @@ for every topic and payload.
   run whose result is attached to the PR. Until an LLM-backed agent exists, tools are gated by
   unit and contract tests only; the first LLM story's suite MUST include cases for every tool
   registered by then (TODO(EVAL_SUITE)).
+- The verdict suite is introduced by US-09. Until then, LLM-backed steps are gated by
+  deterministic gatekeeper unit tests, prompt-injection unit tests, a pinned hash for each prompt
+  file and a `live_llm` test. US-09's suite MUST include cases for the triage prompt, the
+  gatekeeper and every tool registered by then (TODO(EVAL_SUITE)).
 - A failing safety case (forbidden tool use, ownership leak, prompt injection, missing approval
   interrupt) MUST block the merge regardless of the composite score.
 
 ### VII. Observability
 
 - Every graph run MUST be traced (LangSmith or OpenTelemetry) with latency, token usage, cost,
-  tool calls (name, duration, outcome) and `promptVersion` and `modelId`.
+  tool calls (name, duration, outcome) and `promptVersion` and `modelId`. Until US-08 adds the
+  trace backend, each graph run MUST emit one structured log line carrying latency, input and
+  output tokens, `promptVersion`, `modelId` and `orderId` (TODO(TRACING)).
 - Trace and log data MUST NOT contain secrets, tokens or unnecessary personal data; tool
   arguments and results are redacted to what is needed for debugging.
 - A correlation id (the `orderId` for triage, a request id for the assistant) MUST link logs,
@@ -429,4 +439,4 @@ note if existing code must change.
 Reviewers are empowered to block merges for violations without exception. New principles take
 effect immediately upon merge.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-23 | **Last Amended**: 2026-11-23
+**Version**: 2.0.0 | **Ratified**: 2026-11-23 | **Last Amended**: 2026-11-24
