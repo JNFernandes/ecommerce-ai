@@ -30,6 +30,7 @@ from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepo
 from ecommerce_ai.infrastructure.db.engine import build_engine
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
+from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
 from ecommerce_ai.infrastructure.logging import configure_logging
@@ -104,8 +105,8 @@ async def stop_consumer(task: asyncio.Task[None], stop: asyncio.Event, timeout: 
         return
     error = task.exception()
     if error is not None:
-        # The class name only: driver messages can echo connection details.
-        logger.error("triage_consumer_failed", error=type(error).__name__)
+        # Root cause and a sanitized message (no password, no query values).
+        logger.error("triage_consumer_failed", **error_fields(error))
 
 
 def create_app(
@@ -206,8 +207,8 @@ def migrate() -> int:
     try:
         asyncio.run(run_migrations(settings))
     except Exception as exc:
-        # The class name only: driver messages can echo connection details.
-        logger.error("migrations_failed", error=type(exc).__name__)
+        # Root cause and a sanitized message (no password, no query values).
+        logger.error("migrations_failed", **error_fields(exc))
         return 1
     logger.info("migrations_applied")
     return 0

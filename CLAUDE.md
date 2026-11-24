@@ -109,7 +109,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   keys. Tools forward the caller's JWT; never a service account (ADR 0001).
 - Mutating tools pause for approval of the exact call (ADR 0002). Every LLM step has a timeout,
   bounded retries, a deterministic fallback and a token budget (ADR 0003).
-- Secrets only from the environment; `DATABASE_URL` is a `SecretStr`. Never log tokens,
+- Secrets only from the environment (or the git-ignored `.env`); `DATABASE_URL` is a `SecretStr`
+  (`postgresql://` or `postgresql+asyncpg://`). Describe failures with
+  `infrastructure/errors.py::error_fields` (root cause of a `DBAPIError`, sanitized message). Never log tokens,
   passwords or personal data. `infrastructure/logging.py::redact_sensitive_data` scrubs every
   record; keep it last before rendering.
 - Logs: structlog JSON with `request_id` bound by `api/middleware.py::RequestIdMiddleware`
@@ -138,7 +140,8 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - Drive the app with an httpx `AsyncClient` over `ASGITransport`, building it with
   `create_app(probes=[...])`. `create_app` reconfigures logging, so tests capturing logs call
   `configure_logging("INFO", stream)` after building the app.
-- `tests/conftest.py` clears every settings variable from the environment for each test and
+- `tests/conftest.py` clears every settings variable from the environment for each test, turns
+  off the `.env` file (`Settings` reads `./.env` when present; env vars win) and
   sets `TRIAGE_CONSUMER_ENABLED=false`; consumer tests enable it with a fake `consumer_factory`.
 - No `time.sleep` or bare `asyncio.sleep`; use `tests/support/polling.py` (`wait_until`,
   `poll_until`) with a timeout. Inject `wait`/`sleep`/`rng` into `TriageConsumer` instead of waiting.

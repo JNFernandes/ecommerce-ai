@@ -1,5 +1,7 @@
 """Consumer state transitions reported by readiness."""
 
+from sqlalchemy.exc import DBAPIError
+
 from ecommerce_ai.messaging.consumer_state import ConsumerState
 
 
@@ -47,3 +49,17 @@ def test_should_be_disconnected_and_keep_its_last_error_when_stopped() -> None:
     state.mark_stopped()
 
     assert (state.connected, state.caught_up, state.last_error) == (False, False, "TimeoutError")
+
+
+class InvalidPasswordError(Exception):
+    """Stands in for the asyncpg error of the same name."""
+
+
+def test_should_report_the_driver_error_class_when_sqlalchemy_wraps_it() -> None:
+    adapter = Exception("password authentication failed")
+    adapter.__cause__ = InvalidPasswordError('password authentication failed for user "joaof"')
+    state = ConsumerState(connected=True)
+
+    state.mark_failed(DBAPIError("SELECT 1", None, adapter))
+
+    assert state.last_error == "InvalidPasswordError"

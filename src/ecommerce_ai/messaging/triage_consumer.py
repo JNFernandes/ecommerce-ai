@@ -24,6 +24,7 @@ from ecommerce_ai.agents.triage_intake.model import IntakeOutcome
 from ecommerce_ai.agents.triage_intake.ports import DeadLetterStore
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.infrastructure.db.engine import is_transient_db_error
+from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.retry import call_with_retry
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.messaging.consumer_state import ConsumerState
@@ -103,10 +104,10 @@ class TriageConsumer:
                 self._state.mark_failed(error)
                 delay = self._reconnect_delay(failures)
                 failures += 1
-                # The class name only: driver messages can echo connection details.
+                # Root cause and a sanitized message (no password, no query values).
                 logger.warning(
                     "triage_consumer_error",
-                    error=type(error).__name__,
+                    **error_fields(error),
                     retry_in_seconds=round(delay, 3),
                 )
                 await self._wait(stop_event, delay)
@@ -138,7 +139,7 @@ class TriageConsumer:
             await consumer.stop()
         except Exception as error:
             # Closing is best effort: a failure here must not hide the error that ended the run.
-            logger.warning("triage_consumer_close_failed", error=type(error).__name__)
+            logger.warning("triage_consumer_close_failed", **error_fields(error))
 
     async def _consume(self, consumer: ConsumerPort, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():

@@ -578,3 +578,22 @@ async def test_should_log_no_payload_customer_id_or_reason_for_any_outcome(
         "occurredAt",
     ):
         assert secret not in output
+
+
+async def test_should_log_the_sanitized_cause_when_the_consumer_fails(
+    store: InMemoryTriageCaseStore, state: ConsumerState
+) -> None:
+    pacing = Pacing()
+    fake = FakeConsumer(start_error=OSError("cannot reach postgresql://ai:s3cret@db:5436"))
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    await _run_until(
+        _triage_consumer(fake, store, state, pacing=pacing), lambda: len(pacing.waits) >= 1
+    )
+
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    (failure, *_) = [line for line in lines if line["event"] == "triage_consumer_error"]
+    assert failure["error"] == "OSError"
+    assert failure["error_message"] == "cannot reach postgresql://ai:[REDACTED]@db:5436"
+    assert "s3cret" not in stream.getvalue()

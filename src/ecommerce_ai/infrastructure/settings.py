@@ -3,11 +3,12 @@
 Every field maps to the upper-case environment variable of the same name (``PORT``,
 ``DATABASE_URL``...). Defaults point at the shared ``ecommerce-infra`` stack on localhost and the
 platform APIs behind the gateway. No default holds a secret: credentials come from the
-environment only (constitution II).
+environment only (constitution II), or from a git-ignored ``.env`` file in the working directory,
+which is read when present; real environment variables always win over it.
 """
 
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Final, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -38,10 +39,24 @@ def _require_http_url(value: str) -> str:
     return value.rstrip("/")
 
 
+ENV_FILE: Final = ".env"
+"""Optional file of ``NAME=value`` lines, relative to the working directory."""
+
+DATABASE_SCHEMES: Final = frozenset({"postgresql", "postgres", "postgresql+asyncpg"})
+"""Accepted ``DATABASE_URL`` schemes; the engine always connects with asyncpg."""
+
+
 class Settings(BaseSettings):
     """Settings for the ecommerce-ai service."""
 
-    model_config = SettingsConfigDict(frozen=True, extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="ignore",
+        case_sensitive=False,
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True,  # a rejected DATABASE_URL must not echo its password
+    )
 
     host: str = Field(
         default="127.0.0.1",
@@ -180,8 +195,9 @@ class Settings(BaseSettings):
     @classmethod
     def _check_database_url(cls, value: SecretStr) -> SecretStr:
         parts = urlsplit(value.get_secret_value())
-        if parts.scheme not in {"postgresql", "postgres"} or not parts.hostname:
-            raise ValueError("must be a postgresql:// URL with a host")
+        if parts.scheme not in DATABASE_SCHEMES or not parts.hostname:
+            # Never echo the value: it may hold a password.
+            raise ValueError("must be a postgresql:// (or postgresql+asyncpg://) URL with a host")
         return value
 
     @field_validator("kafka_brokers")

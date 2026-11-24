@@ -82,7 +82,9 @@ The Kafka offset is committed only after the save. Transient database errors are
 and reconnects with bounded backoff (`KAFKA_RECONNECT_BACKOFF_*`), so the event is delivered again.
 On shutdown it gets `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS` to stop. Each message logs one
 `triage_message` line (topic, partition, offset, `event_id`, `order_id`, `outcome`), never the
-payload, `customerId` or reason.
+payload, `customerId` or reason. Failures log `error` (the root cause's class, e.g.
+`InvalidPasswordError` rather than SQLAlchemy's generic `DBAPIError`) and a sanitized
+`error_message` (no password, no query argument values); `/ready` shows only the class.
 
 The schema is created by Alembic migrations shipped in the package:
 `uv run python -m ecommerce_ai migrate` (`upgrade head` on `DATABASE_URL`). The image's entrypoint
@@ -111,8 +113,8 @@ replaced with `[REDACTED]`, and bearer/basic credentials, JWTs, passwords in URL
 ```sh
 uv sync
 cp .env.example .env              # optional; set DATABASE_URL credentials here, never in git
-uv run --env-file .env python -m ecommerce_ai migrate   # create/upgrade the triage tables
-uv run --env-file .env python -m ecommerce_ai      # or: uv run python -m ecommerce_ai
+uv run python -m ecommerce_ai migrate   # create/upgrade the triage tables (no-op at head)
+uv run python -m ecommerce_ai           # both read ./.env when it exists
 curl localhost:8002/health
 curl localhost:8002/ready
 ```
@@ -131,8 +133,10 @@ TOKEN=<access token> uv run python scripts/mcp_smoke.py [ORDER_ID]
 
 ### Configuration
 
-All settings come from environment variables (no `.env` file is read implicitly). An invalid value
-stops the service at startup with an error naming the variable.
+All settings come from environment variables and, when present, from a `.env` file in the working
+directory (git-ignored; real environment variables win over it). An invalid value stops the
+service at startup with an error naming the variable, never echoing its value. `DATABASE_URL` may
+use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL sees your OS user.
 
 | Variable | Default | Meaning |
 |---|---|---|

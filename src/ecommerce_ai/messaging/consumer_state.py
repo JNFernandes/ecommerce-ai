@@ -1,10 +1,13 @@
 """Live state of the triage consumer, reported by ``GET /ready`` (research 13).
 
-``last_error`` holds an exception class name only, never its message, so no connection detail or
+``last_error`` holds the class name of the root cause only (``InvalidPasswordError``, not
+SQLAlchemy's generic ``DBAPIError``), never its message, so no connection detail or
 secret can leak through the readiness endpoint.
 """
 
 from dataclasses import dataclass
+
+from ecommerce_ai.infrastructure.errors import error_name
 
 
 @dataclass(slots=True)
@@ -24,7 +27,7 @@ class ConsumerState:
         """The consumer lost its connection or stopped on ``error``."""
         self.connected = False
         self.caught_up = False
-        self.last_error = type(error).__name__
+        self.last_error = error_name(error)
 
     def mark_stopped(self) -> None:
         """The consumer stopped on request."""

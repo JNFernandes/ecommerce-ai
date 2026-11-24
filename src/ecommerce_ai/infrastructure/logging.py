@@ -39,7 +39,8 @@ _VALUE_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
 )
 
 
-def _redact_text(text: str) -> str:
+def redact_text(text: str) -> str:
+    """Scrub credentials (bearer/basic values, JWTs, URL passwords, `password=...`) from text."""
     for pattern, replacement in _VALUE_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
@@ -54,7 +55,7 @@ def _redact_mapping[K](mapping: Mapping[K, object]) -> dict[K, object]:
 
 def _redact(value: object) -> object:
     if isinstance(value, str):
-        return _redact_text(value)
+        return redact_text(value)
     if isinstance(value, Mapping):
         return _redact_mapping(value)
     if isinstance(value, list | tuple | set | frozenset):

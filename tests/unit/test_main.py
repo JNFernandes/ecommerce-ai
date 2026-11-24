@@ -153,7 +153,7 @@ def test_should_run_the_migrations_when_the_migrate_command_is_given(
     assert len(received) == 1
 
 
-def test_should_exit_with_an_error_without_details_when_migrations_fail(
+def test_should_log_the_sanitized_cause_when_migrations_fail(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     async def failing_run_migrations(settings: Settings) -> None:
@@ -163,7 +163,9 @@ def test_should_exit_with_an_error_without_details_when_migrations_fail(
 
     assert main.cli(["migrate"]) == 1
     output = capsys.readouterr().out
-    assert "ConnectionRefusedError" in output
+    (line,) = [json.loads(text) for text in output.splitlines()]
+    assert line["error"] == "ConnectionRefusedError"
+    assert line["error_message"] == "postgresql://ai:[REDACTED]@db:5436 refused"
     assert "s3cret" not in output
 
 
