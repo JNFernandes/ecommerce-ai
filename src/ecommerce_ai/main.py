@@ -1,7 +1,8 @@
 """Composition root: wires settings, logging, probes, the MCP tools and the API into one app.
 
 Run with ``python -m ecommerce_ai`` (reads ``HOST`` and ``PORT``) or
-``uvicorn ecommerce_ai.main:create_app --factory``. Nothing here connects to Kafka, PostgreSQL,
+``uvicorn ecommerce_ai.main:create_app --factory``; ``python -m ecommerce_ai migrate`` applies the
+database migrations instead. Nothing here connects to Kafka, PostgreSQL,
 Identity, Orders or the LLM provider, so the service starts without any of them (constitution
 IV, FR-011): each upstream (Orders, which JWKS shares, Inventory, Notifications) has its own HTTP
 client, so a slow service cannot exhaust another's connection pool; clients connect only on first
@@ -9,16 +10,20 @@ use and are all closed when the app shuts down. An invalid tool registry makes `
 raise ``ToolRegistryError``.
 """
 
+import argparse
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
+import structlog
 import uvicorn
 from fastapi import FastAPI
 
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.mcp import mcp_endpoint
 from ecommerce_ai.infrastructure.auth import TokenVerifier
+from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
 from ecommerce_ai.infrastructure.logging import configure_logging
@@ -132,3 +137,35 @@ def run() -> None:
         access_log=False,
         server_header=False,
     )
+
+
+def migrate() -> int:
+    """Apply the database migrations; return the process exit code (0 on success)."""
+    settings = Settings()
+    configure_logging(settings.log_level)
+    logger = structlog.get_logger(__name__)
+    try:
+        asyncio.run(run_migrations(settings))
+    except Exception as exc:
+        # The class name only: driver messages can echo connection details.
+        logger.error("migrations_failed", error=type(exc).__name__)
+        return 1
+    logger.info("migrations_applied")
+    return 0
+
+
+def cli(argv: Sequence[str] | None = None) -> int:
+    """Entry point of ``python -m ecommerce_ai [migrate]``; return the process exit code."""
+    parser = argparse.ArgumentParser(prog="python -m ecommerce_ai")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["serve", "migrate"],
+        default="serve",
+        help="`serve` (default) runs the HTTP service; `migrate` upgrades the database schema.",
+    )
+    args = parser.parse_args(argv)
+    if args.command == "migrate":
+        return migrate()
+    run()
+    return 0

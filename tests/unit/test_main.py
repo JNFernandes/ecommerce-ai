@@ -120,3 +120,48 @@ def test_should_pass_each_upstream_its_own_client_when_building_tools(
     ((_orders, inventory, notifications),) = seen
     assert inventory.url_for(["products"]) == "http://localhost:8090/api/inventory/products"
     assert notifications.url_for(["notifications"]) == "http://gateway:8090/api/notifications"
+
+
+def test_should_serve_the_app_when_no_command_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(main, "run", lambda: calls.append("run"))
+
+    assert main.cli([]) == 0
+    assert main.cli(["serve"]) == 0
+    assert calls == ["run", "run"]
+
+
+def test_should_run_the_migrations_when_the_migrate_command_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[Settings] = []
+
+    async def fake_run_migrations(settings: Settings) -> None:
+        received.append(settings)
+
+    monkeypatch.setattr(main, "run_migrations", fake_run_migrations)
+    monkeypatch.setattr(main, "run", lambda: pytest.fail("migrate must not serve the app"))
+
+    assert main.cli(["migrate"]) == 0
+    assert len(received) == 1
+
+
+def test_should_exit_with_an_error_without_details_when_migrations_fail(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def failing_run_migrations(settings: Settings) -> None:
+        raise ConnectionRefusedError("postgresql://ai:s3cret@db:5436 refused")
+
+    monkeypatch.setattr(main, "run_migrations", failing_run_migrations)
+
+    assert main.cli(["migrate"]) == 1
+    output = capsys.readouterr().out
+    assert "ConnectionRefusedError" in output
+    assert "s3cret" not in output
+
+
+def test_should_reject_an_unknown_command() -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main.cli(["drop-database"])
+
+    assert exit_info.value.code == 2
