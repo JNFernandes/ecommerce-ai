@@ -54,12 +54,15 @@ def state() -> ConsumerState:
 
 
 def _triage_consumer(
-    fake: FakeConsumer, store: InMemoryTriageCaseStore, state: ConsumerState
+    fake: FakeConsumer,
+    store: InMemoryTriageCaseStore,
+    state: ConsumerState,
+    dead_letters: InMemoryDeadLetterStore | None = None,
 ) -> TriageConsumer:
     return TriageConsumer(
         lambda: fake,
         TriageIntakeService(store),
-        InMemoryDeadLetterStore(),
+        dead_letters or InMemoryDeadLetterStore(),
         state,
         poll_timeout_ms=5,
     )
@@ -190,3 +193,75 @@ async def test_should_commit_and_log_a_duplicate_when_an_event_is_redelivered(
         if json.loads(line)["event"] == "triage_message"
     ]
     assert outcomes == ["processed", "duplicate"]
+
+
+NOT_UTF8 = bytes([0xFF]) + b"not json"
+
+
+async def test_should_dead_letter_a_malformed_message_and_still_process_the_next_one(
+    store: InMemoryTriageCaseStore, state: ConsumerState
+) -> None:
+    dead_letters = InMemoryDeadLetterStore()
+    order_id = uuid4()
+    fake = FakeConsumer(
+        [
+            make_record(PAYMENT_FAILED_TOPIC, NOT_UTF8, key=b"k-1", partition=3, offset=9),
+            make_record(
+                PAYMENT_FAILED_TOPIC, payment_failed_payload(order_id), partition=3, offset=10
+            ),
+        ]
+    )
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    await _run_until(
+        _triage_consumer(fake, store, state, dead_letters), lambda: len(fake.commits) == 2
+    )
+
+    (row,) = dead_letters.rows
+    assert (row.topic, row.partition, row.offset, row.key) == (PAYMENT_FAILED_TOPIC, 3, 9, b"k-1")
+    assert row.raw == NOT_UTF8
+    assert row.reason == "payload is not valid UTF-8"
+    assert [case.order_id for case in store.cases] == [order_id]
+    assert fake.commits == [
+        {TopicPartition(PAYMENT_FAILED_TOPIC, 3): 10},
+        {TopicPartition(PAYMENT_FAILED_TOPIC, 3): 11},
+    ]
+    (dead_line, processed_line) = [
+        line
+        for line in map(json.loads, stream.getvalue().splitlines())
+        if line["event"] == "triage_message"
+    ]
+    assert dead_line["outcome"] == "dead_lettered"
+    assert "event_id" not in dead_line
+    assert "order_id" not in dead_line
+    assert processed_line["outcome"] == "processed"
+
+
+async def test_should_not_retry_validation_when_a_message_is_dead_lettered(
+    store: InMemoryTriageCaseStore, state: ConsumerState
+) -> None:
+    dead_letters = InMemoryDeadLetterStore()
+    payload = {**payment_failed_payload(uuid4()), "version": 2}
+    fake = FakeConsumer([make_record(PAYMENT_FAILED_TOPIC, payload)])
+
+    await _run_until(
+        _triage_consumer(fake, store, state, dead_letters), lambda: len(fake.commits) == 1
+    )
+
+    assert len(dead_letters.rows) == 1
+    assert "version: literal_error" in dead_letters.rows[0].reason
+    assert store.commits == 0
+
+
+async def test_should_keep_an_empty_value_as_empty_bytes_when_dead_lettering(
+    store: InMemoryTriageCaseStore, state: ConsumerState
+) -> None:
+    dead_letters = InMemoryDeadLetterStore()
+    fake = FakeConsumer([make_record(STOCK_REJECTED_TOPIC, None)])
+
+    await _run_until(
+        _triage_consumer(fake, store, state, dead_letters), lambda: len(fake.commits) == 1
+    )
+
+    assert (dead_letters.rows[0].raw, dead_letters.rows[0].key) == (b"", None)

@@ -65,7 +65,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 - [X] T025 [P] [US4] Failure-path tests in `tests/unit/test_decoding.py`: non-UTF-8, invalid JSON, non-object JSON, missing field, wrong type, `version` 2, non-UUID `orderId`/`aggregateId`, unknown topic → `DecodeFailure` with a reason ≤ 500 chars and no payload values; extra fields still decode
 - [X] T026 [US4] Complete failure paths in `src/ecommerce_ai/messaging/decoding.py` (reason built from Pydantic error locations/types only)
 - [X] T027 [US4] Implement `src/ecommerce_ai/infrastructure/db/dead_letter_repository.py` (`DeadLetterStore`: raw bytes, key as-is, reason, `created_at` UTC); tests in `tests/integration/test_dead_letters.py`
-- [ ] T028 [US4] Dead-letter path in `triage_consumer.py` (no retries of validation, commit after DL write, log `dead_lettered` with no `event_id`/`order_id` when unknown) and wire the repository in `main.py`; tests in `tests/unit/test_triage_consumer.py` (malformed then valid; SC-004: no re-processing of the poison message) and `tests/integration/test_triage_flow.py`
+- [X] T028 [US4] Dead-letter path in `triage_consumer.py` (no retries of validation, commit after DL write, log `dead_lettered` with no `event_id`/`order_id` when unknown) and wire the repository in `main.py`; tests in `tests/unit/test_triage_consumer.py` (malformed then valid; SC-004: no re-processing of the poison message) and `tests/integration/test_triage_flow.py`
 
 ## Phase 7: US5 — Survive outages and restarts (P2)
 

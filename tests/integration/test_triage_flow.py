@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ecommerce_ai.agents.triage_intake.model import IntakeOutcome, TriageEventInput
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
-from ecommerce_ai.infrastructure.db.tables import triage_cases, triage_evidence
+from ecommerce_ai.infrastructure.db.tables import (
+    inbound_dead_letters,
+    triage_cases,
+    triage_evidence,
+)
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.messaging.consumer_state import ConsumerState
 from ecommerce_ai.messaging.contracts import (
@@ -242,3 +246,24 @@ async def test_should_store_one_evidence_when_the_same_event_is_saved_concurrent
         IntakeOutcome.PROCESSED,
     ]
     assert await _cases(db_engine) == {order_id: ("PAYMENT_FAILED", "PENDING_TRIAGE", 1)}
+
+
+async def test_should_store_a_dead_letter_and_a_case_when_a_bad_message_precedes_a_good_one(
+    db_engine: AsyncEngine,
+) -> None:
+    order_id = uuid4()
+    fake = FakeConsumer(
+        [
+            make_record(STOCK_REJECTED_TOPIC, b"\xff\xfe", offset=0),
+            make_record(STOCK_REJECTED_TOPIC, stock_rejected_payload(order_id), offset=1),
+        ]
+    )
+
+    await _consume(db_engine, fake, lambda: len(fake.commits) == 2)
+
+    async with db_engine.connect() as connection:
+        (dead_letter,) = (await connection.execute(select(inbound_dead_letters))).mappings().all()
+    assert dead_letter["raw_payload"] == b"\xff\xfe"
+    assert dead_letter["offset"] == 0
+    assert await _cases(db_engine) == {order_id: ("INSUFFICIENT_STOCK", "PENDING_TRIAGE", 1)}
+    assert fake.committed == {TopicPartition(STOCK_REJECTED_TOPIC, 0): 2}
