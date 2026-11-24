@@ -85,6 +85,13 @@ curl localhost:8002/ready
 
 `python -m ecommerce_ai` serves `ecommerce_ai.main:create_app` on `HOST`:`PORT`.
 
+Smoke-test `/mcp` against the local stack with a customer access token (lists the tools, calls
+`list_my_orders`, and `get_order` when given an order id; `MCP_URL` overrides the default URL):
+
+```sh
+TOKEN=<access token> uv run python scripts/mcp_smoke.py [ORDER_ID]
+```
+
 ### Configuration
 
 All settings come from environment variables (no `.env` file is read implicitly). An invalid value
@@ -189,5 +196,6 @@ src/ecommerce_ai/
 tests/unit/          Unit tests (no network)
 tests/contract/      Tool schema snapshot and Orders queries checked against its vendored schema
 tests/support/       Test tokens/JWKS, Orders stub, MCP JSON-RPC helpers, fake probes
+scripts/             Manual tools: mcp_smoke.py (smoke test of /mcp against the local stack)
 docs/adr/            Architecture Decision Records
 ```
