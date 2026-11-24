@@ -1,15 +1,15 @@
 """Composition root: wires settings, logging, probes, the MCP tools and the API into one app.
 
-Run with ``python -m ecommerce_ai`` (reads ``HOST`` and ``PORT``) or
-``uvicorn ecommerce_ai.main:create_app --factory``; ``python -m ecommerce_ai migrate`` applies the
-database migrations instead. Nothing here connects to Kafka, PostgreSQL,
-Identity, Orders or the LLM provider, so the service starts without any of them (constitution
-IV, FR-011): the triage consumer runs as a background task that connects on its own, and the
-database engine opens its first connection on first use. Each upstream (Orders, which JWKS
-shares, Inventory, Notifications) has its own HTTP client, so a slow service cannot exhaust
-another's connection pool; clients connect only on first use and are all closed when the app
-shuts down, after the background tasks have stopped. With ``TRIAGE_WORKER_ENABLED`` the triage
-worker and the outbox relay run as two more background tasks; both stop (cancelled after
+Run with ``python -m ecommerce_ai`` (reads ``HOST`` and ``PORT``) or ``uvicorn
+ecommerce_ai.main:create_app --factory``; ``python -m ecommerce_ai migrate`` applies the database
+migrations instead. Nothing here connects to Kafka, PostgreSQL, Identity, Orders or the LLM
+provider (its client is built only when ``model_configured``), so the service starts without any of
+them (constitution IV, FR-011): the triage consumer runs as a background task that connects on its
+own, and the database engine opens its first connection on first use. Each upstream (Orders, which
+JWKS shares, Inventory, Notifications) has its own HTTP client, so a slow service cannot exhaust
+another's connection pool; clients connect only on first use and are all closed when the app shuts
+down, after the background tasks have stopped. With ``TRIAGE_WORKER_ENABLED`` the triage worker and
+the outbox relay run as two more background tasks; both stop (cancelled after
 ``CONSUMER_SHUTDOWN_TIMEOUT_SECONDS``) before the database engine is disposed. An invalid tool
 registry makes ``create_app`` raise ``ToolRegistryError``.
 """
@@ -22,12 +22,18 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import httpx
 import structlog
 import uvicorn
+from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
-from ecommerce_ai.agents.triage.ports import SystemClock, TokenBudget, TriageCaseQueue
+from ecommerce_ai.agents.triage.ports import (
+    SystemClock,
+    TokenBudget,
+    TriageCaseQueue,
+    TriageModel,
+)
 from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
@@ -44,6 +50,7 @@ from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
+from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.rest_client import RestClient
@@ -144,15 +151,19 @@ async def stop_consumer(task: asyncio.Task[None], stop: asyncio.Event, timeout: 
 
 
 def build_triage_worker(
-    settings: Settings, queue: TriageCaseQueue, budget: TokenBudget, wake: asyncio.Event
+    settings: Settings,
+    queue: TriageCaseQueue,
+    budget: TokenBudget,
+    model: TriageModel | None,
+    wake: asyncio.Event,
 ) -> TriageWorker:
     """Build the triage worker, which sets ``wake`` after each saved result.
 
-    No model is wired yet, so every case gets its cause's template.
+    ``model=None`` (no key or model id) gives every case its cause's template.
     """
     clock = SystemClock()
     graph = build_triage_graph(
-        model=None,
+        model=model,
         budget=budget,
         gatekeeper=check,
         prompt=load_prompt("triage", "v1"),
@@ -230,12 +241,17 @@ def create_app(
         consumer_state,
         settings,
     )
-    # Building the worker and the relay opens no connection either.
+    # Building the worker, the model client and the relay opens no connection either.
+    model: TriageModel | None = None
+    llm_client: AsyncAnthropic | None = None
+    if settings.model_configured:
+        model, llm_client = build_anthropic_model(settings)
     wake = asyncio.Event()
     worker = build_triage_worker(
         settings,
         triage_queue or TriageQueueRepository(engine, to_outbox_message),
         TokenBudgetRepository(engine, settings.daily_token_budget),
+        model,
         wake,
     )
     relay = OutboxRelay(
@@ -251,6 +267,8 @@ def create_app(
             for client in (orders_http, inventory_http, notifications_http):
                 stack.push_async_callback(client.aclose)
             stack.push_async_callback(engine.dispose)
+            if llm_client is not None:
+                stack.push_async_callback(llm_client.close)
             if settings.triage_consumer_enabled:
                 stop = asyncio.Event()
                 task = asyncio.create_task(triage_consumer.run(stop), name="triage-consumer")

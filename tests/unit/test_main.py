@@ -11,10 +11,16 @@ import httpx
 import pytest
 import respx
 import uvicorn
+from anthropic import AsyncAnthropic
+from pydantic import SecretStr
 
 from ecommerce_ai import main
 from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
 from ecommerce_ai.infrastructure.health import DependencyStatus
+from ecommerce_ai.infrastructure.llm.anthropic_model import (
+    AnthropicTriageModel,
+    build_anthropic_model,
+)
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.outbox import OutboxMessage
@@ -355,3 +361,29 @@ async def test_should_log_the_relay_failure_class_when_the_producer_cannot_start
 
 async def test_should_build_aiokafka_producers() -> None:
     assert isinstance(main.kafka_producer_factory(Settings())(), AIOKafkaProducerAdapter)
+
+
+async def test_should_build_the_llm_client_only_when_configured_and_close_it_on_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[AsyncAnthropic] = []
+    real_build = build_anthropic_model
+
+    def recording_build(settings: Settings) -> tuple[AnthropicTriageModel, AsyncAnthropic]:
+        model, client = real_build(settings)
+        built.append(client)
+        return model, client
+
+    monkeypatch.setattr(main, "build_anthropic_model", recording_build)
+
+    async with serve_app(create_app(probes=[])) as client:
+        assert (await client.get("/health")).status_code == 200
+    assert built == []
+
+    configured = Settings(anthropic_api_key=SecretStr("sk-test"), anthropic_model="claude-test")
+    async with serve_app(create_app(configured, probes=[])) as client:
+        assert (await client.get("/health")).status_code == 200
+        [llm] = built
+        assert not llm.is_closed()
+
+    assert llm.is_closed()
