@@ -39,7 +39,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 - [X] T016 [US1] Implement `src/ecommerce_ai/messaging/decoding.py::decode(record) -> TriageEventInput | DecodeFailure` (valid path: UTF-8 → JSON → `TOPIC_MODELS[topic]` → `TriageEventInput` with `model_dump(mode="json")` payload); valid-path tests in `tests/unit/test_decoding.py`
 - [X] T017 [US1] Implement `src/ecommerce_ai/messaging/triage_consumer.py::TriageConsumer(consumer_factory, intake, dead_letters, state, settings, clock, sleep).run(stop_event)` processing loop: `getmany` → decode → `intake.record` → `commit({tp: offset+1})` after save → one log line (`event="triage_message"`, topic, partition, offset, event_id, order_id, outcome); tests in `tests/unit/test_triage_consumer.py` (3 topics → 3 cases, commit after save, commit not called when record raises, log fields)
 - [X] T018 [US1] Wire in `src/ecommerce_ai/main.py`: engine, `TriageRepository`, `TriageIntakeService`, `ConsumerState`, consumer task started in `resources()` when `triage_consumer_enabled`, engine disposed on exit; update `tests/unit/test_main.py` (disabled flag → no task; enabled with a fake factory → task started and stopped)
-- [ ] T019 [US1] `tests/integration/test_triage_flow.py`: `FakeConsumer` + real DB, one event per topic for three orders → three cases (acceptance US1 1–4)
+- [X] T019 [US1] `tests/integration/test_triage_flow.py`: `FakeConsumer` + real DB, one event per topic for three orders → three cases (acceptance US1 1–4)
 
 **Checkpoint**: MVP — every failure event yields a case.
 
