@@ -1,5 +1,8 @@
 """The composition root starts without its dependencies and serves the configured port."""
 
+import asyncio
+import io
+import json
 import time
 from collections.abc import Sequence
 
@@ -10,12 +13,16 @@ import uvicorn
 
 from ecommerce_ai import main
 from ecommerce_ai.infrastructure.health import DependencyStatus
+from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app, run
+from ecommerce_ai.messaging.kafka import AIOKafkaConsumerAdapter, ConsumedRecord, TopicPartition
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolDefinition, ToolRegistryError
+from tests.support.kafka import FakeConsumer
 from tests.support.mcp import serve_app
+from tests.support.polling import wait_until
 from tests.support.probes import FakeProbe
 
 DATABASE_DOWN = FakeProbe("database", critical=True, status=DependencyStatus.DOWN)
@@ -165,3 +172,77 @@ def test_should_reject_an_unknown_command() -> None:
         main.cli(["drop-database"])
 
     assert exit_info.value.code == 2
+
+
+class StuckConsumer(FakeConsumer):
+    """A consumer whose poll never returns, so only cancellation can stop it."""
+
+    async def getmany(self, timeout_ms: int) -> dict[TopicPartition, list[ConsumedRecord]]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _enabled(shutdown_timeout: float = 10.0) -> Settings:
+    return Settings(
+        triage_consumer_enabled=True, consumer_shutdown_timeout_seconds=shutdown_timeout
+    )
+
+
+def _log_lines(stream: io.StringIO) -> list[dict[str, object]]:
+    return [json.loads(line) for line in stream.getvalue().splitlines()]
+
+
+async def test_should_not_build_a_consumer_when_the_consumer_is_disabled() -> None:
+    built: list[FakeConsumer] = []
+
+    def factory() -> FakeConsumer:
+        built.append(FakeConsumer())
+        return built[-1]
+
+    async with serve_app(create_app(probes=[], consumer_factory=factory)) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    assert built == []
+
+
+async def test_should_start_the_consumer_with_the_app_and_stop_it_on_shutdown() -> None:
+    fake = FakeConsumer()
+
+    async with serve_app(create_app(_enabled(), probes=[], consumer_factory=lambda: fake)):
+        await wait_until(lambda: fake.started)
+        assert not fake.stopped
+
+    assert fake.stopped
+
+
+async def test_should_cancel_the_consumer_when_it_does_not_stop_within_the_timeout() -> None:
+    fake = StuckConsumer()
+    app = create_app(_enabled(shutdown_timeout=0.05), probes=[], consumer_factory=lambda: fake)
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    async with serve_app(app):
+        await wait_until(lambda: fake.started)
+
+    assert fake.stopped
+    assert "triage_consumer_cancelled" in [line["event"] for line in _log_lines(stream)]
+
+
+async def test_should_log_the_error_class_only_when_the_consumer_failed() -> None:
+    fake = FakeConsumer(start_error=ConnectionRefusedError("kafka://ai:s3cret@broker refused"))
+    app = create_app(_enabled(), probes=[], consumer_factory=lambda: fake)
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    async with serve_app(app):
+        await wait_until(lambda: fake.stopped)
+
+    (failure,) = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_failed"]
+    assert failure["error"] == "ConnectionRefusedError"
+    assert "s3cret" not in stream.getvalue()
+
+
+async def test_should_build_aiokafka_consumers_of_the_three_failure_topics() -> None:
+    consumer = main.kafka_consumer_factory(Settings())()
+
+    assert isinstance(consumer, AIOKafkaConsumerAdapter)

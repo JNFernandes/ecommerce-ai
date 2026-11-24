@@ -4,9 +4,11 @@ Run with ``python -m ecommerce_ai`` (reads ``HOST`` and ``PORT``) or
 ``uvicorn ecommerce_ai.main:create_app --factory``; ``python -m ecommerce_ai migrate`` applies the
 database migrations instead. Nothing here connects to Kafka, PostgreSQL,
 Identity, Orders or the LLM provider, so the service starts without any of them (constitution
-IV, FR-011): each upstream (Orders, which JWKS shares, Inventory, Notifications) has its own HTTP
-client, so a slow service cannot exhaust another's connection pool; clients connect only on first
-use and are all closed when the app shuts down. An invalid tool registry makes ``create_app``
+IV, FR-011): the triage consumer runs as a background task that connects on its own, and the
+database engine opens its first connection on first use. Each upstream (Orders, which JWKS
+shares, Inventory, Notifications) has its own HTTP client, so a slow service cannot exhaust
+another's connection pool; clients connect only on first use and are all closed when the app
+shuts down, after the consumer has stopped. An invalid tool registry makes ``create_app``
 raise ``ToolRegistryError``.
 """
 
@@ -20,10 +22,14 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 
+from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.mcp import mcp_endpoint
 from ecommerce_ai.infrastructure.auth import TokenVerifier
+from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
+from ecommerce_ai.infrastructure.db.engine import build_engine
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
+from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
 from ecommerce_ai.infrastructure.logging import configure_logging
@@ -31,11 +37,17 @@ from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport
+from ecommerce_ai.messaging.consumer_state import ConsumerState
+from ecommerce_ai.messaging.contracts import TOPIC_MODELS
+from ecommerce_ai.messaging.kafka import AIOKafkaConsumerAdapter, ConsumerFactory
+from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
 from ecommerce_ai.tools.notifications import list_my_notifications_tool
 from ecommerce_ai.tools.orders import get_order_tool, list_my_orders_tool
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 from ecommerce_ai.tools.server import build_mcp_app, build_mcp_server
+
+logger = structlog.get_logger(__name__)
 
 
 def build_tool_definitions(
@@ -76,10 +88,32 @@ def _rest_client(
     return RestClient(transport, base_url)
 
 
+def kafka_consumer_factory(settings: Settings) -> ConsumerFactory:
+    """Return a factory of aiokafka consumers of the three failure topics."""
+    return lambda: AIOKafkaConsumerAdapter(settings, tuple(TOPIC_MODELS))
+
+
+async def stop_consumer(task: asyncio.Task[None], stop: asyncio.Event, timeout: float) -> None:
+    """Ask the consumer to stop, cancel it after ``timeout`` seconds, and log how it ended."""
+    stop.set()
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        task.cancel()
+        await asyncio.wait({task})
+        logger.warning("triage_consumer_cancelled", timeout_seconds=timeout)
+        return
+    error = task.exception()
+    if error is not None:
+        # The class name only: driver messages can echo connection details.
+        logger.error("triage_consumer_failed", error=type(error).__name__)
+
+
 def create_app(
-    settings: Settings | None = None, probes: Sequence[DependencyProbe] | None = None
+    settings: Settings | None = None,
+    probes: Sequence[DependencyProbe] | None = None,
+    consumer_factory: ConsumerFactory | None = None,
 ) -> FastAPI:
-    """Build the application; ``probes`` replaces the real dependency probes in tests."""
+    """Build the application; ``probes`` and ``consumer_factory`` replace the real ones in tests."""
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
     checker = ReadinessChecker(build_probes(settings) if probes is None else probes)
@@ -115,11 +149,29 @@ def create_app(
     )
     mcp = mcp_endpoint(build_mcp_app(build_mcp_server(registry)), verifier)
 
+    # Building the engine opens no connection; the consumer connects in its own task.
+    engine = build_engine(settings)
+    consumer_state = ConsumerState()
+    triage_consumer = TriageConsumer(
+        consumer_factory or kafka_consumer_factory(settings),
+        TriageIntakeService(TriageRepository(engine)),
+        DeadLetterRepository(engine),
+        consumer_state,
+    )
+
     @asynccontextmanager
     async def resources() -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
             for client in (orders_http, inventory_http, notifications_http):
                 stack.push_async_callback(client.aclose)
+            stack.push_async_callback(engine.dispose)
+            if settings.triage_consumer_enabled:
+                stop = asyncio.Event()
+                task = asyncio.create_task(triage_consumer.run(stop), name="triage-consumer")
+                # Pushed last, so it runs first: the consumer stops before the engine closes.
+                stack.push_async_callback(
+                    stop_consumer, task, stop, settings.consumer_shutdown_timeout_seconds
+                )
             yield
 
     return build_api(settings.cors_allowed_origins, checker, mcp=mcp, resources=resources)

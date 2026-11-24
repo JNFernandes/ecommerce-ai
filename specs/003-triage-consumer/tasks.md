@@ -38,7 +38,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 - [X] T015 [US1] Implement `src/ecommerce_ai/infrastructure/db/triage_repository.py` (`INSERT … ON CONFLICT (order_id) DO NOTHING` → `SELECT … FOR UPDATE` → `INSERT evidence … ON CONFLICT (event_id) DO NOTHING RETURNING id` → update cause/updated_at; research 9); tests in `tests/integration/test_triage_repository.py`
 - [X] T016 [US1] Implement `src/ecommerce_ai/messaging/decoding.py::decode(record) -> TriageEventInput | DecodeFailure` (valid path: UTF-8 → JSON → `TOPIC_MODELS[topic]` → `TriageEventInput` with `model_dump(mode="json")` payload); valid-path tests in `tests/unit/test_decoding.py`
 - [X] T017 [US1] Implement `src/ecommerce_ai/messaging/triage_consumer.py::TriageConsumer(consumer_factory, intake, dead_letters, state, settings, clock, sleep).run(stop_event)` processing loop: `getmany` → decode → `intake.record` → `commit({tp: offset+1})` after save → one log line (`event="triage_message"`, topic, partition, offset, event_id, order_id, outcome); tests in `tests/unit/test_triage_consumer.py` (3 topics → 3 cases, commit after save, commit not called when record raises, log fields)
-- [ ] T018 [US1] Wire in `src/ecommerce_ai/main.py`: engine, `TriageRepository`, `TriageIntakeService`, `ConsumerState`, consumer task started in `resources()` when `triage_consumer_enabled`, engine disposed on exit; update `tests/unit/test_main.py` (disabled flag → no task; enabled with a fake factory → task started and stopped)
+- [X] T018 [US1] Wire in `src/ecommerce_ai/main.py`: engine, `TriageRepository`, `TriageIntakeService`, `ConsumerState`, consumer task started in `resources()` when `triage_consumer_enabled`, engine disposed on exit; update `tests/unit/test_main.py` (disabled flag → no task; enabled with a fake factory → task started and stopped)
 - [ ] T019 [US1] `tests/integration/test_triage_flow.py`: `FakeConsumer` + real DB, one event per topic for three orders → three cases (acceptance US1 1–4)
 
 **Checkpoint**: MVP — every failure event yields a case.
@@ -64,7 +64,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 
 - [ ] T025 [P] [US4] Failure-path tests in `tests/unit/test_decoding.py`: non-UTF-8, invalid JSON, non-object JSON, missing field, wrong type, `version` 2, non-UUID `orderId`/`aggregateId`, unknown topic → `DecodeFailure` with a reason ≤ 500 chars and no payload values; extra fields still decode
 - [ ] T026 [US4] Complete failure paths in `src/ecommerce_ai/messaging/decoding.py` (reason built from Pydantic error locations/types only)
-- [ ] T027 [US4] Implement `src/ecommerce_ai/infrastructure/db/dead_letter_repository.py` (`DeadLetterStore`: raw bytes, key as-is, reason, `created_at` UTC); tests in `tests/integration/test_dead_letters.py`
+- [X] T027 [US4] Implement `src/ecommerce_ai/infrastructure/db/dead_letter_repository.py` (`DeadLetterStore`: raw bytes, key as-is, reason, `created_at` UTC); tests in `tests/integration/test_dead_letters.py`
 - [ ] T028 [US4] Dead-letter path in `triage_consumer.py` (no retries of validation, commit after DL write, log `dead_lettered` with no `event_id`/`order_id` when unknown) and wire the repository in `main.py`; tests in `tests/unit/test_triage_consumer.py` (malformed then valid; SC-004: no re-processing of the poison message) and `tests/integration/test_triage_flow.py`
 
 ## Phase 7: US5 — Survive outages and restarts (P2)

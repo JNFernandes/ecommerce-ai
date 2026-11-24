@@ -133,7 +133,10 @@ def test_should_reject_an_invalid_mcp_tool_setting(
         Settings()
 
 
-def test_should_use_triage_consumer_defaults_when_the_environment_is_empty() -> None:
+def test_should_use_triage_consumer_defaults_when_the_environment_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRIAGE_CONSUMER_ENABLED")  # set by tests/conftest.py
     settings = Settings()
 
     assert settings.triage_consumer_enabled is True
