@@ -7,10 +7,10 @@ environment only (constitution II).
 """
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -121,6 +121,34 @@ class Settings(BaseSettings):
         description="Comma-separated Kafka brokers (`host:port`).",
     )
 
+    triage_consumer_enabled: bool = Field(
+        default=True, description="Run the Kafka triage consumer as a background task."
+    )
+    kafka_consumer_group: str = Field(
+        default="ai-triage", min_length=1, description="Consumer group of the triage consumer."
+    )
+    kafka_reconnect_backoff_base_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="First Kafka reconnect delay; doubles per attempt."
+    )
+    kafka_reconnect_backoff_max_seconds: float = Field(
+        default=30.0, gt=0, le=600, description="Upper bound of one Kafka reconnect delay."
+    )
+    db_retry_max_attempts: int = Field(
+        default=5, ge=1, le=20, description="Attempts of one database save, the first included."
+    )
+    db_retry_backoff_base_seconds: float = Field(
+        default=0.5, gt=0, le=60, description="First database retry delay; doubles per retry."
+    )
+    db_retry_backoff_max_seconds: float = Field(
+        default=10.0, gt=0, le=600, description="Upper bound of one database retry delay."
+    )
+    database_timeout_seconds: float = Field(
+        default=5.0, gt=0, le=60, description="Connect and statement timeout of PostgreSQL."
+    )
+    consumer_shutdown_timeout_seconds: float = Field(
+        default=10.0, gt=0, le=120, description="Time the consumer gets to stop on shutdown."
+    )
+
     anthropic_model: str | None = Field(
         default=None,
         description="LLM model id. Unset means every LLM-backed step uses its fallback.",
@@ -171,3 +199,23 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _check_backoff_bounds(self) -> Self:
+        """Each backoff base must not exceed its maximum."""
+        pairs = (
+            (
+                "kafka_reconnect_backoff",
+                self.kafka_reconnect_backoff_base_seconds,
+                self.kafka_reconnect_backoff_max_seconds,
+            ),
+            (
+                "db_retry_backoff",
+                self.db_retry_backoff_base_seconds,
+                self.db_retry_backoff_max_seconds,
+            ),
+        )
+        for prefix, base, maximum in pairs:
+            if base > maximum:
+                raise ValueError(f"{prefix}_base_seconds must not exceed {prefix}_max_seconds")
+        return self

@@ -131,3 +131,68 @@ def test_should_reject_an_invalid_mcp_tool_setting(
 
     with pytest.raises(ValidationError, match=variable.lower()):
         Settings()
+
+
+def test_should_use_triage_consumer_defaults_when_the_environment_is_empty() -> None:
+    settings = Settings()
+
+    assert settings.triage_consumer_enabled is True
+    assert settings.kafka_consumer_group == "ai-triage"
+    assert settings.kafka_reconnect_backoff_base_seconds == 1.0
+    assert settings.kafka_reconnect_backoff_max_seconds == 30.0
+    assert settings.db_retry_max_attempts == 5
+    assert settings.db_retry_backoff_base_seconds == 0.5
+    assert settings.db_retry_backoff_max_seconds == 10.0
+    assert settings.database_timeout_seconds == 5.0
+    assert settings.consumer_shutdown_timeout_seconds == 10.0
+
+
+def test_should_read_triage_consumer_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_CONSUMER_ENABLED", "false")
+    monkeypatch.setenv("KAFKA_CONSUMER_GROUP", "ai-triage-test")
+    monkeypatch.setenv("DB_RETRY_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("DB_RETRY_BACKOFF_BASE_SECONDS", "2")
+    monkeypatch.setenv("DB_RETRY_BACKOFF_MAX_SECONDS", "2")
+
+    settings = Settings()
+
+    assert settings.triage_consumer_enabled is False
+    assert settings.kafka_consumer_group == "ai-triage-test"
+    assert settings.db_retry_max_attempts == 1
+    assert settings.db_retry_backoff_base_seconds == 2.0
+    assert settings.db_retry_backoff_max_seconds == 2.0
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("KAFKA_CONSUMER_GROUP", ""),
+        ("KAFKA_RECONNECT_BACKOFF_BASE_SECONDS", "0"),
+        ("KAFKA_RECONNECT_BACKOFF_MAX_SECONDS", "0"),
+        ("DB_RETRY_MAX_ATTEMPTS", "0"),
+        ("DB_RETRY_BACKOFF_BASE_SECONDS", "0"),
+        ("DB_RETRY_BACKOFF_MAX_SECONDS", "-1"),
+        ("DATABASE_TIMEOUT_SECONDS", "0"),
+        ("CONSUMER_SHUTDOWN_TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_should_reject_an_invalid_triage_consumer_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()
+
+
+@pytest.mark.parametrize("prefix", ["KAFKA_RECONNECT_BACKOFF", "DB_RETRY_BACKOFF"])
+def test_should_reject_a_backoff_base_above_its_maximum_when_both_are_set(
+    monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    monkeypatch.setenv(f"{prefix}_BASE_SECONDS", "5")
+    monkeypatch.setenv(f"{prefix}_MAX_SECONDS", "4")
+
+    with pytest.raises(ValidationError, match=f"{prefix.lower()}_base_seconds must not exceed"):
+        Settings()
