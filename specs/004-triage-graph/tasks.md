@@ -77,8 +77,8 @@ fail. After every task: quiet gate (CLAUDE.md); commit after green.
 
 - [X] T033 [P] [US5] Tests in `tests/unit/test_triage_worker.py`: transient DB error → bounded growing backoff, `WorkerState.last_error` class name, recovery clears it; stop event interrupts backoff; in-flight case abandoned on stop; shutdown within `consumer_shutdown_timeout_seconds`
 - [X] T034 [US5] `WorkerState` and backoff in `src/ecommerce_ai/agents/triage/worker.py`; bounded cancellation of worker and relay in `main.py` before engine dispose (FR-004)
-- [ ] T035 [P] [US5] Tests in `tests/unit/test_health_api.py`: `triageWorker` (`running`, `lastError`, `modelConfigured`) and `outboxRelay` (`running`, `lastError`) present when enabled, `null` when disabled, never change the status; app with no DB/Kafka/model answers `/health` within 1 s (SC-007)
-- [ ] T036 [US5] Extend `ReadinessResponse` in `src/ecommerce_ai/api/health.py` (OpenAPI descriptions, camelCase) reading `WorkerState`/`RelayState`; pass state from `main.py`
+- [X] T035 [P] [US5] Tests in `tests/unit/test_health_api.py`: `triageWorker` (`running`, `lastError`, `modelConfigured`) and `outboxRelay` (`running`, `lastError`) present when enabled, `null` when disabled, never change the status; app with no DB/Kafka/model answers `/health` within 1 s (SC-007)
+- [X] T036 [US5] Extend `ReadinessResponse` in `src/ecommerce_ai/api/health.py` (OpenAPI descriptions, camelCase) reading `WorkerState`/`RelayState`; pass state from `main.py`
 
 ## Phase 8: Polish
 

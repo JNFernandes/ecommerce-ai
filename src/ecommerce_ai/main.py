@@ -301,6 +301,8 @@ def create_app(
         mcp=mcp,
         resources=resources,
         consumer_state=consumer_state if settings.triage_consumer_enabled else None,
+        worker_state=worker.state if settings.triage_worker_enabled else None,
+        relay_state=relay_state if settings.triage_worker_enabled else None,
     )
 
 
