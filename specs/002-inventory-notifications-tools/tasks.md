@@ -28,31 +28,31 @@ story's tests first and see them fail. After every task: quiet gate (CLAUDE.md);
 
 **Independent test**: `list_products`/`get_product` over `/mcp` with a customer token against the Inventory stub.
 
-- [ ] T011 [P] [US1] Tests in `tests/unit/test_inventory_tools.py`: default page (≤ 20, order kept, `total/limit/offset`, envelope `source=inventory`), `limit=50 offset=40` forwarded, invalid `limit`/`offset`/`productId` (`""`, 65 chars, `../admin`, `SKU 1`, `SKU-1?x=1`) → `invalid_input` with 0 requests, `SKU-003` found, 404 → "product not found", token + `X-Request-Id` forwarded, `availableQuantity` 0 kept, case kept, empty page past end
-- [ ] T012 [US1] Implement `src/ecommerce_ai/tools/inventory.py`: `ListProductsInput`, `GetProductInput` (`extra="forbid"`), upstream `Product`/`ProductsPage` models (`extra="ignore"`, `name` truncated ≤ 500 with flag), `list_products` and `get_product` handlers via `RestClient` and `upstream_errors`, two `ToolDefinition`s (timeout and max size from settings)
-- [ ] T013 [US1] Register both tools in `src/ecommerce_ai/main.py::build_tool_definitions`; add an `/mcp` call test for each in `tests/unit/test_mcp_tools_api.py`
+- [X] T011 [P] [US1] Tests in `tests/unit/test_inventory_tools.py`: default page (≤ 20, order kept, `total/limit/offset`, envelope `source=inventory`), `limit=50 offset=40` forwarded, invalid `limit`/`offset`/`productId` (`""`, 65 chars, `../admin`, `SKU 1`, `SKU-1?x=1`) → `invalid_input` with 0 requests, `SKU-003` found, 404 → "product not found", token + `X-Request-Id` forwarded, `availableQuantity` 0 kept, case kept, empty page past end
+- [X] T012 [US1] Implement `src/ecommerce_ai/tools/inventory.py`: `ListProductsInput`, `GetProductInput` (`extra="forbid"`), upstream `Product`/`ProductsPage` models (`extra="ignore"`, `name` truncated ≤ 500 with flag), `list_products` and `get_product` handlers via `RestClient` and `upstream_errors`, two `ToolDefinition`s (timeout and max size from settings)
+- [X] T013 [US1] Register both tools in `src/ecommerce_ai/main.py::build_tool_definitions`; add an `/mcp` call test for each in `tests/unit/test_mcp_tools_api.py`
 
 ## Phase 4: US2 — Read my notifications (P1)
 
 **Independent test**: two customer tokens against the Notifications stub scoped by `customerId`; each sees only their own.
 
-- [ ] T014 [P] [US2] Tests in `tests/unit/test_notifications_tool.py`: default page newest-first as given, `customerId` param equals the caller claim (also for `CUSTOMER`+`ADMIN`), token without `customerId` → `not_allowed` with 0 requests, `customerId` input → `invalid_input`, A vs B results differ, `orderId` forwarded, malformed `orderId`/`limit`/`offset` → `invalid_input`, 403 → `not_allowed`, 401 → MCP HTTP 401, 422/503 → "notifications unavailable", `customerId`/`sourceEventId` absent from output, `createdAt` UTC
-- [ ] T015 [US2] Implement `src/ecommerce_ai/tools/notifications.py`: `ListMyNotificationsInput` (`extra="forbid"`, `orderId: UUID | None`), `Notification`/`NotificationsPage` (`type`/`channel`/`status` str ≤ 64, `message` truncated ≤ 500, `createdAt: AwareDatetime` → UTC), handler reading `customer_id` from `current_caller()`, `ToolDefinition`
-- [ ] T016 [US2] Register `list_my_notifications` in `src/ecommerce_ai/main.py::build_tool_definitions`; add an `/mcp` call test in `tests/unit/test_mcp_tools_api.py`
+- [X] T014 [P] [US2] Tests in `tests/unit/test_notifications_tool.py`: default page newest-first as given, `customerId` param equals the caller claim (also for `CUSTOMER`+`ADMIN`), token without `customerId` → `not_allowed` with 0 requests, `customerId` input → `invalid_input`, A vs B results differ, `orderId` forwarded, malformed `orderId`/`limit`/`offset` → `invalid_input`, 403 → `not_allowed`, 401 → MCP HTTP 401, 422/503 → "notifications unavailable", `customerId`/`sourceEventId` absent from output, `createdAt` UTC
+- [X] T015 [US2] Implement `src/ecommerce_ai/tools/notifications.py`: `ListMyNotificationsInput` (`extra="forbid"`, `orderId: UUID | None`), `Notification`/`NotificationsPage` (`type`/`channel`/`status` str ≤ 64, `message` truncated ≤ 500, `createdAt: AwareDatetime` → UTC), handler reading `customer_id` from `current_caller()`, `ToolDefinition`
+- [X] T016 [US2] Register `list_my_notifications` in `src/ecommerce_ai/main.py::build_tool_definitions`; add an `/mcp` call test in `tests/unit/test_mcp_tools_api.py`
 
 ## Phase 5: US3 — Fail safely and in isolation (P1)
 
 **Independent test**: Inventory/Notifications down, slow, 5xx, malformed, oversize, injection text; every tool called.
 
-- [ ] T017 [P] [US3] Tests in `tests/unit/test_tool_isolation.py`: each failure mode → generic "<service> unavailable" with no body/URL/trace, within timeout + 1 s (fake clock); Orders tools unchanged while Inventory/Notifications are down/hanging; injection-like `name`/`message` returned unchanged and tool list + forwarded token identical before/after; no token → 401 for each new tool; token absent from captured logs (SC-001)
-- [ ] T018 [US3] Regenerate `tests/contract/snapshots/tools.json` with `UPDATE_SNAPSHOTS=1 uv run pytest tests/contract`; assert exactly 5 tools with schema, timeout and max size in `tests/contract/test_tool_schemas.py`
-- [ ] T019 [US3] Fix any gap the T017 tests reveal in `src/ecommerce_ai/infrastructure/upstream.py` or `src/ecommerce_ai/tools/upstream_errors.py` (no per-tool special cases)
+- [X] T017 [P] [US3] Tests in `tests/unit/test_tool_isolation.py`: each failure mode → generic "<service> unavailable" with no body/URL/trace, within timeout + 1 s (fake clock); Orders tools unchanged while Inventory/Notifications are down/hanging; injection-like `name`/`message` returned unchanged and tool list + forwarded token identical before/after; no token → 401 for each new tool; token absent from captured logs (SC-001)
+- [X] T018 [US3] Regenerate `tests/contract/snapshots/tools.json` with `UPDATE_SNAPSHOTS=1 uv run pytest tests/contract`; assert exactly 5 tools with schema, timeout and max size in `tests/contract/test_tool_schemas.py`
+- [X] T019 [US3] Fix any gap the T017 tests reveal in `src/ecommerce_ai/infrastructure/upstream.py` or `src/ecommerce_ai/tools/upstream_errors.py` (no per-tool special cases)
 
 ## Phase 6: Polish
 
-- [ ] T020 [P] Update `README.md` and `CLAUDE.md` (HTTP and security: five tools, the two settings, per-upstream clients)
-- [ ] T021 [P] Note the ecommerce-infra follow-up (add `INVENTORY_BASE_URL`, `NOTIFICATIONS_BASE_URL` to the `ai` service) in `specs/002-inventory-notifications-tools/pr-description.md`
-- [ ] T022 Run the full quiet gate and the [quickstart.md](quickstart.md) offline steps; coverage ≥ 80%
+- [X] T020 [P] Update `README.md` and `CLAUDE.md` (HTTP and security: five tools, the two settings, per-upstream clients)
+- [X] T021 [P] Note the ecommerce-infra follow-up (add `INVENTORY_BASE_URL`, `NOTIFICATIONS_BASE_URL` to the `ai` service) in `specs/002-inventory-notifications-tools/pr-description.md`
+- [X] T022 Run the full quiet gate and the [quickstart.md](quickstart.md) offline steps; coverage ≥ 80%
 
 ## Dependencies
 
