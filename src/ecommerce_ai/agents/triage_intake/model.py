@@ -17,9 +17,10 @@ class TriageCause(StrEnum):
 
 
 class TriageStatus(StrEnum):
-    """Lifecycle of a triage case; this story only creates pending cases."""
+    """Lifecycle of a triage case: PENDING_TRIAGE until its result is saved, then COMPLETED."""
 
     PENDING_TRIAGE = "PENDING_TRIAGE"
+    COMPLETED = "COMPLETED"
 
 
 class IntakeOutcome(StrEnum):
