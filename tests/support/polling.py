@@ -1,7 +1,7 @@
 """Polling helper: wait for a condition with a timeout instead of a bare sleep."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 
 async def wait_until(
@@ -11,3 +11,17 @@ async def wait_until(
     async with asyncio.timeout(timeout):
         while not condition():
             await asyncio.sleep(interval)
+
+
+async def poll_until[T](
+    fetch: Callable[[], Awaitable[T]],
+    condition: Callable[[T], bool],
+    *,
+    timeout: float = 2.0,
+    interval: float = 0.01,
+) -> T:
+    """Return the first ``fetch()`` result meeting ``condition``; raise ``TimeoutError`` if none."""
+    async with asyncio.timeout(timeout):
+        while not condition(result := await fetch()):
+            await asyncio.sleep(interval)
+        return result

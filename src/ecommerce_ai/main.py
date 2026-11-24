@@ -175,7 +175,13 @@ def create_app(
                 )
             yield
 
-    return build_api(settings.cors_allowed_origins, checker, mcp=mcp, resources=resources)
+    return build_api(
+        settings.cors_allowed_origins,
+        checker,
+        mcp=mcp,
+        resources=resources,
+        consumer_state=consumer_state if settings.triage_consumer_enabled else None,
+    )
 
 
 def run() -> None:
