@@ -235,6 +235,31 @@ class Settings(BaseSettings):
         default=1.0, gt=0, le=60, description="Wait of the outbox relay when nothing is due."
     )
 
+    chat_keepalive_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=300,
+        description="Silence on a chat stream after which a `: keep-alive` comment is sent.",
+    )
+    chat_request_token_cap: int = Field(
+        default=20_000, gt=0, description="Most LLM tokens one chat message may spend."
+    )
+    chat_rate_limit_messages: int = Field(
+        default=10, gt=0, le=1000, description="Chat messages one user may post per window."
+    )
+    chat_rate_limit_window_seconds: float = Field(
+        default=60.0, gt=0, le=3600, description="Sliding window of the chat rate limit."
+    )
+    chat_max_tool_rounds: int = Field(
+        default=5, gt=0, le=20, description="Most model→tool rounds in one chat answer."
+    )
+    chat_max_messages: int = Field(
+        default=100,
+        ge=2,
+        le=10_000,
+        description="Most messages (user + assistant) one conversation may hold.",
+    )
+
     @field_validator("cors_allowed_origins", "kafka_brokers", mode="before")
     @classmethod
     def _parse_csv(cls, value: object) -> object:
@@ -313,7 +338,9 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_token_limits(self) -> Self:
-        """One LLM call must fit in the per-case token cap."""
+        """One LLM call must fit in the per-case and the per-chat-message token caps."""
         if self.llm_max_output_tokens > self.case_token_cap:
             raise ValueError("llm_max_output_tokens must not exceed case_token_cap")
+        if self.llm_max_output_tokens > self.chat_request_token_cap:
+            raise ValueError("llm_max_output_tokens must not exceed chat_request_token_cap")
         return self
