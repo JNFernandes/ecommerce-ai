@@ -89,6 +89,13 @@ class ModelTurnEnd(_Frozen):
     stop_reason: str
     usage: Usage
     model_id: str = Field(min_length=1)
+    content: tuple[dict[str, JsonValue], ...] = Field(
+        default=(),
+        description=(
+            "The turn's content blocks in order (`thinking`, `text`, `tool_use`), so it can be"
+            " replayed unchanged; empty when the model does not report them."
+        ),
+    )
 
 
 type ChatModelEvent = TextDelta | ToolUseRequest | ModelTurnEnd

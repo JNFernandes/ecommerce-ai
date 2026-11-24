@@ -137,7 +137,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
   deltas/tool_use/usage to `ChatModelEvent`s, tools from registry input schemas, `max_retries=0`,
   timeout, effort, API errors Ã¢â€ â€™ `ModelUnavailable` (fake client, no network)
 - [X] T021 [US1] Implement `src/ecommerce_ai/agents/assistant/segmenter.py` (research Ã‚Â§10)
-- [ ] T022 [P] [US1] Implement `src/ecommerce_ai/agents/assistant/summaries.py` (fixed phrase per
+- [X] T022 [P] [US1] Implement `src/ecommerce_ai/agents/assistant/summaries.py` (fixed phrase per
   tool and outcome: count / found / not found / unavailable / refused; never upstream data)
 - [ ] T023 [US1] Implement `src/ecommerce_ai/agents/assistant/graph.py`: `ChatState` TypedDict
   (transcript append reducer), nodes `guard_input Ã¢â€ â€™ agent Ã¢â€¡â€ž tools Ã¢â€ â€™ gatekeeper Ã¢â€ â€™ finalize`, edges

@@ -25,7 +25,7 @@ _PACKAGE: Final = "ecommerce_ai.agents.prompts"
 _INERT: Final = {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026"}
 
 
-def _inert_json(value: JsonValue) -> str:
+def inert_json(value: JsonValue) -> str:
     """JSON text of ``value`` in which no character can form a markup tag."""
     text = json.dumps(value, ensure_ascii=True)
     for char, escape in _INERT.items():
@@ -35,7 +35,7 @@ def _inert_json(value: JsonValue) -> str:
 
 def _inert_text(value: str) -> str:
     """``value`` with the characters that could form a markup tag escaped."""
-    return _inert_json(value)[1:-1]
+    return inert_json(value)[1:-1]
 
 
 def _iso_utc(value: datetime) -> str:
@@ -61,7 +61,7 @@ class Prompt(BaseModel):
         """Fill the user template: one ``<evidence>`` block per event, optional ``<feedback>``."""
         blocks = [
             "<evidence>\n"
-            + _inert_json(
+            + inert_json(
                 {
                     "topic": item.topic,
                     "reason": item.reason,

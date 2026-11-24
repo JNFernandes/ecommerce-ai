@@ -1,7 +1,8 @@
 """Domain types of the chat assistant (data-model.md, contracts/chat-api.md).
 
 - ``FinishReason`` / ``ChatErrorCode`` (+ the fixed customer-safe message of each code, FR-009).
-- Transcript items (``UserTurn``, ``AssistantText``, ``ToolCallItem``, ``ToolResultItem``): the
+- Transcript items (``UserTurn``, ``AssistantText``, ``ThinkingItem``, ``ToolCallItem``,
+  ``ToolResultItem``): the
   graph state, stored as plain JSON by the checkpointer and re-validated on load (research §4).
 - ``StreamEvent``: the SSE contract events, camelCase on the wire; the API framer adds the ids.
 - ``RunOutcome``: how one run ended, for storage and the ``chat_run`` log line.
@@ -122,8 +123,16 @@ class ToolResultItem(_Frozen):
     payload: dict[str, JsonValue] = Field(description="Envelope or error body; never the token.")
 
 
+class ThinkingItem(_Frozen):
+    """A provider thinking block, replayed to the model unchanged (never sent to the customer)."""
+
+    kind: Literal["thinking"] = "thinking"
+    block: dict[str, JsonValue] = Field(description="The block exactly as the model returned it.")
+
+
 type TranscriptItem = Annotated[
-    UserTurn | AssistantText | ToolCallItem | ToolResultItem, Field(discriminator="kind")
+    UserTurn | AssistantText | ThinkingItem | ToolCallItem | ToolResultItem,
+    Field(discriminator="kind"),
 ]
 
 _TRANSCRIPT: Final = TypeAdapter(list[TranscriptItem])
