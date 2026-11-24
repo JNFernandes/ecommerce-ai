@@ -5,8 +5,9 @@ schemas come from its Pydantic models, annotated ``readOnlyHint``. ``ToolCallMid
 every ``ToolFailure`` and argument ``ValidationError`` to an ``isError`` result with the fixed
 ``{error, message}`` body, answers an unknown tool with JSON-RPC ``-32602`` and logs one line per
 call: tool, outcome and duration (``request_id`` comes from the bound log context, never the
-token). ``build_mcp_app`` returns the Streamable HTTP ASGI app (stateless, JSON responses) whose
-endpoint is exactly ``MCP_PATH`` (research 1, 2 and 13).
+token). Validation, the per-tool timeout and the failure mapping are shared with the chat
+assistant through ``tools/invoker.py``. ``build_mcp_app`` returns the Streamable HTTP ASGI app
+(stateless, JSON responses) whose endpoint is exactly ``MCP_PATH`` (research 1, 2 and 13).
 """
 
 import time
@@ -22,9 +23,9 @@ from fastmcp.tools import Tool, ToolResult
 from mcp.shared.exceptions import MCPError
 from mcp.types import INVALID_PARAMS, ToolAnnotations
 from pydantic import PrivateAttr
-from pydantic import ValidationError as PydanticValidationError
 
 from ecommerce_ai.tools.envelope import ToolErrorCode, ToolErrorResult, ToolFailure
+from ecommerce_ai.tools.invoker import failure_result, run_definition
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 
 MCP_PATH: Final = "/mcp"
@@ -57,16 +58,13 @@ class RegistryTool(Tool):
 
     # Any: the signature of ``Tool.run``; arguments are validated by the input model here.
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        """Validate ``arguments``, run the handler and return its output as structured content.
+        """Validate ``arguments``, run the handler within its timeout, return structured content.
 
         A ``ToolFailure`` leaves as a ``ToolError`` caused by it, so FastMCP neither logs a
         traceback nor masks it before ``ToolCallMiddleware`` maps it.
         """
-        definition = self._definition
-        assert definition.input_model is not None  # noqa: S101  # guaranteed by ToolRegistry
-        validated = definition.input_model.model_validate(arguments)
         try:
-            output = await definition.handler(validated)
+            output = await run_definition(self._definition, arguments)
         except ToolFailure as failure:
             raise ToolError(str(failure)) from failure
         return ToolResult(structured_content=output.model_dump(mode="json", by_alias=True))
@@ -75,16 +73,6 @@ class RegistryTool(Tool):
 def _error_result(failure: ToolErrorResult) -> ToolResult:
     body = failure.model_dump(mode="json")
     return ToolResult(content=body["message"], structured_content=body, is_error=True)
-
-
-def _failure_result(error: BaseException) -> ToolErrorResult | None:
-    """Return the error result ``error`` (or the error it wraps) maps to, if it is a known one."""
-    for candidate in (error, error.__cause__):
-        if isinstance(candidate, ToolFailure):
-            return candidate.result
-        if isinstance(candidate, PydanticValidationError):
-            return ToolErrorResult.for_code(ToolErrorCode.INVALID_INPUT)
-    return None
 
 
 class ToolCallMiddleware(Middleware):
@@ -109,7 +97,7 @@ class ToolCallMiddleware(Middleware):
         try:
             return await call_next(context)
         except Exception as error:
-            failure = _failure_result(error)
+            failure = failure_result(error)
             if failure is None:
                 outcome = ToolErrorCode.UPSTREAM_ERROR.value
                 _logger.exception("tool_call_crashed", tool=name)
