@@ -83,7 +83,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 - [X] T035 [P] Add `docker-entrypoint.sh` (run `python -m ecommerce_ai migrate`, log and continue on failure, then `exec` the app) and set `ENTRYPOINT` in `Dockerfile`
 - [X] T036 [P] `.github/workflows/ci.yml`: ensure the pytest step runs integration tests (Docker on ubuntu runners, Testcontainers); check with actionlint
 - [X] T037 [P] Update `README.md` and `CLAUDE.md` (consumer, tables, `migrate` command, new settings, readiness `consumer`, integration tests, layering of `agents/triage_intake` and `messaging`)
-- [ ] T038 Run the full quiet gate (coverage ≥ 80%) and the [quickstart.md](quickstart.md) automated steps; manual steps if the infra stack is up
+- [X] T038 Run the full quiet gate (coverage ≥ 80%) and the [quickstart.md](quickstart.md) automated steps; manual steps if the infra stack is up
 
 ## Dependencies
 
