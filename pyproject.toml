@@ -36,8 +36,8 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
-include = ["src/**/*.py", "tests/**/*.py"]
+src = ["src", "tests", "scripts"]
+include = ["src/**/*.py", "tests/**/*.py", "scripts/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ANN", "S", "C4", "SIM", "RUF"]
@@ -56,7 +56,7 @@ line-ending = "lf"
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
 warn_unreachable = true
