@@ -164,3 +164,31 @@ async def test_should_keep_the_cause_but_bump_updated_at_when_a_lower_cause_arri
         ORDER_CANCELLED_TOPIC,
         PAYMENT_FAILED_TOPIC,
     }
+
+
+async def test_should_report_a_duplicate_and_change_nothing_when_an_event_is_redelivered(
+    service: TriageIntakeService, store: InMemoryTriageCaseStore, clock: FakeClock
+) -> None:
+    order_id = uuid4()
+    event = _event(ORDER_CANCELLED_TOPIC, order_id, None)
+    await service.record(event)
+    before = (store.cases, store.evidence)
+    clock.now = RECEIVED_AT + timedelta(minutes=1)
+
+    outcome = await service.record(event)
+
+    assert outcome is IntakeOutcome.DUPLICATE
+    assert (store.cases, store.evidence) == before
+    assert (store.commits, store.rollbacks) == (1, 1)
+
+
+async def test_should_not_create_a_case_when_a_known_event_id_names_another_order(
+    service: TriageIntakeService, store: InMemoryTriageCaseStore
+) -> None:
+    event = _event(PAYMENT_FAILED_TOPIC, uuid4(), "card declined")
+    await service.record(event)
+
+    outcome = await service.record(event.model_copy(update={"order_id": uuid4()}))
+
+    assert outcome is IntakeOutcome.DUPLICATE
+    assert len(store.cases) == 1

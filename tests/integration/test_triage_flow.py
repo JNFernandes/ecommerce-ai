@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from ecommerce_ai.agents.triage_intake.model import TriageEventInput
+from ecommerce_ai.agents.triage_intake.model import IntakeOutcome, TriageEventInput
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.tables import triage_cases, triage_evidence
@@ -204,3 +204,41 @@ async def test_should_create_one_case_when_two_events_for_a_new_order_race(
     )
 
     assert await _cases(db_engine) == {order_id: ("PAYMENT_FAILED", "PENDING_TRIAGE", 2)}
+
+
+async def _snapshot(engine: AsyncEngine) -> tuple[list[dict[str, object]], ...]:
+    async with engine.connect() as connection:
+        cases = (await connection.execute(select(triage_cases))).mappings().all()
+        evidence = (await connection.execute(select(triage_evidence))).mappings().all()
+    return [dict(row) for row in cases], [dict(row) for row in evidence]
+
+
+async def test_should_leave_the_data_as_after_one_delivery_when_an_event_is_redelivered(
+    db_engine: AsyncEngine,
+) -> None:
+    event = _payment_failed(uuid4())
+    intake = _intake(db_engine)
+    await intake.record(event)
+    once = await _snapshot(db_engine)
+
+    outcome = await intake.record(event)
+
+    assert outcome is IntakeOutcome.DUPLICATE
+    assert await _snapshot(db_engine) == once
+
+
+async def test_should_store_one_evidence_when_the_same_event_is_saved_concurrently(
+    db_engine: AsyncEngine,
+) -> None:
+    order_id = uuid4()
+    event = _payment_failed(order_id)
+    intake = _intake(db_engine)
+
+    outcomes = await asyncio.gather(*(intake.record(event) for _ in range(3)))
+
+    assert sorted(outcomes) == [
+        IntakeOutcome.DUPLICATE,
+        IntakeOutcome.DUPLICATE,
+        IntakeOutcome.PROCESSED,
+    ]
+    assert await _cases(db_engine) == {order_id: ("PAYMENT_FAILED", "PENDING_TRIAGE", 1)}

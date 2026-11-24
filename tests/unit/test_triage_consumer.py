@@ -165,3 +165,28 @@ async def test_should_log_one_line_per_message_with_its_coordinates_and_outcome(
     assert (line["event_id"], line["order_id"]) == (str(event_id), str(order_id))
     assert line["outcome"] == "processed"
     assert "card declined" not in stream.getvalue()
+
+
+async def test_should_commit_and_log_a_duplicate_when_an_event_is_redelivered(
+    store: InMemoryTriageCaseStore, state: ConsumerState
+) -> None:
+    payload = payment_failed_payload(uuid4())
+    fake = FakeConsumer(
+        [
+            make_record(PAYMENT_FAILED_TOPIC, payload, offset=0),
+            make_record(PAYMENT_FAILED_TOPIC, payload, offset=1),
+        ]
+    )
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    await _run_until(_triage_consumer(fake, store, state), lambda: len(fake.commits) == 2)
+
+    assert len(store.evidence) == 1
+    assert fake.committed == {TopicPartition(PAYMENT_FAILED_TOPIC, 0): 2}
+    outcomes = [
+        json.loads(line)["outcome"]
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"] == "triage_message"
+    ]
+    assert outcomes == ["processed", "duplicate"]

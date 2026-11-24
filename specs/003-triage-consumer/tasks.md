@@ -55,8 +55,8 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 
 **Independent test**: same event twice → one evidence item, unchanged case, second message committed, outcome `duplicate`.
 
-- [ ] T023 [P] [US3] Tests: `tests/unit/test_triage_intake.py` (duplicate → `duplicate`, case untouched, transaction rolled back), `tests/unit/test_triage_consumer.py` (duplicate committed and logged `duplicate`), `tests/integration/test_triage_flow.py` (sequential and concurrent redelivery → stored data identical to one delivery, SC-002)
-- [ ] T024 [US3] Make `service.py` return `IntakeOutcome.duplicate` and skip the cause update when `add_evidence` reports a duplicate; adjust `triage_repository.py` if the tests reveal a gap
+- [X] T023 [P] [US3] Tests: `tests/unit/test_triage_intake.py` (duplicate → `duplicate`, case untouched, transaction rolled back), `tests/unit/test_triage_consumer.py` (duplicate committed and logged `duplicate`), `tests/integration/test_triage_flow.py` (sequential and concurrent redelivery → stored data identical to one delivery, SC-002)
+- [X] T024 [US3] Make `service.py` return `IntakeOutcome.duplicate` and skip the cause update when `add_evidence` reports a duplicate; adjust `triage_repository.py` if the tests reveal a gap
 
 ## Phase 6: US4 — Bad messages do not block the stream (P2)
 
