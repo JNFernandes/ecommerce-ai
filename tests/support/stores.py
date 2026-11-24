@@ -85,7 +85,7 @@ class _UnitOfWork:
         if case is None:
             case = StoredCase(uuid4(), order_id, cause, TriageStatus.PENDING_TRIAGE, now, now)
             self.tables.cases[order_id] = case
-        return LockedCase(case_id=case.case_id, cause=case.cause)
+        return LockedCase(case_id=case.case_id, cause=case.cause, status=case.status)
 
     async def add_evidence(
         self, case_id: UUID, event: TriageEventInput, received_at: datetime
@@ -131,6 +131,11 @@ class InMemoryTriageCaseStore:
     def case_for(self, order_id: UUID) -> StoredCase:
         """The committed case of ``order_id``."""
         return self._tables.cases[order_id]
+
+    def mark_completed(self, order_id: UUID) -> None:
+        """Set the committed case of ``order_id`` to COMPLETED, as the triage worker does."""
+        case = self._tables.cases[order_id]
+        self._tables.cases[order_id] = replace(case, status=TriageStatus.COMPLETED)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[_UnitOfWork]:

@@ -51,3 +51,4 @@ class LockedCase(BaseModel):
 
     case_id: UUID = Field(description="Id of the case.")
     cause: TriageCause = Field(description="Cause currently stored on the case.")
+    status: TriageStatus = Field(description="Status currently stored on the case.")
