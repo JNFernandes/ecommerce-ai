@@ -17,6 +17,7 @@ from ecommerce_ai.infrastructure.db.tables import (
     triage_evidence,
 )
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
+from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.messaging.consumer_state import ConsumerState
 from ecommerce_ai.messaging.contracts import (
     ORDER_CANCELLED_TOPIC,
@@ -43,6 +44,7 @@ async def _consume(engine: AsyncEngine, fake: FakeConsumer, done: Callable[[], b
         TriageIntakeService(TriageRepository(engine)),
         DeadLetterRepository(engine),
         ConsumerState(),
+        Settings(),
         poll_timeout_ms=5,
     )
     stop = asyncio.Event()

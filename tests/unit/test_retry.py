@@ -1,5 +1,6 @@
 """Upstream reads retry only retryable failures, with jittered backoff inside one deadline."""
 
+import math
 from dataclasses import dataclass, field
 from time import monotonic
 
@@ -72,6 +73,7 @@ async def _run(
     max_retries: int = 2,
     attempt_timeout: float = 5.0,
     rng: FakeRandom | None = None,
+    backoff_max: float = math.inf,
 ) -> str:
     return await call_with_retry(
         call,
@@ -79,6 +81,7 @@ async def _run(
         max_retries=max_retries,
         backoff_base=0.2,
         attempt_timeout=attempt_timeout,
+        backoff_max=backoff_max,
         is_retryable=_is_retryable,
         clock=time.clock,
         sleep=time.sleep,
@@ -114,6 +117,15 @@ async def test_should_draw_full_jitter_between_zero_and_the_backoff_cap() -> Non
     assert [low for low, _ in rng.ranges] == [0.0, 0.0]
     assert [high for _, high in rng.ranges] == pytest.approx([0.2, 0.4])
     assert time.sleeps == pytest.approx([0.1, 0.2])
+
+
+async def test_should_cap_the_backoff_when_a_maximum_is_given() -> None:
+    time = FakeTime()
+    call = ScriptedCall(time, errors=[FakeUpstreamError(retryable=True)] * 3)
+
+    await _run(call, time, max_retries=3, backoff_max=0.5)
+
+    assert time.sleeps == pytest.approx([0.2, 0.4, 0.5])
 
 
 async def test_should_raise_the_last_error_after_one_plus_max_retries_attempts() -> None:

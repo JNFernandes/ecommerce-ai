@@ -3,11 +3,12 @@
 ``call_with_retry`` runs one read-only attempt at a time. Each attempt receives its own timeout,
 the smaller of the per-attempt timeout and the time left before the deadline, and must enforce
 it. A failure is retried only when ``is_retryable`` says so, at most ``max_retries`` times, after
-a random delay in ``[0, backoff_base * 2**n]``; no retry starts if that delay would reach the
-deadline. The clock, sleep and random source are injectable so tests never wait.
+a random delay in ``[0, min(backoff_base * 2**n, backoff_max)]``; no retry starts if that delay
+would reach the deadline. The clock, sleep and random source are injectable so tests never wait.
 """
 
 import asyncio
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable
@@ -32,6 +33,7 @@ async def call_with_retry[T](
     max_retries: int,
     backoff_base: float,
     attempt_timeout: float,
+    backoff_max: float = math.inf,
     is_retryable: Callable[[Exception], bool],
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -52,7 +54,7 @@ async def call_with_retry[T](
         except Exception as error:
             if not is_retryable(error) or retries >= max_retries:
                 raise
-            delay = rng.uniform(0.0, backoff_base * 2**retries)
+            delay = rng.uniform(0.0, min(backoff_base * 2**retries, backoff_max))
             if clock() + delay >= deadline:
                 raise
         await sleep(delay)

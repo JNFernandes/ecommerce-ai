@@ -157,6 +157,7 @@ def create_app(
         TriageIntakeService(TriageRepository(engine)),
         DeadLetterRepository(engine),
         consumer_state,
+        settings,
     )
 
     @asynccontextmanager

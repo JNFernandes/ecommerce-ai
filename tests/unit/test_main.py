@@ -228,7 +228,7 @@ async def test_should_cancel_the_consumer_when_it_does_not_stop_within_the_timeo
     assert "triage_consumer_cancelled" in [line["event"] for line in _log_lines(stream)]
 
 
-async def test_should_log_the_error_class_only_when_the_consumer_failed() -> None:
+async def test_should_log_the_error_class_only_when_the_consumer_cannot_connect() -> None:
     fake = FakeConsumer(start_error=ConnectionRefusedError("kafka://ai:s3cret@broker refused"))
     app = create_app(_enabled(), probes=[], consumer_factory=lambda: fake)
     stream = io.StringIO()
@@ -237,7 +237,7 @@ async def test_should_log_the_error_class_only_when_the_consumer_failed() -> Non
     async with serve_app(app):
         await wait_until(lambda: fake.stopped)
 
-    (failure,) = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_failed"]
+    failure, *_ = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_error"]
     assert failure["error"] == "ConnectionRefusedError"
     assert "s3cret" not in stream.getvalue()
 
@@ -246,3 +246,19 @@ async def test_should_build_aiokafka_consumers_of_the_three_failure_topics() -> 
     consumer = main.kafka_consumer_factory(Settings())()
 
     assert isinstance(consumer, AIOKafkaConsumerAdapter)
+
+
+async def test_should_log_the_error_class_only_when_the_consumer_task_crashed() -> None:
+    async def crash() -> None:
+        raise RuntimeError("postgresql://ai:s3cret@db refused")
+
+    task = asyncio.create_task(crash())
+    await asyncio.wait({task})
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    await main.stop_consumer(task, asyncio.Event(), timeout=1)
+
+    (failure,) = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_failed"]
+    assert failure["error"] == "RuntimeError"
+    assert "s3cret" not in stream.getvalue()
