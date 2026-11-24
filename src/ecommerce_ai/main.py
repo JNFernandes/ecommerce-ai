@@ -64,7 +64,7 @@ from ecommerce_ai.messaging.kafka import (
     ConsumerFactory,
     ProducerFactory,
 )
-from ecommerce_ai.messaging.outbox_relay import OutboxRelay, OutboxStore
+from ecommerce_ai.messaging.outbox_relay import OutboxRelay, OutboxStore, RelayState
 from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from ecommerce_ai.messaging.triage_published import to_outbox_message
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
@@ -254,10 +254,15 @@ def create_app(
         model,
         wake,
     )
+    relay_state = RelayState()
     relay = OutboxRelay(
         outbox_store or OutboxRepository(engine),
         producer_factory or kafka_producer_factory(settings),
         poll_interval_seconds=settings.outbox_poll_interval_seconds,
+        max_attempts=settings.outbox_max_attempts,
+        backoff_base_seconds=settings.outbox_backoff_base_seconds,
+        backoff_max_seconds=settings.outbox_backoff_max_seconds,
+        state=relay_state,
     )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 

@@ -339,7 +339,7 @@ def _stored(outbox: InMemoryOutboxStore, message: OutboxMessage) -> OutboxMessag
     return message
 
 
-async def test_should_log_the_relay_failure_class_when_the_producer_cannot_start() -> None:
+async def test_should_keep_retrying_and_log_the_class_when_the_producer_cannot_start() -> None:
     producer = FakeProducer(start_error=ConnectionRefusedError("kafka://ai:s3cret@broker"))
     app = create_app(
         _worker_enabled(),
@@ -353,9 +353,13 @@ async def test_should_log_the_relay_failure_class_when_the_producer_cannot_start
 
     async with serve_app(app) as client:
         assert (await client.get("/health")).status_code == 200
+        await wait_until(
+            lambda: any(line["event"] == "outbox_relay_retry" for line in _log_lines(stream))
+        )
 
-    (failure,) = [line for line in _log_lines(stream) if line["event"] == "outbox_relay_failed"]
-    assert failure["error"] == "ConnectionRefusedError"
+    retries = [line for line in _log_lines(stream) if line["event"] == "outbox_relay_retry"]
+    assert retries[0]["error"] == "ConnectionRefusedError"
+    assert not [line for line in _log_lines(stream) if line["event"] == "outbox_relay_failed"]
     assert "s3cret" not in stream.getvalue()
 
 

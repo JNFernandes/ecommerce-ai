@@ -67,9 +67,9 @@ fail. After every task: quiet gate (CLAUDE.md); commit after green.
 
 **Independent test**: producer down → result stored, event PENDING; producer back → published with the same `eventId`; concurrent workers → one result.
 
-- [ ] T030 [P] [US4] Tests in `tests/unit/test_outbox_relay.py` (fake clock/sleep): send failure → attempts+1, `next_attempt_at = now + min(base·2ⁿ, max)` with jitter, `last_error` class name, `RelayState.last_error`; success later with identical event id/key/payload → RESOLVED; `outbox_max_attempts` reached → EXHAUSTED, no more sends; wake event shortens the wait; one `outbox_publish` log line per attempt
-- [ ] T031 [US4] Complete `messaging/outbox_relay.py` (retry scheduling, EXHAUSTED, `RelayState`, transient DB error backoff) and `outbox_repository.py` (`mark_failed`, `mark_exhausted`)
-- [ ] T032 [US4] Integration tests: `tests/integration/test_outbox.py` (two relays concurrently → each row sent once, SKIP LOCKED), `tests/integration/test_triage_queue.py` (two workers concurrently → each case triaged once, one result/event id, SC-006), `tests/integration/test_triage_end_to_end.py` (producer failing → case COMPLETED, outbox PENDING; then RESOLVED with the same `eventId`; acceptance US4 1–4)
+- [X] T030 [P] [US4] Tests in `tests/unit/test_outbox_relay.py` (fake clock/sleep): send failure → attempts+1, `next_attempt_at = now + min(base·2ⁿ, max)` with jitter, `last_error` class name, `RelayState.last_error`; success later with identical event id/key/payload → RESOLVED; `outbox_max_attempts` reached → EXHAUSTED, no more sends; wake event shortens the wait; one `outbox_publish` log line per attempt
+- [X] T031 [US4] Complete `messaging/outbox_relay.py` (retry scheduling, EXHAUSTED, `RelayState`, transient DB error backoff) and `outbox_repository.py` (`mark_failed`, `mark_exhausted`)
+- [X] T032 [US4] Integration tests: `tests/integration/test_outbox.py` (two relays concurrently → each row sent once, SKIP LOCKED), `tests/integration/test_triage_queue.py` (two workers concurrently → each case triaged once, one result/event id, SC-006), `tests/integration/test_triage_end_to_end.py` (producer failing → case COMPLETED, outbox PENDING; then RESOLVED with the same `eventId`; acceptance US4 1–4)
 
 ## Phase 7: US5 — Starts and reports without its dependencies (P2)
 

@@ -346,7 +346,11 @@ class _OutboxClaim:
     async def resolve(self, now: datetime) -> None:
         event = self._require()
         self.outcome = replace(
-            event, status=OutboxStatus.RESOLVED, attempts=event.attempts + 1, updated_at=now
+            event,
+            status=OutboxStatus.RESOLVED,
+            attempts=event.attempts + 1,
+            last_error=None,
+            updated_at=now,
         )
 
     async def fail(self, error: str, next_attempt_at: datetime, now: datetime) -> None:

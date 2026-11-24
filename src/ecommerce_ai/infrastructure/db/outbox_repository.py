@@ -2,7 +2,8 @@
 
 ``claim_due`` opens one transaction and locks the earliest due PENDING event with ``FOR UPDATE
 SKIP LOCKED``, so concurrent relays never send the same row at the same time. The claim records
-the outcome of the send in that transaction; the event id, key and payload never change.
+the outcome of the send in that transaction; the event id, key and payload never change. A
+failed send bumps ``attempts`` and reschedules the event, or marks it EXHAUSTED.
 """
 
 from collections.abc import AsyncIterator
@@ -58,6 +59,34 @@ class SqlOutboxClaim:
                 status=OutboxStatus.RESOLVED.value,
                 attempts=event.attempts + 1,
                 last_error=None,
+                updated_at=now,
+            )
+        )
+
+    async def fail(self, error: str, next_attempt_at: datetime, now: datetime) -> None:
+        """Count a failed attempt (``error`` is a class name) and schedule the next one."""
+        row_id, event = self._require()
+        await self._connection.execute(
+            update(outbox_events)
+            .where(outbox_events.c.id == row_id)
+            .values(
+                attempts=event.attempts + 1,
+                next_attempt_at=next_attempt_at,
+                last_error=error[:200],
+                updated_at=now,
+            )
+        )
+
+    async def exhaust(self, error: str, now: datetime) -> None:
+        """Count the last failed attempt and give the event up (EXHAUSTED)."""
+        row_id, event = self._require()
+        await self._connection.execute(
+            update(outbox_events)
+            .where(outbox_events.c.id == row_id)
+            .values(
+                status=OutboxStatus.EXHAUSTED.value,
+                attempts=event.attempts + 1,
+                last_error=error[:200],
                 updated_at=now,
             )
         )
