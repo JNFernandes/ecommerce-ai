@@ -1,4 +1,4 @@
-"""Tool contracts: served schemas match the snapshot and queries match Orders' schema.
+"""Tool contracts: five tools, served schemas match the snapshot, queries match Orders' schema.
 
 ``snapshots/tools.json`` holds what ``tools/list`` serves for every tool (description, input and
 output schema, annotations); any change fails here until the snapshot is regenerated on
@@ -16,14 +16,14 @@ import respx
 from graphql import FieldNode, OperationDefinitionNode, build_schema, parse, validate
 
 from ecommerce_ai.infrastructure.settings import Settings
-from ecommerce_ai.main import create_app
+from ecommerce_ai.main import build_tool_definitions, create_app
 from ecommerce_ai.tools.orders import (
     GET_ORDER,
     GET_ORDER_ENTRY,
     LIST_ORDERS,
     LIST_ORDERS_ENTRY,
 )
-from ecommerce_ai.tools.registry import AllowlistEntry
+from ecommerce_ai.tools.registry import ALLOWLIST, AllowlistEntry
 from tests.support.mcp import post_rpc, rpc_result, serve_app, tools_list_request
 from tests.support.tokens import jwks, make_token
 
@@ -40,6 +40,9 @@ DOCUMENTS: Final[dict[str, tuple[str, AllowlistEntry]]] = {
 
 TOOL_NAMES: Final = frozenset({*DOCUMENTS, "list_products", "get_product", "list_my_notifications"})
 """Every tool ``tools/list`` serves."""
+
+TOOL_TIMEOUT_SECONDS: Final = 5.0
+TOOL_MAX_RESPONSE_BYTES: Final = 262_144
 
 
 async def _served_tools() -> dict[str, dict[str, object]]:
@@ -80,6 +83,21 @@ async def test_should_describe_every_tool_and_input_property() -> None:
         annotations = tool["annotations"]
         assert isinstance(annotations, dict), name
         assert annotations["readOnlyHint"] is True, name
+
+
+def test_should_define_exactly_five_allowlisted_tools_with_default_limits() -> None:
+    client = object()
+    definitions = build_tool_definitions(Settings(), client, client, client)  # type: ignore[arg-type]  # limits only; no handler runs
+
+    assert len(definitions) == 5
+    assert {definition.name for definition in definitions} == TOOL_NAMES
+    for definition in definitions:
+        assert definition.timeout_seconds == TOOL_TIMEOUT_SECONDS, definition.name
+        assert definition.max_response_bytes == TOOL_MAX_RESPONSE_BYTES, definition.name
+        assert definition.allowlist_entry in ALLOWLIST, definition.name
+        assert definition.read_only is True, definition.name
+        assert definition.input_model is not None, definition.name
+        assert definition.output_model is not None, definition.name
 
 
 @pytest.mark.parametrize("name", DOCUMENTS)
