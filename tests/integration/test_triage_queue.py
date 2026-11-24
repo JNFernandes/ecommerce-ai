@@ -1,5 +1,6 @@
 """The PostgreSQL triage queue locks settled cases and saves result, outbox and status together."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -217,3 +218,28 @@ async def test_should_refuse_to_complete_when_no_case_was_claimed(
     with pytest.raises(RuntimeError, match="no case"):
         async with queue.next_settled(SETTLED) as claim:
             await claim.complete(_result())
+
+
+async def test_should_triage_each_case_once_when_two_workers_run_concurrently(
+    queue: TriageQueueRepository, db_engine: AsyncEngine
+) -> None:
+    orders = {await _add_case(db_engine, SETTLED) for _ in range(6)}
+
+    async def work() -> int:
+        done = 0
+        while True:
+            async with queue.next_settled(SETTLED) as claim:
+                if claim.case is None:
+                    return done
+                await asyncio.sleep(0.01)  # hold the lock while the other worker claims
+                await claim.complete(_result())
+                done += 1
+
+    counts = await asyncio.gather(work(), work())
+
+    assert sum(counts) == len(orders)
+    results = await _rows(db_engine, triage_results)
+    outbox = await _rows(db_engine, outbox_events)
+    assert len(results) == len(outbox) == len(orders)
+    assert len({row["case_id"] for row in results}) == len(orders)
+    assert {row["event_id"] for row in results} == {row["event_id"] for row in outbox}

@@ -27,7 +27,7 @@ from ecommerce_ai.messaging.contracts import (
     OrderTriageCompleted,
 )
 from ecommerce_ai.messaging.decoding import decode
-from ecommerce_ai.messaging.outbox_relay import OutboxRelay
+from ecommerce_ai.messaging.outbox_relay import OutboxRelay, RelayState
 from ecommerce_ai.messaging.triage_published import to_outbox_message
 from tests.support.kafka import (
     FakeProducer,
@@ -71,12 +71,24 @@ async def _rows(engine: AsyncEngine, table: Table) -> list[dict[str, object]]:
 
 
 async def _run(
-    engine: AsyncEngine, service: TriageService, producer: FakeProducer, events: int = 1
+    engine: AsyncEngine,
+    service: TriageService,
+    producer: FakeProducer,
+    events: int = 1,
+    relay_poll_seconds: float = 5,
 ) -> None:
     """Run worker and relay until ``events`` outbox rows are RESOLVED, then stop both."""
     stop, wake = asyncio.Event(), asyncio.Event()
     worker = TriageWorker(service, poll_interval_seconds=0.01, wake=wake)
-    relay = OutboxRelay(OutboxRepository(engine), lambda: producer, poll_interval_seconds=5)
+    relay = OutboxRelay(
+        OutboxRepository(engine),
+        lambda: producer,
+        poll_interval_seconds=relay_poll_seconds,
+        max_attempts=5,
+        backoff_base_seconds=0.01,
+        backoff_max_seconds=0.01,
+        state=RelayState(),
+    )
     tasks = [
         asyncio.create_task(worker.run(stop)),
         asyncio.create_task(relay.run(stop, wake)),
@@ -160,3 +172,29 @@ async def test_should_publish_one_template_event_per_order_when_no_model_is_conf
     assert all(event.model_id is None for event in events)
     assert {record.key for record in producer.sent} == {str(o).encode() for o in orders}
     assert len(await _rows(db_engine, triage_results)) == len(orders)
+
+
+async def test_should_keep_the_event_pending_while_the_bus_is_down_then_publish_it_once(
+    db_engine: AsyncEngine,
+) -> None:
+    order_id = uuid4()
+    await _record(db_engine, PAYMENT_FAILED_TOPIC, payment_failed_payload(order_id))
+    clock = FakeClock(now=NOW + timedelta(seconds=SETTLE_SECONDS))
+    service = _service(db_engine, None, clock)
+    producer = FakeProducer()
+    producer.failures.extend([ConnectionError("down"), ConnectionError("down")])
+
+    assert await service.triage_one() is True
+    [case] = await _rows(db_engine, triage_cases)
+    [pending] = await _rows(db_engine, outbox_events)
+    assert case["status"] == "COMPLETED"
+    assert pending["status"] == "PENDING"
+
+    await _run(db_engine, service, producer, relay_poll_seconds=0.02)
+
+    [outbox] = await _rows(db_engine, outbox_events)
+    [result] = await _rows(db_engine, triage_results)
+    assert outbox["attempts"] == 3
+    [record] = producer.sent
+    event = OrderTriageCompleted.model_validate_json(record.value)
+    assert event.event_id == pending["event_id"] == outbox["event_id"] == result["event_id"]
