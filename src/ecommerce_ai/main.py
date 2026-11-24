@@ -35,13 +35,13 @@ from ecommerce_ai.agents.triage.ports import (
     TriageModel,
 )
 from ecommerce_ai.agents.triage.service import TriageService
-from ecommerce_ai.agents.triage.worker import TriageWorker
+from ecommerce_ai.agents.triage.worker import TriageWorker, WorkerState
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.mcp import mcp_endpoint
 from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
-from ecommerce_ai.infrastructure.db.engine import build_engine
+from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
@@ -182,7 +182,13 @@ def build_triage_worker(
         settle_seconds=settings.triage_settle_seconds,
     )
     return TriageWorker(
-        service, poll_interval_seconds=settings.triage_poll_interval_seconds, wake=wake
+        service,
+        poll_interval_seconds=settings.triage_poll_interval_seconds,
+        wake=wake,
+        state=WorkerState(model_configured=model is not None),
+        backoff_base_seconds=settings.triage_backoff_base_seconds,
+        backoff_max_seconds=settings.triage_backoff_max_seconds,
+        is_transient=is_transient_db_error,
     )
 
 
