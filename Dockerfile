@@ -37,6 +37,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=build --chown=app:app /app/.venv /app/.venv
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
@@ -53,4 +54,6 @@ EXPOSE 8002
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT', '8002')}/health\", timeout=3)"]
 
+# The entrypoint applies the database migrations (a failure is logged, never fatal), then runs CMD.
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-m", "ecommerce_ai"]
