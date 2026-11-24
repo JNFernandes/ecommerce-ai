@@ -11,7 +11,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 
 ## Phase 1: Setup
 
-- [ ] T001 In `pyproject.toml` (deps already added with `uv add`; commit `uv.lock`): add mypy override `ignore_missing_imports` for `aiokafka.*` (and `testcontainers.*` if untyped) with a justification comment; register pytest marker `integration` (included by default)
+- [X] T001 In `pyproject.toml` (deps already added with `uv add`; commit `uv.lock`): add mypy override `ignore_missing_imports` for `aiokafka.*` (and `testcontainers.*` if untyped) with a justification comment; register pytest marker `integration` (included by default)
 - [ ] T002 Add settings to `src/ecommerce_ai/infrastructure/settings.py` per [contracts/consumer.md](contracts/consumer.md#new-settings) (`triage_consumer_enabled`, `kafka_consumer_group`, `kafka_reconnect_backoff_base/max_seconds`, `db_retry_max_attempts`, `db_retry_backoff_base/max_seconds`, `database_timeout_seconds`, `consumer_shutdown_timeout_seconds`; positive bounds, base ≤ max); add the env names to the cleared variables in `tests/conftest.py`; cover defaults and invalid values in `tests/unit/test_settings.py`
 - [ ] T003 [P] Document the new settings in `.env.example`
 
