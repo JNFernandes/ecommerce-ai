@@ -77,7 +77,7 @@ async def _run(orders: FakeOrders, **arguments: object) -> ToolEnvelope[OrdersPa
     return await _tool(orders).handler(ListMyOrdersInput.model_validate(arguments))
 
 
-async def test_should_send_default_limit_with_callers_customer_id_and_offset_zero(
+async def test_should_omit_status_and_send_default_limit_when_no_status_is_given(
     caller: RequestCaller,
 ) -> None:
     orders = FakeOrders()
@@ -85,10 +85,7 @@ async def test_should_send_default_limit_with_callers_customer_id_and_offset_zer
     await _run(orders)
 
     assert orders.calls == [
-        (
-            LIST_ORDERS,
-            {"customerId": str(CUSTOMER_ID), "status": None, "limit": 20, "offset": 0},
-        )
+        (LIST_ORDERS, {"customerId": str(CUSTOMER_ID), "limit": 20, "offset": 0})
     ]
 
 

@@ -193,7 +193,6 @@ async def test_should_return_callers_page_in_untrusted_envelope_when_listing(
     assert (data["totalCount"], data["hasNextPage"], len(data["items"])) == (3, True, 1)
     assert stub.request_body()["variables"] == {
         "customerId": str(CUSTOMER_ID),
-        "status": None,
         "limit": 20,
         "offset": 0,
     }
