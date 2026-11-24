@@ -61,7 +61,7 @@ fail. After every task: quiet gate (CLAUDE.md); commit after green.
 - [X] T026 [US3] Fallback paths and budget/per-case checks in `graph.py` draft node, retries via `infrastructure/retry.py::call_with_retry` (each attempt reserves first; research 2, 4)
 - [X] T027 [US3] Implement `src/ecommerce_ai/infrastructure/llm/__init__.py` and `anthropic_model.py::AnthropicTriageModel` (`AsyncAnthropic(max_retries=0)`, `with_options(timeout=…)`, `messages.parse(output_format=DraftOutput)`, `max_tokens`, effort from settings; `refusal`/`max_tokens` stop reason and parse errors → `ModelOutputInvalid`; SDK timeout/API errors → `ModelUnavailable`; usage returned); tests in `tests/unit/test_anthropic_model.py` with a fake SDK client object (no network)
 - [X] T028 [US3] Implement `src/ecommerce_ai/infrastructure/db/token_budget_repository.py` (conditional `ON CONFLICT … WHERE tokens + cap <= budget RETURNING`, settle `tokens - reserved + actual`, UTC day); tests in `tests/integration/test_token_budget.py` (reserve until budget, concurrent reserves never exceed it, next UTC day resets, SC-005)
-- [ ] T029 [P] [US3] `tests/integration/test_live_llm.py` (`live_llm`, skipped without key/model): one case per cause through the real model passes the gatekeeper or falls back
+- [X] T029 [P] [US3] `tests/integration/test_live_llm.py` (`live_llm`, skipped without key/model): one case per cause through the real model passes the gatekeeper or falls back
 
 ## Phase 6: US4 — Reliable, exactly-once publishing (P2)
 
