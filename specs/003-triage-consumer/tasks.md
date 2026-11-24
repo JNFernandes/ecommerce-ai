@@ -31,8 +31,8 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 
 **Independent test**: one valid event per topic for three orders → three PENDING_TRIAGE cases with the expected cause and one evidence item each; commit only after save.
 
-- [ ] T011 [P] [US1] Tests in `tests/unit/test_cause.py` for `derive_cause` covering every row of the data-model cause table (incl. `payment failed: card declined`, `stock rejected: unknown product`, bare `stock rejected` → UNKNOWN, other reason → UNKNOWN)
-- [ ] T012 [US1] Implement `src/ecommerce_ai/agents/triage_intake/cause.py::derive_cause(topic, reason) -> TriageCause`
+- [X] T011 [P] [US1] Tests in `tests/unit/test_cause.py` for `derive_cause` covering every row of the data-model cause table (incl. `payment failed: card declined`, `stock rejected: unknown product`, bare `stock rejected` → UNKNOWN, other reason → UNKNOWN)
+- [X] T012 [US1] Implement `src/ecommerce_ai/agents/triage_intake/cause.py::derive_cause(topic, reason) -> TriageCause`
 - [ ] T013 [P] [US1] Tests in `tests/unit/test_triage_intake.py` (fake store): first event creates case with derived cause, PENDING_TRIAGE, one evidence with topic/eventId/reason/occurredAt/receivedAt (UTC, fake clock)/payload; returns `processed`
 - [ ] T014 [US1] Implement `src/ecommerce_ai/agents/triage_intake/service.py::TriageIntakeService(store, clock).record(event) -> IntakeOutcome`, one transaction per event (FR-004, FR-005, FR-008)
 - [ ] T015 [US1] Implement `src/ecommerce_ai/infrastructure/db/triage_repository.py` (`INSERT … ON CONFLICT (order_id) DO NOTHING` → `SELECT … FOR UPDATE` → `INSERT evidence … ON CONFLICT (event_id) DO NOTHING RETURNING id` → update cause/updated_at; research 9); tests in `tests/integration/test_triage_repository.py`
