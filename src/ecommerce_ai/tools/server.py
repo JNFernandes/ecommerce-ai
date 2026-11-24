@@ -72,18 +72,18 @@ class RegistryTool(Tool):
         return ToolResult(structured_content=output.model_dump(mode="json", by_alias=True))
 
 
-def _error_result(code: ToolErrorCode) -> ToolResult:
-    body = ToolErrorResult.for_code(code).model_dump(mode="json")
+def _error_result(failure: ToolErrorResult) -> ToolResult:
+    body = failure.model_dump(mode="json")
     return ToolResult(content=body["message"], structured_content=body, is_error=True)
 
 
-def _failure_code(error: BaseException) -> ToolErrorCode | None:
-    """Return the error code ``error`` (or the error it wraps) maps to, if it is a known one."""
+def _failure_result(error: BaseException) -> ToolErrorResult | None:
+    """Return the error result ``error`` (or the error it wraps) maps to, if it is a known one."""
     for candidate in (error, error.__cause__):
         if isinstance(candidate, ToolFailure):
-            return candidate.code
+            return candidate.result
         if isinstance(candidate, PydanticValidationError):
-            return ToolErrorCode.INVALID_INPUT
+            return ToolErrorResult.for_code(ToolErrorCode.INVALID_INPUT)
     return None
 
 
@@ -109,13 +109,13 @@ class ToolCallMiddleware(Middleware):
         try:
             return await call_next(context)
         except Exception as error:
-            code = _failure_code(error)
-            if code is None:
+            failure = _failure_result(error)
+            if failure is None:
                 outcome = ToolErrorCode.UPSTREAM_ERROR.value
                 _logger.exception("tool_call_crashed", tool=name)
-                return _error_result(ToolErrorCode.UPSTREAM_ERROR)
-            outcome = code.value
-            return _error_result(code)
+                return _error_result(ToolErrorResult.for_code(ToolErrorCode.UPSTREAM_ERROR))
+            outcome = failure.error.value
+            return _error_result(failure)
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             _logger.info("tool_call", tool=name, outcome=outcome, duration_ms=duration_ms)

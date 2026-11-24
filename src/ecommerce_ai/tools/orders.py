@@ -3,10 +3,9 @@
 Every tool is a ``ToolDefinition`` naming its allowlisted Orders operation. Handlers call
 ``OrdersClient.execute`` with only the variables varying, validate the upstream ``data`` against
 the models below, cut long free text (``cancellationReason``, ``productId``) and wrap the result
-in the untrusted-data envelope. Upstream failures map to fixed error codes (data-model.md):
-``order: null`` → ``not_found``, ``Forbidden`` → ``not_allowed``, ``UpstreamError`` or a shape
-mismatch → ``upstream_error``; ``Unauthenticated`` also flags the caller so the endpoint answers
-HTTP 401.
+in the untrusted-data envelope. ``order: null`` → ``not_found``; upstream failures map through
+``tools.upstream_errors`` (``Forbidden`` → ``not_allowed``, ``UpstreamError`` → ``upstream_error``,
+``Unauthenticated`` also flags the caller so the endpoint answers HTTP 401).
 """
 
 from collections.abc import Mapping
@@ -18,9 +17,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from pydantic.alias_generators import to_camel
 
 from ecommerce_ai.infrastructure.caller import current_caller
-from ecommerce_ai.infrastructure.upstream import Forbidden, Unauthenticated, UpstreamError
 from ecommerce_ai.tools.envelope import ToolEnvelope, ToolErrorCode, ToolFailure, truncate_text
 from ecommerce_ai.tools.registry import AllowlistEntry, ToolDefinition
+from ecommerce_ai.tools.upstream_errors import map_upstream_errors
 
 ORDERS_SERVICE: Final = "ecommerce-orders"
 GRAPHQL_PATH: Final = "/api/graphql"
@@ -46,6 +45,7 @@ LIST_ORDERS: Final = (
 """The only document ``list_my_orders`` sends."""
 
 MAX_PAGE_SIZE: Final = 50
+ORDERS_UNAVAILABLE: Final = "orders service unavailable"
 
 
 class OrdersExecutor(Protocol):
@@ -157,15 +157,8 @@ async def run_query(
     max_bytes: int,
 ) -> dict[str, object]:
     """Execute ``document`` and map upstream failures to ``ToolFailure``."""
-    try:
+    with map_upstream_errors(unavailable=ORDERS_UNAVAILABLE):
         return await orders.execute(document, variables, timeout=timeout, max_bytes=max_bytes)
-    except Unauthenticated as error:
-        current_caller().upstream_unauthenticated = True
-        raise ToolFailure(ToolErrorCode.UPSTREAM_ERROR) from error
-    except Forbidden as error:
-        raise ToolFailure(ToolErrorCode.NOT_ALLOWED) from error
-    except UpstreamError as error:
-        raise ToolFailure(ToolErrorCode.UPSTREAM_ERROR) from error
 
 
 def get_order_tool(
