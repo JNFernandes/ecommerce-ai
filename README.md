@@ -109,7 +109,7 @@ stops the service at startup with an error naming the variable.
 | `JWT_CLOCK_TOLERANCE_SECONDS` | `5` | Clock skew allowed on `exp`/`iat` (`0`–`300`) |
 | `ORDERS_BASE_URL` | `http://localhost:8090/api/orders` | Orders API through the gateway |
 | `INVENTORY_BASE_URL` | `http://localhost:8090/api/inventory` | Inventory API through the gateway |
-| `NOTIFICATIONS_BASE_URL` | `http://localhost:8090/api/notifications` | Notifications API through the gateway |
+| `NOTIFICATIONS_BASE_URL` | `http://localhost:8090/api` | Notifications API through the gateway (`/notifications` appended) |
 | `ORDERS_GRAPHQL_URL` | `http://localhost:8090/api/graphql` | Orders GraphQL (`order`, `orders`) used by the MCP tools |
 | `JWKS_TIMEOUT_SECONDS` | `3` | Timeout of one JWKS fetch |
 | `JWKS_REFETCH_COOLDOWN_SECONDS` | `30` | Minimum gap between refetches on an unknown `kid` |
