@@ -25,6 +25,7 @@ from ecommerce_ai.agents.triage.model import (
 from ecommerce_ai.agents.triage.policy import allowed_actions, default_action
 from ecommerce_ai.agents.triage.ports import Clock, ModelError, PromptInput, TriageModel
 from ecommerce_ai.agents.triage.templates import fallback_draft
+from ecommerce_ai.agents.triage_intake.model import TriageCause
 
 type Gatekeeper = Callable[[DraftOutput, CaseForTriage, int], list[Violation]]
 """Checks one draft attempt of a case; returns its violations (empty = usable)."""
@@ -77,6 +78,11 @@ def classify(state: TriageState) -> StateUpdate:
     return {"default_action": default_action(state.case.cause)}
 
 
+def _after_classify(state: TriageState) -> Literal["draft", "fallback"]:
+    # A case without evidence (should not exist) gets the UNKNOWN template (spec edge case).
+    return _DRAFT if state.case.evidence else _FALLBACK
+
+
 def _after_draft(state: TriageState) -> Literal["gatekeeper", "fallback"]:
     return _GATEKEEPER if state.draft is not None else _FALLBACK
 
@@ -113,7 +119,7 @@ class TriageGraph:
         graph.add_node(_FINALIZE, self._finalize)
         graph.add_node(_FALLBACK, self._fallback)
         graph.add_edge(START, _CLASSIFY)
-        graph.add_edge(_CLASSIFY, _DRAFT)
+        graph.add_conditional_edges(_CLASSIFY, _after_classify)
         graph.add_conditional_edges(_DRAFT, _after_draft)
         graph.add_conditional_edges(_GATEKEEPER, _after_gatekeeper)
         graph.add_edge(_FINALIZE, END)
@@ -193,8 +199,12 @@ class TriageGraph:
         return {"result": self._result(state, state.draft, ResultSource.LLM, state.model_id)}
 
     def _fallback(self, state: TriageState) -> StateUpdate:
-        """Use the cause's fixed template (FR-010); tokens and violations stay recorded."""
-        template = fallback_draft(state.case.cause)
+        """Use the cause's fixed template (FR-010); tokens and violations stay recorded.
+
+        A case without evidence gets the UNKNOWN template: nothing supports its cause's text.
+        """
+        cause = state.case.cause if state.case.evidence else TriageCause.UNKNOWN
+        template = fallback_draft(cause)
         return {"result": self._result(state, template, ResultSource.FALLBACK_TEMPLATE, None)}
 
 
