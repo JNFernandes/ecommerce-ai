@@ -175,10 +175,10 @@ message needs an existing conversation; both are P1 and together form the MVP.
   with the same saver) sends the model the first question, tool results and answer; two
   conversations of one user see no shared state; delete removes the thread
   (`adelete_thread`)
-- [ ] T030 [P] [US3] Integration tests `tests/integration/test_checkpoint_saver.py`: `aput`/
+- [X] T030 [P] [US3] Integration tests `tests/integration/test_checkpoint_saver.py`: `aput`/
   `aget_tuple`/`alist`/`aput_writes`/`adelete_thread`, only newest checkpoint kept, a real graph
   run resumes across two saver instances, conversation delete removes checkpoint rows
-- [ ] T031 [US3] Implement `src/ecommerce_ai/infrastructure/db/checkpoint_saver.py::
+- [X] T031 [US3] Implement `src/ecommerce_ai/infrastructure/db/checkpoint_saver.py::
   PostgresCheckpointSaver` on the async engine (research Ã‚Â§5) and wire it in
   `src/ecommerce_ai/main.py`; `ChatService` delete calls `adelete_thread`
 

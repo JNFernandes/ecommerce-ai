@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 import respx
+from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.exc import OperationalError
 
 from ecommerce_ai.agents.assistant.model import FinishReason, Usage
@@ -47,7 +48,9 @@ def store() -> InMemoryConversationStore:
 @pytest.fixture
 def client(identity: respx.Route, store: InMemoryConversationStore) -> httpx.AsyncClient:
     """A client over the app without running its lifespan (no background task is enabled)."""
-    transport = httpx.ASGITransport(app=create_app(probes=[], conversation_store=store))
+    transport = httpx.ASGITransport(
+        app=create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+    )
     return httpx.AsyncClient(transport=transport, base_url="http://localhost")
 
 
@@ -243,7 +246,9 @@ async def test_should_answer_503_when_the_signing_keys_are_unavailable(
     with respx.mock(assert_all_called=False) as router:
         router.get(JWKS_URL).mock(side_effect=httpx.ConnectError("identity down"))
         router.route(host="localhost").pass_through()
-        async with serve_app(create_app(probes=[], conversation_store=store)) as client:
+        async with serve_app(
+            create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+        ) as client:
             response = await client.get("/chat/conversations", headers=_auth())
 
     assert response.status_code == 503
@@ -278,7 +283,7 @@ async def test_should_propagate_when_the_store_fails_with_a_non_transient_error(
     store: InMemoryConversationStore, identity: respx.Route
 ) -> None:
     store.failures["list"] = deque([RuntimeError("bug")])
-    app = create_app(probes=[], conversation_store=store)
+    app = create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         response = await client.get("/chat/conversations", headers=_auth())
@@ -289,7 +294,7 @@ async def test_should_propagate_when_the_store_fails_with_a_non_transient_error(
 async def test_should_keep_fastapi_validation_errors_outside_chat(
     store: InMemoryConversationStore,
 ) -> None:
-    app = create_app(probes=[], conversation_store=store)
+    app = create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
 
     @app.get("/probe-validation", openapi_extra={"x-public": True})
     async def probe(number: int) -> int:
@@ -305,7 +310,7 @@ async def test_should_keep_fastapi_validation_errors_outside_chat(
 def test_should_declare_authenticated_access_on_every_chat_route(
     store: InMemoryConversationStore,
 ) -> None:
-    app = create_app(probes=[], conversation_store=store)
+    app = create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
 
     operations = [
         operation

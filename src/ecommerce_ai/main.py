@@ -25,7 +25,6 @@ import structlog
 import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
-from langgraph.checkpoint.memory import InMemorySaver
 
 from ecommerce_ai.agents.assistant.graph import ChatGraph
 from ecommerce_ai.agents.assistant.ports import (
@@ -53,6 +52,7 @@ from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
 from ecommerce_ai.infrastructure.auth import TokenVerifier
+from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
@@ -224,7 +224,7 @@ def create_app(
     checkpointer and the chat's tool runner replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
-    answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state stays in memory.
+    answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
     """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
@@ -301,7 +301,7 @@ def create_app(
         model=chat_model,
         tools=tool_runner or InvokerToolRunner(ToolInvoker(registry)),
         prompt=load_system_prompt("assistant", "v1"),
-        checkpointer=checkpointer or InMemorySaver(),
+        checkpointer=checkpointer or PostgresCheckpointSaver(engine),
     )
     chat = build_chat_router(
         store,
