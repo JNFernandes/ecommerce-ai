@@ -4,9 +4,11 @@ import asyncio
 from collections.abc import Callable
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ecommerce_ai.agents.triage_intake.model import TriageEventInput
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.tables import triage_cases, triage_evidence
@@ -17,7 +19,8 @@ from ecommerce_ai.messaging.contracts import (
     PAYMENT_FAILED_TOPIC,
     STOCK_REJECTED_TOPIC,
 )
-from ecommerce_ai.messaging.kafka import TopicPartition
+from ecommerce_ai.messaging.decoding import decode
+from ecommerce_ai.messaging.kafka import ConsumedRecord, TopicPartition
 from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from tests.support.kafka import (
     OCCURRED_AT,
@@ -112,3 +115,92 @@ async def test_should_store_the_event_as_evidence_when_a_payment_failure_is_save
     assert evidence["received_at"].utcoffset().total_seconds() == 0
     assert evidence["payload"]["orderId"] == str(order_id)
     assert "failedAt" not in evidence["payload"]
+
+
+def _intake(engine: AsyncEngine) -> TriageIntakeService:
+    return TriageIntakeService(TriageRepository(engine))
+
+
+def _input(record: ConsumedRecord) -> TriageEventInput:
+    decoded = decode(record)
+    assert isinstance(decoded, TriageEventInput)
+    return decoded
+
+
+def _cancelled(order_id: UUID, reason: str | None = None) -> TriageEventInput:
+    return _input(
+        make_record(ORDER_CANCELLED_TOPIC, order_cancelled_payload(order_id, reason=reason))
+    )
+
+
+def _payment_failed(order_id: UUID) -> TriageEventInput:
+    return _input(make_record(PAYMENT_FAILED_TOPIC, payment_failed_payload(order_id)))
+
+
+def _stock_rejected(order_id: UUID, reason: str = "insufficient stock") -> TriageEventInput:
+    return _input(
+        make_record(STOCK_REJECTED_TOPIC, stock_rejected_payload(order_id, reason=reason))
+    )
+
+
+FAILURES: dict[str, Callable[[UUID], TriageEventInput]] = {
+    "PAYMENT_FAILED": _payment_failed,
+    "INSUFFICIENT_STOCK": _stock_rejected,
+    "UNKNOWN_PRODUCT": lambda order_id: _stock_rejected(order_id, "unknown product"),
+}
+
+
+@pytest.mark.parametrize("cancellation_first", [True, False], ids=["cancel-first", "fail-first"])
+@pytest.mark.parametrize("cause", sorted(FAILURES))
+async def test_should_keep_one_case_with_the_failure_cause_in_any_arrival_order(
+    db_engine: AsyncEngine, cause: str, cancellation_first: bool
+) -> None:
+    order_id = uuid4()
+    events = [_cancelled(order_id), FAILURES[cause](order_id)]
+    if not cancellation_first:
+        events.reverse()
+
+    for event in events:
+        await _intake(db_engine).record(event)
+
+    assert await _cases(db_engine) == {order_id: (cause, "PENDING_TRIAGE", 2)}
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "cause"),
+    [
+        (_payment_failed, _stock_rejected, "PAYMENT_FAILED"),
+        (_stock_rejected, _payment_failed, "INSUFFICIENT_STOCK"),
+        (
+            lambda order_id: _cancelled(order_id, "payment failed: card declined"),
+            _stock_rejected,
+            "PAYMENT_FAILED",
+        ),
+    ],
+    ids=["payment-then-stock", "stock-then-payment", "cancelled-payment-then-stock"],
+)
+async def test_should_keep_the_first_failure_cause_when_two_failures_arrive(
+    db_engine: AsyncEngine,
+    first: Callable[[UUID], TriageEventInput],
+    second: Callable[[UUID], TriageEventInput],
+    cause: str,
+) -> None:
+    order_id = uuid4()
+
+    await _intake(db_engine).record(first(order_id))
+    await _intake(db_engine).record(second(order_id))
+
+    assert await _cases(db_engine) == {order_id: (cause, "PENDING_TRIAGE", 2)}
+
+
+async def test_should_create_one_case_when_two_events_for_a_new_order_race(
+    db_engine: AsyncEngine,
+) -> None:
+    order_id = uuid4()
+    intake = _intake(db_engine)
+
+    await asyncio.gather(
+        intake.record(_cancelled(order_id)), intake.record(_payment_failed(order_id))
+    )
+
+    assert await _cases(db_engine) == {order_id: ("PAYMENT_FAILED", "PENDING_TRIAGE", 2)}
