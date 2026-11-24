@@ -217,12 +217,15 @@ def list_my_orders_tool(
         customer_id = current_caller().identity.customer_id
         if customer_id is None:
             raise ToolFailure(ToolErrorCode.NOT_ALLOWED)
-        variables = {
+        variables: dict[str, object] = {
             "customerId": str(customer_id),
-            "status": None if arguments.status is None else arguments.status.value,
             "limit": arguments.limit,
             "offset": 0,
         }
+        # Omit `status` rather than send null: Orders turns an explicit null into a
+        # `status = null` filter that matches nothing, so the page comes back empty.
+        if arguments.status is not None:
+            variables["status"] = arguments.status.value
         data = await run_query(orders, LIST_ORDERS, variables, timeout=timeout, max_bytes=max_bytes)
         try:
             page = OrdersPage.model_validate(data.get("orders"))
