@@ -75,7 +75,7 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 - [X] T030 [US5] Implement in `src/ecommerce_ai/messaging/triage_consumer.py`: outer reconnect loop, DB retry via `infrastructure/retry.py::call_with_retry` with `is_transient_db_error`, `ConsumerState` updates, graceful stop (research 2–4, 13); task cancellation bounded by the shutdown timeout in `main.py`
 - [X] T031 [P] [US5] Tests in `tests/unit/test_health_api.py`: `consumer` object (`connected`, `caughtUp`, `lastError`) present; `null` when disabled; consumer down never changes status/HTTP code; DB down still 503; app with no Kafka/DB answers `/health` and `/ready` within 5 s (SC-005, fake probes + failing fake consumer factory)
 - [X] T032 [US5] Extend `ReadinessResponse` in `src/ecommerce_ai/api/health.py` with optional `consumer` (OpenAPI descriptions, camelCase) reading `ConsumerState`; pass state from `main.py`
-- [ ] T033 [US5] `tests/integration/test_triage_flow.py`: DB connection failure injected during a save (e.g. dispose/terminate backend) → offset not committed, event recorded after recovery
+- [X] T033 [US5] `tests/integration/test_triage_flow.py`: DB connection failure injected during a save (e.g. dispose/terminate backend) → offset not committed, event recorded after recovery
 
 ## Phase 8: Polish
 
