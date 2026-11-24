@@ -82,7 +82,7 @@ fail. After every task: quiet gate (CLAUDE.md); commit after green.
 
 ## Phase 8: Polish
 
-- [ ] T037 [P] FR-020 test in `tests/unit/test_triage_service.py` / `test_outbox_relay.py`: captured `triage_case`, `outbox_publish` and model log lines contain no evidence payload, reason, customer id, explanation or prompt text
+- [X] T037 [P] FR-020 test in `tests/unit/test_triage_service.py` / `test_outbox_relay.py`: captured `triage_case`, `outbox_publish` and model log lines contain no evidence payload, reason, customer id, explanation or prompt text
 - [ ] T038 [P] Confirm the constitution 2.0.0 text (IV, VI, VII) matches the implementation; fix any drift in the code or a PATCH amendment
 - [ ] T039 [P] Update `README.md`, `CLAUDE.md` (agents/triage, prompts, llm, outbox relay, new tables, settings, `/ready` entries, `live_llm`, constitution 2.0.0) and verify the `Dockerfile` image contains `triage.v1.md`
 - [ ] T040 Run the full quiet gate (coverage ≥ 80%) and the [quickstart.md](quickstart.md) automated steps; manual steps if the infra stack is up

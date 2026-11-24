@@ -3,13 +3,19 @@
 import io
 import json
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
-from ecommerce_ai.agents.triage.model import ResultSource, SuggestedAction
+from ecommerce_ai.agents.triage.model import (
+    CaseForTriage,
+    EvidenceItem,
+    ResultSource,
+    SuggestedAction,
+)
 from ecommerce_ai.agents.triage.policy import default_action
 from ecommerce_ai.agents.triage.ports import TriageModel
 from ecommerce_ai.agents.triage.service import TriageService
@@ -164,3 +170,38 @@ async def test_should_log_one_triage_case_line_with_ids_tokens_and_latency() -> 
     assert line["outcome"] == "completed"
     assert "card declined" not in stream.getvalue()
     assert "The card was declined" not in stream.getvalue()
+
+
+async def test_should_never_log_evidence_reasons_customer_ids_explanations_or_prompts() -> None:
+    customer_id = str(uuid4())
+    reason = "card declined by issuer 4242"
+    base = make_case(TriageCause.PAYMENT_FAILED)
+    case = CaseForTriage(
+        case_id=base.case_id,
+        order_id=base.order_id,
+        cause=base.cause,
+        evidence=(
+            EvidenceItem(
+                topic="payments.payment-failed",
+                reason=reason,
+                occurred_at=NOW,
+                payload={"orderId": str(base.order_id), "customerId": customer_id},
+            ),
+        ),
+    )
+    queue = InMemoryTriageCaseQueue()
+    queue.add(case, NOW - _settled())
+    refund = "The order failed, and a refund was issued to the customer."
+    explanation = "The payment was declined, so the order failed."
+    model = ScriptedModel([reply(refund), reply(explanation)])
+    service = _service(queue, model)
+    stream = io.StringIO()
+    configure_logging("DEBUG", stream)
+
+    assert await service.triage_one()
+
+    logged = stream.getvalue()
+    assert "triage_case" in logged
+    prompt = load_prompt("triage", "v1")
+    for secret in (customer_id, reason, "4242", refund, explanation, prompt.system[:40]):
+        assert secret not in logged
