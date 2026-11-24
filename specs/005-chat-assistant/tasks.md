@@ -98,7 +98,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 - [X] T012 [P] [US2] Integration tests `tests/integration/test_conversation_repository.py`: create,
   list newest `updated_at` first with total/limit/offset, get with history oldest first, user_id
   filter on every query, delete cascades messages, count, add message bumps `updated_at`
-- [ ] T013 [P] [US2] API tests `tests/unit/test_chat_api.py`: 201 with/without title (>200 Ã¢â€ â€™ 422),
+- [X] T013 [P] [US2] API tests `tests/unit/test_chat_api.py`: 201 with/without title (>200 Ã¢â€ â€™ 422),
   list paging (limit 0/101, offset Ã¢Ë†â€™1 Ã¢â€ â€™ 422), get with messages, delete 204 then 404, cross-user
   and malformed id Ã¢â€ â€™ same 404 body `NOT_FOUND`, 401/403/503 same as `/mcp`, DB down Ã¢â€ â€™ 503
   `UNAVAILABLE`, every route has an access policy
@@ -106,11 +106,11 @@ message needs an existing conversation; both are P1 and together form the MVP.
   ConversationRepository` (implements `ConversationStore`; every query filters `user_id`; delete
   also removes `chat_checkpoints`/`chat_checkpoint_writes` rows of the thread in the same
   transaction)
-- [ ] T015 [US2] Implement `src/ecommerce_ai/api/chat.py` conversations router: schemas (camelCase,
+- [X] T015 [US2] Implement `src/ecommerce_ai/api/chat.py` conversations router: schemas (camelCase,
   OpenAPI descriptions + examples), `POST/GET /chat/conversations`, `GET/DELETE
   /chat/conversations/{id}`, `{code, message}` error bodies, `openapi_extra=AUTHENTICATED`,
   `require_caller`, DB errors (`is_transient_db_error`) Ã¢â€ â€™ 503
-- [ ] T016 [US2] Wire the repository and router in `src/ecommerce_ai/main.py` (`create_app` gains
+- [X] T016 [US2] Wire the repository and router in `src/ecommerce_ai/main.py` (`create_app` gains
   `conversation_store=None` for tests) and `src/ecommerce_ai/api/app.py`; extend
   `tests/unit/test_main.py`
 

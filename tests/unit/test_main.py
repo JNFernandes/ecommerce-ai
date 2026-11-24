@@ -13,9 +13,11 @@ import respx
 import uvicorn
 from anthropic import AsyncAnthropic
 from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ecommerce_ai import main
 from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
+from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.health import DependencyStatus
 from ecommerce_ai.infrastructure.llm.anthropic_model import (
     AnthropicTriageModel,
@@ -391,3 +393,22 @@ async def test_should_build_the_llm_client_only_when_configured_and_close_it_on_
         assert not llm.is_closed()
 
     assert llm.is_closed()
+
+
+def test_should_serve_the_chat_routes_on_the_database_repository_when_no_store_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = ConversationRepository
+    built: list[ConversationRepository] = []
+
+    def recording_repository(engine: AsyncEngine) -> ConversationRepository:
+        built.append(real(engine))
+        return built[-1]
+
+    monkeypatch.setattr(main, "ConversationRepository", recording_repository)
+
+    app = create_app(probes=[])
+
+    assert len(built) == 1
+    paths = set(app.openapi()["paths"])
+    assert {"/chat/conversations", "/chat/conversations/{conversation_id}"} <= paths

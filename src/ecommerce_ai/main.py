@@ -18,6 +18,7 @@ import argparse
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -25,6 +26,7 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
+from ecommerce_ai.agents.assistant.ports import ConversationStore
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -38,8 +40,11 @@ from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker, WorkerState
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.api.app import build_api
+from ecommerce_ai.api.auth import require_caller
+from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
 from ecommerce_ai.infrastructure.auth import TokenVerifier
+from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
@@ -199,6 +204,7 @@ def create_app(
     producer_factory: ProducerFactory | None = None,
     triage_queue: TriageCaseQueue | None = None,
     outbox_store: OutboxStore | None = None,
+    conversation_store: ConversationStore | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories and the stores replace the real
     ones in tests."""
@@ -270,6 +276,12 @@ def create_app(
         backoff_max_seconds=settings.outbox_backoff_max_seconds,
         state=relay_state,
     )
+    chat = build_chat_router(
+        conversation_store or ConversationRepository(engine),
+        require_caller(verifier),
+        clock=lambda: datetime.now(UTC),
+        is_unavailable=is_transient_db_error,
+    )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 
     @asynccontextmanager
@@ -300,6 +312,7 @@ def create_app(
         checker,
         mcp=mcp,
         resources=resources,
+        chat=chat,
         consumer_state=consumer_state if settings.triage_consumer_enabled else None,
         worker_state=worker.state if settings.triage_worker_enabled else None,
         relay_state=relay_state if settings.triage_worker_enabled else None,

@@ -1,0 +1,301 @@
+"""The ``/chat`` routes: a customer's own conversations (contracts/chat-api.md).
+
+I/O only: authentication (``require_caller``, any role), validation and the ``{code, message}``
+error bodies. Every store call is scoped to the token subject, so an unknown, malformed or
+another user's id gives the same 404 (FR-003). A storage outage (``is_unavailable``) is a 503
+``UNAVAILABLE``; any other error propagates.
+"""
+
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime
+from enum import StrEnum
+from typing import Annotated, Final
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response, status
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
+
+from ecommerce_ai.agents.assistant.model import (
+    Conversation,
+    ConversationHistory,
+    FinishReason,
+    MessageRole,
+    StoredMessage,
+    Usage,
+)
+from ecommerce_ai.agents.assistant.ports import ConversationStore
+from ecommerce_ai.api.route_policy import AUTHENTICATED
+from ecommerce_ai.infrastructure.caller import RequestCaller
+
+PREFIX: Final = "/chat"
+TITLE_MAX_CHARS: Final = 200
+
+
+class ChatHttpCode(StrEnum):
+    """Code of an error answered before any stream opens."""
+
+    NOT_FOUND = "NOT_FOUND"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+HTTP_MESSAGES: Final = {
+    ChatHttpCode.NOT_FOUND: "Conversation not found.",
+    ChatHttpCode.VALIDATION_FAILED: "The request is not valid.",
+    ChatHttpCode.UNAVAILABLE: "The assistant is unavailable right now. Please try again later.",
+}
+"""The fixed message of each code; never request or storage details."""
+
+_STATUS: Final = {
+    ChatHttpCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    ChatHttpCode.VALIDATION_FAILED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ChatHttpCode.UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+}
+
+
+class _Camel(BaseModel):
+    model_config = ConfigDict(frozen=True, alias_generator=to_camel, populate_by_name=True)
+
+
+class ErrorBody(_Camel):
+    """Error answered before the stream opens."""
+
+    code: str = Field(description="Error code, e.g. `NOT_FOUND`.", examples=["NOT_FOUND"])
+    message: str = Field(description="Fixed, customer-safe message of the code.")
+
+
+class CreateConversationRequest(_Camel):
+    """Body of `POST /chat/conversations`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    title: str | None = Field(
+        default=None,
+        max_length=TITLE_MAX_CHARS,
+        description="Optional title, trimmed; blank means none. No title is generated.",
+        examples=["My last order"],
+    )
+
+    @field_validator("title", mode="after")
+    @classmethod
+    def _trimmed(cls, value: str | None) -> str | None:
+        return (value.strip() or None) if value is not None else None
+
+
+class ConversationResponse(_Camel):
+    """A conversation of the caller."""
+
+    id: UUID = Field(description="Conversation id.")
+    title: str | None = Field(description="Title, or `null`.")
+    created_at: datetime = Field(description="Creation time, UTC ISO 8601.")
+    updated_at: datetime = Field(description="Time of the last message, UTC ISO 8601.")
+
+    @classmethod
+    def of(cls, conversation: Conversation) -> "ConversationResponse":
+        """The response of ``conversation``."""
+        return cls.model_validate(conversation.model_dump())
+
+
+class UsageResponse(_Camel):
+    """Tokens one answer spent."""
+
+    input_tokens: int = Field(description="Input tokens.")
+    output_tokens: int = Field(description="Output tokens.")
+
+
+class MessageResponse(_Camel):
+    """A stored message; assistant fields are `null` on user messages."""
+
+    id: UUID = Field(description="Message id (the stream's `messageId` for an answer).")
+    role: MessageRole = Field(description="`user` or `assistant`.")
+    content: str = Field(description="The text posted, or the answer text actually sent.")
+    created_at: datetime = Field(description="Creation time, UTC ISO 8601.")
+    finish_reason: FinishReason | None = Field(description="How the answer ended.")
+    prompt_version: str | None = Field(description="System prompt version of the answer.")
+    model_id: str | None = Field(description="Model that answered, or `null`.")
+    usage: UsageResponse | None = Field(description="Tokens the answer spent.")
+
+    @classmethod
+    def of(cls, message: StoredMessage) -> "MessageResponse":
+        """The response of ``message``."""
+        usage: Usage | None = message.usage
+        return cls(
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            created_at=message.created_at,
+            finish_reason=message.finish_reason,
+            prompt_version=message.prompt_version,
+            model_id=message.model_id,
+            usage=None if usage is None else UsageResponse.model_validate(usage.model_dump()),
+        )
+
+
+class ConversationDetailResponse(ConversationResponse):
+    """A conversation with its messages, oldest first."""
+
+    messages: tuple[MessageResponse, ...] = Field(description="Messages, oldest first.")
+
+    @classmethod
+    def of_history(cls, history: ConversationHistory) -> "ConversationDetailResponse":
+        """The response of ``history``."""
+        return cls.model_validate(
+            history.conversation.model_dump()
+            | {"messages": tuple(MessageResponse.of(m) for m in history.messages)}
+        )
+
+
+class ConversationListResponse(_Camel):
+    """One page of the caller's conversations, newest activity first."""
+
+    items: tuple[ConversationResponse, ...] = Field(description="The page.")
+    total: int = Field(description="Number of the caller's conversations.")
+    limit: int = Field(description="Page size asked for.")
+    offset: int = Field(description="Conversations skipped.")
+
+
+def error_response(code: ChatHttpCode) -> JSONResponse:
+    """The fixed ``{code, message}`` response of ``code``."""
+    body = ErrorBody(code=code.value, message=HTTP_MESSAGES[code])
+    return JSONResponse(body.model_dump(by_alias=True), status_code=_STATUS[code])
+
+
+class ChatUnavailable(Exception):
+    """Storage was unreachable; answered 503 ``UNAVAILABLE``."""
+
+
+def install_chat_error_handlers(app: FastAPI) -> None:
+    """Answer ``/chat`` validation errors and outages with ``{code, message}`` bodies."""
+
+    async def on_validation(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, RequestValidationError):  # registered for this class only
+            raise exc
+        if request.url.path.startswith(PREFIX + "/"):
+            return error_response(ChatHttpCode.VALIDATION_FAILED)
+        return await request_validation_exception_handler(request, exc)
+
+    async def on_unavailable(_request: Request, _exc: Exception) -> Response:
+        return error_response(ChatHttpCode.UNAVAILABLE)
+
+    app.add_exception_handler(RequestValidationError, on_validation)
+    app.add_exception_handler(ChatUnavailable, on_unavailable)
+
+
+_ERRORS: Final[dict[int | str, dict[str, object]]] = {
+    401: {"description": "Missing or invalid token (same body as `/mcp`)."},
+    403: {"description": "The token carries no role."},
+    503: {"model": ErrorBody, "description": "`UNAVAILABLE`: storage or signing keys down."},
+}
+_NOT_FOUND: Final[dict[int | str, dict[str, object]]] = {
+    404: {"model": ErrorBody, "description": "`NOT_FOUND`: unknown, malformed or not yours."},
+}
+_INVALID: Final[dict[int | str, dict[str, object]]] = {
+    422: {"model": ErrorBody, "description": "`VALIDATION_FAILED`."},
+}
+
+
+def _parse_id(raw: str) -> UUID | None:
+    try:
+        return UUID(raw)
+    except ValueError:
+        return None
+
+
+def build_chat_router(
+    store: ConversationStore,
+    caller_dependency: Callable[[Request], AsyncIterator[RequestCaller]],
+    *,
+    clock: Callable[[], datetime],
+    is_unavailable: Callable[[BaseException], bool],
+) -> APIRouter:
+    """Return the ``/chat`` router over ``store``; ``clock`` stamps new conversations."""
+    router = APIRouter(prefix=PREFIX, tags=["chat"])
+    Caller = Annotated[RequestCaller, Depends(caller_dependency)]  # a type alias
+
+    async def guarded[T](call: Awaitable[T]) -> T:
+        try:
+            return await call
+        except Exception as exc:
+            if is_unavailable(exc):
+                raise ChatUnavailable from exc
+            raise
+
+    @router.post(
+        "/conversations",
+        status_code=status.HTTP_201_CREATED,
+        summary="Create a conversation",
+        description="Create an empty conversation of the caller.",
+        responses=_ERRORS | _INVALID,
+        openapi_extra=AUTHENTICATED,
+    )
+    async def create_conversation(
+        caller: Caller, body: CreateConversationRequest | None = None
+    ) -> ConversationResponse:
+        identity = caller.identity
+        title = body.title if body is not None else None
+        created = await guarded(
+            store.create(identity.subject, identity.customer_id, title, clock())
+        )
+        return ConversationResponse.of(created)
+
+    @router.get(
+        "/conversations",
+        summary="List my conversations",
+        description="The caller's conversations, most recent activity first.",
+        responses=_ERRORS | _INVALID,
+        openapi_extra=AUTHENTICATED,
+    )
+    async def list_conversations(
+        caller: Caller,
+        limit: Annotated[int, Query(ge=1, le=100, description="Page size.")] = 20,
+        offset: Annotated[int, Query(ge=0, description="Conversations to skip.")] = 0,
+    ) -> ConversationListResponse:
+        page = await guarded(store.list(caller.identity.subject, limit, offset))
+        return ConversationListResponse(
+            items=tuple(ConversationResponse.of(c) for c in page.items),
+            total=page.total,
+            limit=limit,
+            offset=offset,
+        )
+
+    @router.get(
+        "/conversations/{conversation_id}",
+        summary="Read a conversation",
+        description="One conversation of the caller with its messages, oldest first.",
+        responses=_ERRORS | _NOT_FOUND,
+        response_model=ConversationDetailResponse,
+        openapi_extra=AUTHENTICATED,
+    )
+    async def get_conversation(caller: Caller, conversation_id: str) -> Response:
+        parsed = _parse_id(conversation_id)
+        history = (
+            None if parsed is None else await guarded(store.get(caller.identity.subject, parsed))
+        )
+        if history is None:
+            return error_response(ChatHttpCode.NOT_FOUND)
+        detail = ConversationDetailResponse.of_history(history)
+        return JSONResponse(detail.model_dump(mode="json", by_alias=True))
+
+    @router.delete(
+        "/conversations/{conversation_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        summary="Delete a conversation",
+        description="Delete one conversation of the caller, its messages and its memory.",
+        responses=_ERRORS | _NOT_FOUND,
+        response_class=Response,
+        openapi_extra=AUTHENTICATED,
+    )
+    async def delete_conversation(caller: Caller, conversation_id: str) -> Response:
+        parsed = _parse_id(conversation_id)
+        deleted = parsed is not None and await guarded(
+            store.delete(caller.identity.subject, parsed)
+        )
+        if not deleted:
+            return error_response(ChatHttpCode.NOT_FOUND)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    return router
