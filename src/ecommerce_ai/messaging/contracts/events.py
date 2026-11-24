@@ -1,20 +1,25 @@
-"""Models of the three failure events the triage consumer reads (``events.md``).
+"""Models of the events in ``events.md``: three consumed failure events and one produced result.
 
 Every event shares the envelope (``eventId``, ``aggregateId``, ``occurredAt``, ``version``).
 Orders events identify the order by ``aggregateId``; Payments and Inventory events carry it in
-``orderId`` (FR-003), which ``order_key`` hides from callers.
+``orderId`` (FR-003), which ``order_key`` hides from callers. ``OrderTriageCompleted`` is the
+event this service publishes; its ``aggregateId`` is the order id.
 """
 
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Final, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
+
+from ecommerce_ai.agents.triage.model import ResultSource, SuggestedAction
+from ecommerce_ai.agents.triage_intake.model import TriageCause
 
 ORDER_CANCELLED_TOPIC: Final = "orders.order-cancelled"
 PAYMENT_FAILED_TOPIC: Final = "payments.payment-failed"
 STOCK_REJECTED_TOPIC: Final = "inventory.stock-rejected"
+ORDER_TRIAGE_COMPLETED_TOPIC: Final = "ai.order-triage-completed"
 
 
 class StockRejectReason(StrEnum):
@@ -93,3 +98,42 @@ TOPIC_MODELS: Final[dict[str, TriageEventModel]] = {
     STOCK_REJECTED_TOPIC: StockRejected,
 }
 """Model that validates each consumed topic (FR-002)."""
+
+
+class OrderTriageCompleted(EventEnvelope):
+    """``ai.order-triage-completed``: why an order failed, for people only (advisory, FR-018).
+
+    Produced, so unknown fields are rejected. ``aggregateId`` and ``orderId`` are the order id,
+    which is also the Kafka key; ``modelId`` is null exactly when ``source`` is a fallback.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: UUID = Field(description="The order; equal to `aggregateId`.")
+    cause: TriageCause = Field(description="Why the order failed.")
+    explanation: str = Field(
+        min_length=1, max_length=1000, description="Plain text for an operator; ids only."
+    )
+    suggested_action: SuggestedAction = Field(
+        description="Advice for a human; the AI never carries it out."
+    )
+    confidence: float = Field(ge=0, le=1, description="From 0 to 1.")
+    prompt_version: str = Field(min_length=1, description="Prompt version, e.g. `triage.v1`.")
+    model_id: str | None = Field(
+        description="LLM model id when `source` is `LLM`; null for `FALLBACK_TEMPLATE`."
+    )
+    source: ResultSource = Field(description="`LLM` or `FALLBACK_TEMPLATE`.")
+
+    @property
+    def order_key(self) -> UUID:
+        """The order id, which is the ``aggregateId`` and the message key."""
+        return self.aggregate_id
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> Self:
+        """``orderId`` equals ``aggregateId``; ``modelId`` is null iff the source is a fallback."""
+        if self.order_id != self.aggregate_id:
+            raise ValueError("orderId must equal aggregateId")
+        if (self.model_id is None) != (self.source is ResultSource.FALLBACK_TEMPLATE):
+            raise ValueError("modelId must be null exactly when source is FALLBACK_TEMPLATE")
+        return self
