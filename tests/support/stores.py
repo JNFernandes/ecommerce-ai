@@ -1,5 +1,5 @@
 """In-memory stores with injectable failures: triage cases, dead letters, the triage queue,
-the token budget and the outbox.
+the token budget, the outbox and the chat conversations.
 
 Every store keeps unit-of-work semantics: changes made inside a transaction or claim become
 visible only when the block exits normally and are discarded when it raises. Queue exceptions
@@ -16,6 +16,15 @@ from uuid import UUID, uuid4
 
 from pydantic import JsonValue
 
+from ecommerce_ai.agents.assistant.model import (
+    Conversation,
+    ConversationHistory,
+    FinishReason,
+    MessageRole,
+    StoredMessage,
+    Usage,
+)
+from ecommerce_ai.agents.assistant.ports import ConversationPage
 from ecommerce_ai.agents.triage.model import CaseForTriage, TriageResult
 from ecommerce_ai.agents.triage_intake.model import (
     LockedCase,
@@ -433,3 +442,123 @@ class InMemoryOutboxStore:
         if claim.outcome is not None:
             self._events[claim.outcome.message.event_id] = claim.outcome
         self.commits += 1
+
+
+class InMemoryConversationStore:
+    """A ``ConversationStore`` in memory, scoped by user like the repository.
+
+    Queue exceptions in ``failures[method]`` (e.g. ``"add_user_message"``) to make the next
+    calls of that method raise; nothing is changed by a failing call.
+    """
+
+    def __init__(self) -> None:
+        """Start without conversations."""
+        self.conversations: dict[UUID, tuple[str, Conversation]] = {}
+        self.messages: dict[UUID, list[StoredMessage]] = {}
+        self.failures: dict[str, deque[BaseException]] = {}
+
+    def _fail(self, method: str) -> None:
+        queued = self.failures.get(method)
+        if queued:
+            raise queued.popleft()
+
+    def _owned(self, user_id: str, conversation_id: UUID) -> Conversation | None:
+        entry = self.conversations.get(conversation_id)
+        return entry[1] if entry is not None and entry[0] == user_id else None
+
+    def _touch(self, conversation_id: UUID, now: datetime) -> None:
+        user_id, conversation = self.conversations[conversation_id]
+        self.conversations[conversation_id] = (
+            user_id,
+            conversation.model_copy(update={"updated_at": now}),
+        )
+
+    async def create(
+        self, user_id: str, customer_id: UUID | None, title: str | None, now: datetime
+    ) -> Conversation:
+        """Create an empty conversation."""
+        self._fail("create")
+        conversation = Conversation(id=uuid4(), title=title, created_at=now, updated_at=now)
+        self.conversations[conversation.id] = (user_id, conversation)
+        self.messages[conversation.id] = []
+        return conversation
+
+    async def list(self, user_id: str, limit: int, offset: int) -> ConversationPage:
+        """The user's conversations, newest ``updated_at`` first."""
+        self._fail("list")
+        owned = sorted(
+            (c for owner, c in self.conversations.values() if owner == user_id),
+            key=lambda c: (c.updated_at, c.id),
+            reverse=True,
+        )
+        return ConversationPage(items=tuple(owned[offset : offset + limit]), total=len(owned))
+
+    async def get(self, user_id: str, conversation_id: UUID) -> ConversationHistory | None:
+        """The conversation and its messages, or ``None``."""
+        self._fail("get")
+        conversation = self._owned(user_id, conversation_id)
+        if conversation is None:
+            return None
+        return ConversationHistory(
+            conversation=conversation, messages=tuple(self.messages[conversation_id])
+        )
+
+    async def delete(self, user_id: str, conversation_id: UUID) -> bool:
+        """Delete the conversation and its messages."""
+        self._fail("delete")
+        if self._owned(user_id, conversation_id) is None:
+            return False
+        del self.conversations[conversation_id]
+        del self.messages[conversation_id]
+        return True
+
+    async def count_messages(self, user_id: str, conversation_id: UUID) -> int | None:
+        """Number of messages, or ``None`` when unknown."""
+        self._fail("count_messages")
+        if self._owned(user_id, conversation_id) is None:
+            return None
+        return len(self.messages[conversation_id])
+
+    async def add_user_message(
+        self, user_id: str, conversation_id: UUID, message_id: UUID, content: str, now: datetime
+    ) -> StoredMessage:
+        """Store a user message and bump ``updated_at``."""
+        self._fail("add_user_message")
+        if self._owned(user_id, conversation_id) is None:
+            raise LookupError("unknown conversation")
+        message = StoredMessage(
+            id=message_id, role=MessageRole.USER, content=content, created_at=now
+        )
+        self.messages[conversation_id].append(message)
+        self._touch(conversation_id, now)
+        return message
+
+    async def add_assistant_message(
+        self,
+        user_id: str,
+        conversation_id: UUID,
+        message_id: UUID,
+        content: str,
+        finish_reason: FinishReason,
+        prompt_version: str,
+        model_id: str | None,
+        usage: Usage,
+        now: datetime,
+    ) -> StoredMessage:
+        """Store an assistant message and bump ``updated_at``."""
+        self._fail("add_assistant_message")
+        if self._owned(user_id, conversation_id) is None:
+            raise LookupError("unknown conversation")
+        message = StoredMessage(
+            id=message_id,
+            role=MessageRole.ASSISTANT,
+            content=content,
+            created_at=now,
+            finish_reason=finish_reason,
+            prompt_version=prompt_version,
+            model_id=model_id,
+            usage=usage,
+        )
+        self.messages[conversation_id].append(message)
+        self._touch(conversation_id, now)
+        return message

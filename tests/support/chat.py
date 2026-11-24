@@ -1,0 +1,95 @@
+"""Fake ``ToolRunner`` for the chat assistant tests: scripted results, no upstream calls.
+
+Each tool is given a payload (``ok``) or a ``FakeToolError``; an unknown name is refused like the
+real ``ToolInvoker`` (``unknown_tool``, never run). Every call is recorded; a ``gate`` holds a call
+open for disconnect tests.
+"""
+
+import asyncio
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+
+from pydantic import JsonValue
+
+from ecommerce_ai.agents.assistant.ports import ToolOutcome, ToolSpec
+
+TOOL_NAMES = (
+    "get_order",
+    "list_my_orders",
+    "list_products",
+    "get_product",
+    "list_my_notifications",
+)
+"""The five read-only tools of the registry."""
+
+
+@dataclass(frozen=True, slots=True)
+class FakeToolError:
+    """A scripted tool failure: an error code, optionally an upstream 401."""
+
+    error: str = "upstream_error"
+    message: str = "orders service unavailable"
+    upstream_unauthenticated: bool = False
+
+
+def envelope(data: JsonValue, source: str = "ecommerce-orders") -> dict[str, JsonValue]:
+    """A successful tool payload, marked untrusted like the real envelopes."""
+    return {"source": source, "trust": "untrusted_data", "data": data, "truncated": []}
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallRecord:
+    """One call the fake received."""
+
+    name: str
+    arguments: dict[str, JsonValue]
+
+
+@dataclass
+class FakeToolRunner:
+    """Answers each registered tool with its scripted result."""
+
+    results: dict[str, dict[str, JsonValue] | FakeToolError] = field(default_factory=dict)
+    names: tuple[str, ...] = TOOL_NAMES
+    gate: asyncio.Event | None = None
+    calls: list[ToolCallRecord] = field(default_factory=list)
+
+    def tool_specs(self) -> tuple[ToolSpec, ...]:
+        """One spec per registered tool name."""
+        return tuple(
+            ToolSpec(name=name, description=f"The {name} tool.", input_schema={"type": "object"})
+            for name in self.names
+        )
+
+    async def run(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
+        """Record the call and return its scripted outcome (refused when unknown)."""
+        if name not in self.names:
+            return ToolOutcome(
+                ok=False,
+                payload={"error": "not_allowed", "message": "not allowed"},
+                outcome="unknown_tool",
+                refused=True,
+                upstream_unauthenticated=False,
+                duration_ms=0.0,
+            )
+        self.calls.append(ToolCallRecord(name, dict(arguments)))
+        if self.gate is not None:
+            await self.gate.wait()
+        result = self.results.get(name, envelope([]))
+        if isinstance(result, FakeToolError):
+            return ToolOutcome(
+                ok=False,
+                payload={"error": result.error, "message": result.message},
+                outcome=result.error,
+                refused=False,
+                upstream_unauthenticated=result.upstream_unauthenticated,
+                duration_ms=1.0,
+            )
+        return ToolOutcome(
+            ok=True,
+            payload=result,
+            outcome="ok",
+            refused=False,
+            upstream_unauthenticated=False,
+            duration_ms=1.0,
+        )
