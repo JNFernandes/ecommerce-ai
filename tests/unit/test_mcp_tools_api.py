@@ -12,8 +12,10 @@ import respx
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
+from tests.support.inventory_stub import InventoryStub, sample_product, sample_products
 from tests.support.mcp import post_rpc, rpc_result, serve_app, tool_result, tools_call_request
 from tests.support.mcp import tools_list_request as list_request
+from tests.support.notifications_stub import CUSTOMER_B, NotificationsStub, sample_notification
 from tests.support.orders_stub import ORDER_ID, OrdersStub, sample_order
 from tests.support.tokens import CUSTOMER_ID, jwks, make_token
 
@@ -218,3 +220,95 @@ async def test_should_fail_not_allowed_without_orders_request_when_token_has_no_
 
     assert tool_result(response) == (True, {"error": "not_allowed", "message": "not allowed"})
     assert stub.requests == []
+
+
+@pytest.fixture
+def inventory() -> Iterator[InventoryStub]:
+    with respx.mock(assert_all_called=False) as router:
+        router.get(JWKS_URL).respond(json=jwks())
+        yield InventoryStub(router)
+
+
+async def _call_tool(
+    log_output: io.StringIO, name: str, arguments: dict[str, object], token: str
+) -> httpx.Response:
+    async with _serve(log_output) as client:
+        return await post_rpc(client, tools_call_request(name, arguments), token)
+
+
+async def test_should_list_products_over_mcp_with_caller_token(
+    inventory: InventoryStub, log_output: io.StringIO
+) -> None:
+    inventory.respond_page(sample_products(3), total=3, limit=10)
+    token = make_token()
+
+    response = await _call_tool(log_output, "list_products", {"limit": 10}, token)
+
+    is_error, content = tool_result(response)
+    assert is_error is False
+    assert (content["source"], content["trust"]) == ("inventory", "untrusted_data")
+    data = content["data"]
+    assert isinstance(data, dict)
+    assert [item["id"] for item in data["items"]] == ["SKU-001", "SKU-002", "SKU-003"]
+    assert inventory.products.params() == {"limit": "10", "offset": "0"}
+    assert inventory.products.requests[0].headers["Authorization"] == f"Bearer {token}"
+
+
+async def test_should_get_product_over_mcp_and_map_404_to_not_found(
+    inventory: InventoryStub, log_output: io.StringIO
+) -> None:
+    inventory.respond_product(sample_product())
+
+    found = await _call_tool(log_output, "get_product", {"productId": "SKU-003"}, make_token())
+    inventory.product.respond_status(404)
+    missing = await _call_tool(log_output, "get_product", {"productId": "SKU-9"}, make_token())
+    invalid = await _call_tool(log_output, "get_product", {"productId": "../x"}, make_token())
+
+    assert tool_result(found) == (
+        False,
+        {
+            "source": "inventory",
+            "trust": "untrusted_data",
+            "data": {"id": "SKU-003", "name": "Desk Lamp", "availableQuantity": 12},
+            "truncated": [],
+        },
+    )
+    assert tool_result(missing) == (True, {"error": "not_found", "message": "product not found"})
+    assert tool_result(invalid) == (True, {"error": "invalid_input", "message": "invalid input"})
+    assert len(inventory.product.requests) == 2
+
+
+@pytest.fixture
+def notifications() -> Iterator[NotificationsStub]:
+    with respx.mock(assert_all_called=False) as router:
+        router.get(JWKS_URL).respond(json=jwks())
+        yield NotificationsStub(router)
+
+
+async def test_should_list_only_the_callers_notifications_over_mcp(
+    notifications: NotificationsStub, log_output: io.StringIO
+) -> None:
+    notifications.respond_by_customer(
+        {
+            str(CUSTOMER_ID): [sample_notification(message="mine")],
+            CUSTOMER_B: [sample_notification(customerId=CUSTOMER_B, message="theirs")],
+        }
+    )
+    token = make_token()
+
+    response = await _call_tool(log_output, "list_my_notifications", {}, token)
+    spoofed = await _call_tool(
+        log_output, "list_my_notifications", {"customerId": CUSTOMER_B}, token
+    )
+
+    is_error, content = tool_result(response)
+    assert is_error is False
+    assert content["source"] == "notifications"
+    data = content["data"]
+    assert isinstance(data, dict)
+    assert [item["message"] for item in data["items"]] == ["mine"]
+    assert "customerId" not in data["items"][0]
+    assert tool_result(spoofed) == (True, {"error": "invalid_input", "message": "invalid input"})
+    (request,) = notifications.notifications.requests
+    assert request.url.params["customerId"] == str(CUSTOMER_ID)
+    assert request.headers["Authorization"] == f"Bearer {token}"

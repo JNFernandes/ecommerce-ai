@@ -76,8 +76,8 @@ class Settings(BaseSettings):
         description="Inventory API base URL, through the gateway.",
     )
     notifications_base_url: str = Field(
-        default="http://localhost:8090/api/notifications",
-        description="Notifications API base URL, through the gateway.",
+        default="http://localhost:8090/api",
+        description="Notifications API base URL via the gateway; `/notifications` is appended.",
     )
 
     orders_graphql_url: str = Field(

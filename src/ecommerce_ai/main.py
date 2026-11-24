@@ -3,12 +3,14 @@
 Run with ``python -m ecommerce_ai`` (reads ``HOST`` and ``PORT``) or
 ``uvicorn ecommerce_ai.main:create_app --factory``. Nothing here connects to Kafka, PostgreSQL,
 Identity, Orders or the LLM provider, so the service starts without any of them (constitution
-IV, FR-011): the shared HTTP client opens connections only on first use and is closed when the
-app shuts down. An invalid tool registry makes ``create_app`` raise ``ToolRegistryError``.
+IV, FR-011): each upstream (Orders, which JWKS shares, Inventory, Notifications) has its own HTTP
+client, so a slow service cannot exhaust another's connection pool; clients connect only on first
+use and are all closed when the app shuts down. An invalid tool registry makes ``create_app``
+raise ``ToolRegistryError``.
 """
 
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
 import uvicorn
@@ -21,21 +23,52 @@ from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker
 from ecommerce_ai.infrastructure.jwks import JwksCache
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
+from ecommerce_ai.infrastructure.upstream import UpstreamTransport
+from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
+from ecommerce_ai.tools.notifications import list_my_notifications_tool
 from ecommerce_ai.tools.orders import get_order_tool, list_my_orders_tool
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 from ecommerce_ai.tools.server import build_mcp_app, build_mcp_server
 
 
-def build_tool_definitions(settings: Settings, orders: OrdersClient) -> Sequence[AnyToolDefinition]:
-    """Return the definitions of every tool the MCP server serves."""
+def build_tool_definitions(
+    settings: Settings,
+    orders: OrdersClient,
+    inventory: RestClient,
+    notifications: RestClient,
+) -> Sequence[AnyToolDefinition]:
+    """Return the definitions of every tool the MCP server serves, each on its upstream client."""
     timeout = settings.tool_timeout_seconds
     max_bytes = settings.tool_max_response_bytes
     text_limit = settings.tool_text_max_chars
     return [
         get_order_tool(orders, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
         list_my_orders_tool(orders, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
+        list_products_tool(inventory, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
+        get_product_tool(inventory, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit),
+        list_my_notifications_tool(
+            notifications, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit
+        ),
     ]
+
+
+def new_http_client() -> httpx.AsyncClient:
+    """Return an HTTP client for one upstream; it connects on first request only."""
+    return httpx.AsyncClient(follow_redirects=False)
+
+
+def _rest_client(
+    http: httpx.AsyncClient, service: str, base_url: str, settings: Settings
+) -> RestClient:
+    transport = UpstreamTransport(
+        http,
+        service,
+        max_retries=settings.upstream_max_retries,
+        backoff_base=settings.upstream_backoff_base_seconds,
+    )
+    return RestClient(transport, base_url)
 
 
 def create_app(
@@ -47,9 +80,11 @@ def create_app(
     checker = ReadinessChecker(build_probes(settings) if probes is None else probes)
 
     # No connection is opened here: httpx connects on first request only.
-    http = httpx.AsyncClient(follow_redirects=False)
+    orders_http = new_http_client()
+    inventory_http = new_http_client()
+    notifications_http = new_http_client()
     jwks = JwksCache(
-        http,
+        orders_http,
         settings.identity_jwks_url,
         timeout=settings.jwks_timeout_seconds,
         refetch_cooldown=settings.jwks_refetch_cooldown_seconds,
@@ -61,20 +96,26 @@ def create_app(
         leeway=settings.jwt_clock_tolerance_seconds,
     )
     orders = OrdersClient(
-        http,
+        orders_http,
         settings.orders_graphql_url,
         max_retries=settings.upstream_max_retries,
         backoff_base=settings.upstream_backoff_base_seconds,
     )
-    registry = ToolRegistry.build(build_tool_definitions(settings, orders))
+    inventory = _rest_client(inventory_http, "inventory", settings.inventory_base_url, settings)
+    notifications = _rest_client(
+        notifications_http, "notifications", settings.notifications_base_url, settings
+    )
+    registry = ToolRegistry.build(
+        build_tool_definitions(settings, orders, inventory, notifications)
+    )
     mcp = mcp_endpoint(build_mcp_app(build_mcp_server(registry)), verifier)
 
     @asynccontextmanager
     async def resources() -> AsyncIterator[None]:
-        try:
+        async with AsyncExitStack() as stack:
+            for client in (orders_http, inventory_http, notifications_http):
+                stack.push_async_callback(client.aclose)
             yield
-        finally:
-            await http.aclose()
 
     return build_api(settings.cors_allowed_origins, checker, mcp=mcp, resources=resources)
 

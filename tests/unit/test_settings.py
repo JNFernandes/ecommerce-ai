@@ -14,7 +14,7 @@ def test_should_use_local_defaults_when_the_environment_is_empty() -> None:
     assert settings.cors_allowed_origins == []
     assert settings.orders_base_url == "http://localhost:8090/api/orders"
     assert settings.inventory_base_url == "http://localhost:8090/api/inventory"
-    assert settings.notifications_base_url == "http://localhost:8090/api/notifications"
+    assert settings.notifications_base_url == "http://localhost:8090/api"
     assert settings.database_url.get_secret_value() == "postgresql://localhost:5436/ecommerce_ai"
     assert settings.kafka_brokers == ["localhost:9092"]
     assert settings.anthropic_model is None
@@ -62,6 +62,8 @@ def test_should_never_show_the_database_password(monkeypatch: pytest.MonkeyPatch
         ("LLM_TIMEOUT_SECONDS", "0"),
         ("DAILY_TOKEN_BUDGET", "-1"),
         ("ORDERS_BASE_URL", "ftp://gateway/api/orders"),
+        ("INVENTORY_BASE_URL", "inventory"),
+        ("NOTIFICATIONS_BASE_URL", "ftp://gateway/api"),
         ("IDENTITY_JWKS_URL", "not-a-url"),
         ("DATABASE_URL", "mysql://localhost:3306/ai"),
         ("KAFKA_BROKERS", "localhost"),
@@ -95,12 +97,16 @@ def test_should_read_mcp_tool_settings_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ORDERS_GRAPHQL_URL", "http://gateway:8090/api/graphql/")
+    monkeypatch.setenv("INVENTORY_BASE_URL", "http://gateway:8090/api/inventory/")
+    monkeypatch.setenv("NOTIFICATIONS_BASE_URL", "http://gateway:8090/api/")
     monkeypatch.setenv("TOOL_TIMEOUT_SECONDS", "0.5")
     monkeypatch.setenv("UPSTREAM_MAX_RETRIES", "0")
 
     settings = Settings()
 
     assert settings.orders_graphql_url == "http://gateway:8090/api/graphql"
+    assert settings.inventory_base_url == "http://gateway:8090/api/inventory"
+    assert settings.notifications_base_url == "http://gateway:8090/api"
     assert settings.tool_timeout_seconds == 0.5
     assert settings.upstream_max_retries == 0
 

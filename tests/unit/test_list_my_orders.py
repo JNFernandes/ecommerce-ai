@@ -7,7 +7,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from ecommerce_ai.infrastructure.caller import CallerIdentity, RequestCaller, bind_caller
-from ecommerce_ai.infrastructure.orders_client import Forbidden
+from ecommerce_ai.infrastructure.upstream import Forbidden
 from ecommerce_ai.tools.envelope import ToolEnvelope, ToolErrorCode, ToolFailure
 from ecommerce_ai.tools.orders import (
     LIST_ORDERS,

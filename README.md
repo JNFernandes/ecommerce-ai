@@ -32,7 +32,7 @@ Releases are gated by an eval suite ([ADR 0004](docs/adr/0004-evals-as-release-g
 |---|---|---|
 | `GET /health` | public | Liveness: always `200 {"status": "UP"}` while the process answers; checks no dependency. |
 | `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. The LLM provider will be reported (never failing) once its client exists. |
-| `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools: `get_order(orderId)` and `list_my_orders(limit=20 (1–50), status?)`, both read-only. |
+| `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools, all read-only: `get_order(orderId)`, `list_my_orders(limit=20 (1–50), status?)`, `list_products(limit=20 (1–50), offset=0)`, `get_product(productId)`, `list_my_notifications(limit, offset, orderId?)`. |
 | `GET /docs`, `GET /openapi.json` | public | API documentation. |
 
 ### MCP endpoint
@@ -42,13 +42,18 @@ verified locally (RS256 only) against `IDENTITY_JWKS_URL`, which is fetched on f
 cached; an unknown `kid` refetches at most once per `JWKS_REFETCH_COOLDOWN_SECONDS`. Every
 missing or invalid token gets the same `401 {"detail":"Not authenticated"}` with
 `WWW-Authenticate: Bearer`; no obtainable key gives `503`; a token without `CUSTOMER` gives `403`.
-Tools call Orders GraphQL (`ORDERS_GRAPHQL_URL`) with the caller's own token and `X-Request-Id`
-(never a service account); if Orders rejects that token the whole call answers `401`. Results are
-`{source, trust: "untrusted_data", data, truncated}`, with free text cut to `TOOL_TEXT_MAX_CHARS`;
+Tools call Orders GraphQL (`ORDERS_GRAPHQL_URL`), Inventory (`INVENTORY_BASE_URL`) and
+Notifications (`NOTIFICATIONS_BASE_URL`, scoped by the token's `customerId` claim, never by input)
+with the caller's own token and `X-Request-Id` (never a service account); if an upstream rejects
+that token the whole call answers `401`. Each upstream has its own HTTP client, so one slow
+service cannot starve the others. Results are
+`{source, trust: "untrusted_data", data, truncated}` (`source`: `ecommerce-orders`, `inventory`
+or `notifications`), with free text cut to `TOOL_TEXT_MAX_CHARS`;
 errors are `isError` results with a fixed `{error, message}` (`not_found`, `not_allowed`,
 `invalid_input`, `upstream_error`). Each call has a `TOOL_TIMEOUT_SECONDS` budget, retries
 included, and reads at most `TOOL_MAX_RESPONSE_BYTES`. Tool schemas are pinned in
-`tests/contract/snapshots/tools.json`. Example: `specs/001-mcp-foundation/quickstart.md`.
+`tests/contract/snapshots/tools.json`. Examples: `specs/001-mcp-foundation/quickstart.md`,
+`specs/002-inventory-notifications-tools/quickstart.md`.
 
 Every route must declare its access (public or required roles); building the app fails for a route
 that declares neither (default deny). Probes are TCP connects with a 1 s timeout, made only when
@@ -86,7 +91,9 @@ curl localhost:8002/ready
 `python -m ecommerce_ai` serves `ecommerce_ai.main:create_app` on `HOST`:`PORT`.
 
 Smoke-test `/mcp` against the local stack with a customer access token (lists the tools, calls
-`list_my_orders`, and `get_order` when given an order id; `MCP_URL` overrides the default URL):
+`list_my_orders`, `list_products`, `get_product` for `SKU-001` and the missing `SKU-999`,
+`list_my_notifications`, and `get_order` when given an order id; `MCP_URL` overrides the default
+URL; the token is never printed):
 
 ```sh
 TOKEN=<access token> uv run python scripts/mcp_smoke.py [ORDER_ID]
@@ -109,7 +116,7 @@ stops the service at startup with an error naming the variable.
 | `JWT_CLOCK_TOLERANCE_SECONDS` | `5` | Clock skew allowed on `exp`/`iat` (`0`–`300`) |
 | `ORDERS_BASE_URL` | `http://localhost:8090/api/orders` | Orders API through the gateway |
 | `INVENTORY_BASE_URL` | `http://localhost:8090/api/inventory` | Inventory API through the gateway |
-| `NOTIFICATIONS_BASE_URL` | `http://localhost:8090/api/notifications` | Notifications API through the gateway |
+| `NOTIFICATIONS_BASE_URL` | `http://localhost:8090/api` | Notifications API through the gateway (`/notifications` appended) |
 | `ORDERS_GRAPHQL_URL` | `http://localhost:8090/api/graphql` | Orders GraphQL (`order`, `orders`) used by the MCP tools |
 | `JWKS_TIMEOUT_SECONDS` | `3` | Timeout of one JWKS fetch |
 | `JWKS_REFETCH_COOLDOWN_SECONDS` | `30` | Minimum gap between refetches on an unknown `kid` |
@@ -190,11 +197,11 @@ src/ecommerce_ai/
   __main__.py        `python -m ecommerce_ai`
   api/               FastAPI app, routers, request-id middleware, route access policy, /mcp auth
   agents/            LangGraph graphs, nodes and versioned prompts (empty)
-  tools/             MCP server, tool registry/allowlist, Orders tools
+  tools/             MCP server, tool registry/allowlist, Orders/Inventory/Notifications tools
   messaging/         Kafka consumers, producers, dead letters (empty)
   infrastructure/    Settings, logging/redaction, probes, JWKS cache, token verifier, Orders client
 tests/unit/          Unit tests (no network)
-tests/contract/      Tool schema snapshot and Orders queries checked against its vendored schema
+tests/contract/      Tool schema snapshot (five tools) and Orders queries checked against its vendored schema
 tests/support/       Test tokens/JWKS, Orders stub, MCP JSON-RPC helpers, fake probes
 scripts/             Manual tools: mcp_smoke.py (smoke test of /mcp against the local stack)
 docs/adr/            Architecture Decision Records
