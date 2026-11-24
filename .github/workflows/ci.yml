@@ -1,5 +1,6 @@
 # Quality gate for ecommerce-ai, the same four checks as CLAUDE.md "Quality gate", in order:
-# ruff check, ruff format --check, mypy (strict), pytest with the 80% coverage gate.
+# ruff check, ruff format --check, mypy (strict), pytest with the 80% coverage gate. pytest runs
+# the unit and the integration tests (PostgreSQL 16 via Testcontainers on the runner's Docker).
 # actionlint validates the workflows themselves.
 name: CI
 
@@ -48,8 +49,11 @@ jobs:
       - name: Types
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: uv run mypy
-      - name: Tests and coverage
+      - name: Tests and coverage (unit + integration)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          # Fail, never skip, when Testcontainers cannot start PostgreSQL.
+          INTEGRATION_REQUIRED: "true"
         run: uv run pytest --cov
 
   actionlint:

@@ -3,8 +3,9 @@
 The database comes from ``TEST_DATABASE_URL`` when it is set (for example the compose
 ``postgres-ai`` on port 5436; its triage tables are truncated before every test, so never point
 it at data you want to keep), otherwise from a Testcontainers ``postgres:16-alpine``. Without
-either, every integration test is skipped. The schema is created once per session by the real
-migrations.
+either, every integration test is skipped, unless ``INTEGRATION_REQUIRED=true`` (set in
+CI), which turns the skip into a failure so a broken Docker setup cannot pass silently. The
+schema is created once per session by the real migrations.
 """
 
 import os
@@ -43,7 +44,10 @@ def database_url() -> Iterator[str]:
     try:
         container.start()
     except Exception as exc:  # any Docker failure means "no database here": skip, never pass
-        pytest.skip(f"no PostgreSQL for integration tests ({type(exc).__name__})")
+        message = f"no PostgreSQL for integration tests ({type(exc).__name__})"
+        if os.environ.get("INTEGRATION_REQUIRED") == "true":
+            pytest.fail(message)
+        pytest.skip(message)
     try:
         yield container.get_connection_url()
     finally:
