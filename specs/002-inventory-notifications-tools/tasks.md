@@ -9,7 +9,7 @@ story's tests first and see them fail. After every task: quiet gate (CLAUDE.md);
 ## Phase 1: Setup
 
 - [X] T001 Add `inventory_base_url` (default `http://localhost:8090/api/inventory`) and `notifications_base_url` (default `http://localhost:8090/api`) to `src/ecommerce_ai/infrastructure/settings.py`, validated by the existing `_check_http_url`; add both env names to the cleared variables in `tests/conftest.py`; cover defaults and invalid URLs in `tests/unit/test_settings.py`
-- [ ] T002 [P] Document `INVENTORY_BASE_URL` and `NOTIFICATIONS_BASE_URL` in `.env.example`
+- [X] T002 [P] Document `INVENTORY_BASE_URL` and `NOTIFICATIONS_BASE_URL` in `.env.example`
 
 ## Phase 2: Foundational (blocks all stories)
 
