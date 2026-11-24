@@ -125,39 +125,39 @@ message needs an existing conversation; both are P1 and together form the MVP.
 
 - [X] T017 [P] [US1] Tests `tests/unit/test_segmenter.py`: split at `. ! ?`+space and newline,
   remainder at turn end, no empty segments, decimals/ids not split mid-token
-- [ ] T018 [P] [US1] Tests `tests/unit/test_chat_sse.py`: frame format (`id`/`event`/`data`, blank
+- [X] T018 [P] [US1] Tests `tests/unit/test_chat_sse.py`: frame format (`id`/`event`/`data`, blank
   line), ids strictly increasing from 1, keep-alive comment after `CHAT_KEEPALIVE_SECONDS` of
   silence (injected short interval), headers `text/event-stream`, `Cache-Control: no-cache`,
   `X-Accel-Buffering: no`
-- [ ] T019 [P] [US1] Tests `tests/unit/test_chat_graph.py`: happy path with one tool (events
+- [X] T019 [P] [US1] Tests `tests/unit/test_chat_graph.py`: happy path with one tool (events
   `message.start`, `tool.call`, `tool.result ok`, `token`+, `message.end completed` with usage
   and `promptVersion` `assistant.v1`); tool failure/empty Ã¢â€ â€™ `ok false`/empty summary; tool results
   reach the model as `<tool_result name="Ã¢â‚¬Â¦">` delimited blocks; tool list = registry only
-- [ ] T020 [P] [US1] Tests `tests/unit/test_anthropic_chat_model.py`: maps `messages.stream`
+- [X] T020 [P] [US1] Tests `tests/unit/test_anthropic_chat_model.py`: maps `messages.stream`
   deltas/tool_use/usage to `ChatModelEvent`s, tools from registry input schemas, `max_retries=0`,
   timeout, effort, API errors Ã¢â€ â€™ `ModelUnavailable` (fake client, no network)
 - [X] T021 [US1] Implement `src/ecommerce_ai/agents/assistant/segmenter.py` (research Ã‚Â§10)
 - [X] T022 [P] [US1] Implement `src/ecommerce_ai/agents/assistant/summaries.py` (fixed phrase per
   tool and outcome: count / found / not found / unavailable / refused; never upstream data)
-- [ ] T023 [US1] Implement `src/ecommerce_ai/agents/assistant/graph.py`: `ChatState` TypedDict
+- [X] T023 [US1] Implement `src/ecommerce_ai/agents/assistant/graph.py`: `ChatState` TypedDict
   (transcript append reducer), nodes `guard_input Ã¢â€ â€™ agent Ã¢â€¡â€ž tools Ã¢â€ â€™ gatekeeper Ã¢â€ â€™ finalize`, edges
   by state, custom events via `get_stream_writer()`, transcript re-validated on load, model
   request built from the prompt + transcript (research Ã‚Â§3, Ã‚Â§4, Ã‚Â§8); gatekeeper node a pass-through
   until T035
-- [ ] T024 [US1] Implement `src/ecommerce_ai/agents/assistant/service.py::ChatService.post` (order
+- [X] T024 [US1] Implement `src/ecommerce_ai/agents/assistant/service.py::ChatService.post` (order
   of checks per research Ã‚Â§16 minus limits added in US5; stores the user message, runs the graph
   with thread id = conversation id, yields `StreamEvent`s, stores the assistant message on
   `message.end`, one `chat_run` log line per research Ã‚Â§17)
-- [ ] T025 [US1] Implement `src/ecommerce_ai/api/sse.py` framer (ids, keep-alive via
+- [X] T025 [US1] Implement `src/ecommerce_ai/api/sse.py` framer (ids, keep-alive via
   `asyncio.wait_for`, `StreamingResponse`) and the `POST /chat/conversations/{id}/messages`
   route in `src/ecommerce_ai/api/chat.py` (body 1Ã¢â‚¬â€œ2000 trimmed Ã¢â€ â€™ else 422, nothing stored)
-- [ ] T026 [US1] Implement `src/ecommerce_ai/infrastructure/llm/anthropic_chat_model.py::
+- [X] T026 [US1] Implement `src/ecommerce_ai/infrastructure/llm/anthropic_chat_model.py::
   AnthropicChatModel` + builder (research Ã‚Â§6); only this package imports `anthropic`
-- [ ] T027 [US1] Wire `ChatService`, `ToolInvoker`-backed `ToolRunner`, `InMemorySaver` default for
+- [X] T027 [US1] Wire `ChatService`, `ToolInvoker`-backed `ToolRunner`, `InMemorySaver` default for
   tests (`create_app(..., chat_model=None, checkpointer=None)`) and the Anthropic chat model when
   `model_configured` in `src/ecommerce_ai/main.py`; off-domain refusal covered via a scripted
   answer test in `tests/unit/test_chat_graph.py`
-- [ ] T028 [US1] Log test in `tests/unit/test_chat_logging.py`: exactly one `chat_run` line with
+- [X] T028 [US1] Log test in `tests/unit/test_chat_logging.py`: exactly one `chat_run` line with
   request_id, conversation_id, latency, tokens, tools `{name, outcome, duration_ms}`, finish
   reason, promptVersion, modelId, `user_hash`; no content, argument values, results, token or raw
   subject (FR-026)
@@ -171,7 +171,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: state persists per conversation, survives restarts, never shared.
 **Independent test**: two posts with an app rebuild in between share one `InMemorySaver`.
 
-- [ ] T029 [P] [US3] Tests `tests/unit/test_chat_memory.py`: second post (after rebuilding the app
+- [X] T029 [P] [US3] Tests `tests/unit/test_chat_memory.py`: second post (after rebuilding the app
   with the same saver) sends the model the first question, tool results and answer; two
   conversations of one user see no shared state; delete removes the thread
   (`adelete_thread`)

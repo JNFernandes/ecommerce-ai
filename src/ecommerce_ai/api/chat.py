@@ -1,7 +1,8 @@
-"""The ``/chat`` routes: a customer's own conversations (contracts/chat-api.md).
+"""The ``/chat`` routes: a customer's conversations and streamed answers (contracts/chat-api.md).
 
-I/O only: authentication (``require_caller``, any role), validation and the ``{code, message}``
-error bodies. Every store call is scoped to the token subject, so an unknown, malformed or
+I/O only: authentication (``require_caller``, any role), validation, the ``{code, message}``
+error bodies and SSE framing; posting and deleting go through ``ChatService``. Every store
+call is scoped to the token subject, so an unknown, malformed or
 another user's id gives the same 404 (FR-003). A storage outage (``is_unavailable``) is a 503
 ``UNAVAILABLE``; any other error propagates.
 """
@@ -28,11 +29,33 @@ from ecommerce_ai.agents.assistant.model import (
     Usage,
 )
 from ecommerce_ai.agents.assistant.ports import ConversationStore
+from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.api.route_policy import AUTHENTICATED
+from ecommerce_ai.api.sse import MEDIA_TYPE, sse_response
 from ecommerce_ai.infrastructure.caller import RequestCaller
 
 PREFIX: Final = "/chat"
 TITLE_MAX_CHARS: Final = 200
+CONTENT_MAX_CHARS: Final = 2000
+
+
+class PostMessageRequest(BaseModel):
+    """Body of `POST /chat/conversations/{id}/messages`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    content: str = Field(
+        description="The customer's message, trimmed: 1 to 2000 characters.",
+        examples=["Where is my last order?"],
+    )
+
+    @field_validator("content", mode="after")
+    @classmethod
+    def _trimmed(cls, value: str) -> str:
+        text = value.strip()
+        if not 1 <= len(text) <= CONTENT_MAX_CHARS:
+            raise ValueError("content must hold 1 to 2000 characters")
+        return text
 
 
 class ChatHttpCode(StrEnum):
@@ -198,6 +221,11 @@ _INVALID: Final[dict[int | str, dict[str, object]]] = {
 }
 
 
+_STREAM: Final[dict[int | str, dict[str, object]]] = {
+    200: {"content": {MEDIA_TYPE: {}}, "description": "The answer as Server-Sent Events."},
+}
+
+
 def _parse_id(raw: str) -> UUID | None:
     try:
         return UUID(raw)
@@ -207,12 +235,18 @@ def _parse_id(raw: str) -> UUID | None:
 
 def build_chat_router(
     store: ConversationStore,
+    service: ChatService,
     caller_dependency: Callable[[Request], AsyncIterator[RequestCaller]],
     *,
     clock: Callable[[], datetime],
     is_unavailable: Callable[[BaseException], bool],
+    keepalive_seconds: float,
 ) -> APIRouter:
-    """Return the ``/chat`` router over ``store``; ``clock`` stamps new conversations."""
+    """Return the ``/chat`` router: reads on ``store``, posts and deletes through ``service``.
+
+    ``clock`` stamps new conversations; a stream sends a keep-alive comment after
+    ``keepalive_seconds`` of silence.
+    """
     router = APIRouter(prefix=PREFIX, tags=["chat"])
     Caller = Annotated[RequestCaller, Depends(caller_dependency)]  # a type alias
 
@@ -292,10 +326,35 @@ def build_chat_router(
     async def delete_conversation(caller: Caller, conversation_id: str) -> Response:
         parsed = _parse_id(conversation_id)
         deleted = parsed is not None and await guarded(
-            store.delete(caller.identity.subject, parsed)
+            service.delete(caller.identity.subject, parsed)
         )
         if not deleted:
             return error_response(ChatHttpCode.NOT_FOUND)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post(
+        "/conversations/{conversation_id}/messages",
+        summary="Ask the assistant",
+        description=(
+            "Store the caller's message and stream the answer as Server-Sent Events: one"
+            " `message.start`, then `tool.call`, `tool.result` and `token` events, then exactly"
+            " one `message.end` or `error`."
+        ),
+        responses=_ERRORS | _NOT_FOUND | _INVALID | _STREAM,
+        response_class=Response,
+        openapi_extra=AUTHENTICATED,
+    )
+    async def post_message(
+        caller: Caller, conversation_id: str, body: PostMessageRequest
+    ) -> Response:
+        parsed = _parse_id(conversation_id)
+        run = (
+            None
+            if parsed is None
+            else await guarded(service.start(caller.identity.subject, parsed, body.content))
+        )
+        if run is None:
+            return error_response(ChatHttpCode.NOT_FOUND)
+        return sse_response(run.events(), keepalive_seconds)
 
     return router

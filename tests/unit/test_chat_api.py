@@ -314,7 +314,7 @@ def test_should_declare_authenticated_access_on_every_chat_route(
         for operation in item.values()
     ]
 
-    assert len(operations) == 4
+    assert len(operations) == 5
     assert all(
         operation["x-authenticated"] is AUTHENTICATED["x-authenticated"] for operation in operations
     )

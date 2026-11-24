@@ -25,9 +25,18 @@ import structlog
 import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
+from langgraph.checkpoint.memory import InMemorySaver
 
-from ecommerce_ai.agents.assistant.ports import ConversationStore
-from ecommerce_ai.agents.prompts.loader import load_prompt
+from ecommerce_ai.agents.assistant.graph import ChatGraph
+from ecommerce_ai.agents.assistant.ports import (
+    ChatModel,
+    Checkpointer,
+    ConversationStore,
+    ToolRunner,
+)
+from ecommerce_ai.agents.assistant.service import ChatService
+from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
+from ecommerce_ai.agents.prompts.loader import load_prompt, load_system_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
 from ecommerce_ai.agents.triage.ports import (
@@ -55,6 +64,7 @@ from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
+from ecommerce_ai.infrastructure.llm.anthropic_chat_model import build_anthropic_chat_model
 from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
@@ -73,6 +83,7 @@ from ecommerce_ai.messaging.outbox_relay import OutboxRelay, OutboxStore, RelayS
 from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from ecommerce_ai.messaging.triage_published import to_outbox_message
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
+from ecommerce_ai.tools.invoker import ToolInvoker
 from ecommerce_ai.tools.notifications import list_my_notifications_tool
 from ecommerce_ai.tools.orders import get_order_tool, list_my_orders_tool
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
@@ -205,9 +216,16 @@ def create_app(
     triage_queue: TriageCaseQueue | None = None,
     outbox_store: OutboxStore | None = None,
     conversation_store: ConversationStore | None = None,
+    chat_model: ChatModel | None = None,
+    checkpointer: Checkpointer | None = None,
+    tool_runner: ToolRunner | None = None,
 ) -> FastAPI:
-    """Build the application; ``probes``, the Kafka factories and the stores replace the real
-    ones in tests."""
+    """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
+    checkpointer and the chat's tool runner replace the real ones in tests.
+
+    Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
+    answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state stays in memory.
+    """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
     checker = ReadinessChecker(build_probes(settings) if probes is None else probes)
@@ -258,6 +276,8 @@ def create_app(
     llm_client: AsyncAnthropic | None = None
     if settings.model_configured:
         model, llm_client = build_anthropic_model(settings)
+        if chat_model is None:
+            chat_model = build_anthropic_chat_model(settings, llm_client)
     wake = asyncio.Event()
     worker = build_triage_worker(
         settings,
@@ -276,11 +296,20 @@ def create_app(
         backoff_max_seconds=settings.outbox_backoff_max_seconds,
         state=relay_state,
     )
+    store = conversation_store or ConversationRepository(engine)
+    chat_graph = ChatGraph(
+        model=chat_model,
+        tools=tool_runner or InvokerToolRunner(ToolInvoker(registry)),
+        prompt=load_system_prompt("assistant", "v1"),
+        checkpointer=checkpointer or InMemorySaver(),
+    )
     chat = build_chat_router(
-        conversation_store or ConversationRepository(engine),
+        store,
+        ChatService(store, chat_graph, SystemClock()),
         require_caller(verifier),
         clock=lambda: datetime.now(UTC),
         is_unavailable=is_transient_db_error,
+        keepalive_seconds=settings.chat_keepalive_seconds,
     )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 

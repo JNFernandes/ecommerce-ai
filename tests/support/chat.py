@@ -2,16 +2,31 @@
 
 Each tool is given a payload (``ok``) or a ``FakeToolError``; an unknown name is refused like the
 real ``ToolInvoker`` (``unknown_tool``, never run). Every call is recorded; a ``gate`` holds a call
-open for disconnect tests.
+open for disconnect tests. ``chat_graph`` / ``collect_run`` build and run the real graph on fakes.
 """
 
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from uuid import UUID
 
+from fastapi import FastAPI
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import JsonValue
 
-from ecommerce_ai.agents.assistant.ports import ToolOutcome, ToolSpec
+from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent
+from ecommerce_ai.agents.assistant.model import RunOutcome
+from ecommerce_ai.agents.assistant.ports import (
+    ChatModel,
+    Checkpointer,
+    ConversationStore,
+    ToolOutcome,
+    ToolRunner,
+    ToolSpec,
+)
+from ecommerce_ai.agents.prompts.loader import load_system_prompt
+from ecommerce_ai.main import create_app
+from tests.support.stores import InMemoryConversationStore
 
 TOOL_NAMES = (
     "get_order",
@@ -93,3 +108,48 @@ class FakeToolRunner:
             upstream_unauthenticated=False,
             duration_ms=1.0,
         )
+
+
+async def collect_run(
+    graph: ChatGraph, conversation_id: UUID, text: str
+) -> tuple[list[GraphEvent], RunOutcome]:
+    """Run ``graph`` once; return its events and its outcome."""
+    events: list[GraphEvent] = []
+    outcome: RunOutcome | None = None
+    async for item in graph.run(conversation_id, text):
+        if isinstance(item, RunOutcome):
+            outcome = item
+        else:
+            events.append(item)
+    assert outcome is not None
+    return events, outcome
+
+
+def chat_graph(
+    model: ChatModel | None,
+    tools: ToolRunner | None = None,
+    checkpointer: Checkpointer | None = None,
+) -> ChatGraph:
+    """The chat graph with the real prompt, fake tools and an in-memory saver by default."""
+    return ChatGraph(
+        model=model,
+        tools=tools or FakeToolRunner(),
+        prompt=load_system_prompt("assistant", "v1"),
+        checkpointer=checkpointer or InMemorySaver(),
+    )
+
+
+def chat_app(
+    model: ChatModel | None,
+    tools: ToolRunner | None = None,
+    store: ConversationStore | None = None,
+    checkpointer: Checkpointer | None = None,
+) -> FastAPI:
+    """The app with the chat on fakes: in-memory store and saver, fake tools, no probes."""
+    return create_app(
+        probes=[],
+        conversation_store=store or InMemoryConversationStore(),
+        chat_model=model,
+        tool_runner=tools or FakeToolRunner(),
+        checkpointer=checkpointer or InMemorySaver(),
+    )
