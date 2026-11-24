@@ -11,7 +11,7 @@ from ecommerce_ai.infrastructure.caller import (
     RequestCaller,
     bind_caller,
 )
-from ecommerce_ai.infrastructure.orders_client import Forbidden, Unauthenticated, UpstreamError
+from ecommerce_ai.infrastructure.upstream import Forbidden, Unauthenticated, UpstreamError
 from ecommerce_ai.tools.envelope import ToolEnvelope, ToolErrorCode, ToolFailure
 from ecommerce_ai.tools.orders import (
     GET_ORDER,

@@ -18,7 +18,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from pydantic.alias_generators import to_camel
 
 from ecommerce_ai.infrastructure.caller import current_caller
-from ecommerce_ai.infrastructure.orders_client import Forbidden, Unauthenticated, UpstreamError
+from ecommerce_ai.infrastructure.upstream import Forbidden, Unauthenticated, UpstreamError
 from ecommerce_ai.tools.envelope import ToolEnvelope, ToolErrorCode, ToolFailure, truncate_text
 from ecommerce_ai.tools.registry import AllowlistEntry, ToolDefinition
 

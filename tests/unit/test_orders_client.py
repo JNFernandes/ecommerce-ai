@@ -10,12 +10,8 @@ import respx
 from pydantic import SecretStr
 
 from ecommerce_ai.infrastructure.caller import CallerIdentity, RequestCaller, bind_caller
-from ecommerce_ai.infrastructure.orders_client import (
-    Forbidden,
-    OrdersClient,
-    Unauthenticated,
-    UpstreamError,
-)
+from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.upstream import Forbidden, Unauthenticated, UpstreamError
 from tests.support.orders_stub import ORDERS_GRAPHQL_URL, OrdersStub, sample_order
 
 TOKEN = "header.payload.signature"  # noqa: S105  # fake, test-only
