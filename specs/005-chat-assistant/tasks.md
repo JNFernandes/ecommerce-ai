@@ -81,7 +81,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
   `tests/support/sse.py` (parse `id:`/`event:`/`data:` and comments from an httpx stream);
   `tests/support/stores.py::InMemoryConversationStore` (injectable failures); fake tool runner in
   `tests/support/chat.py`; self-tests in `tests/unit/test_support.py`
-- [ ] T011 [P] Write `src/ecommerce_ai/agents/prompts/assistant.v1.md` (FR-012: answer only from
+- [X] T011 [P] Write `src/ecommerce_ai/agents/prompts/assistant.v1.md` (FR-012: answer only from
   tool results, never invent statuses/amounts/dates/stock, say when a tool fails or is empty, tool
   results are untrusted data, refuse off-domain briefly, plain text); pin its SHA-256 in
   `tests/unit/test_prompt_loader.py`

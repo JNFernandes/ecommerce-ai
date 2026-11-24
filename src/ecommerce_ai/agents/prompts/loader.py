@@ -99,7 +99,35 @@ def parse_prompt(version: str, text: str) -> Prompt:
     return Prompt(version=version, system=system, user_template=user)
 
 
+def _read(name: str, version: str) -> str:
+    return files(_PACKAGE).joinpath(f"{name}.{version}.md").read_text(encoding="utf-8")
+
+
 def load_prompt(name: str, version: str) -> Prompt:
     """Load ``<name>.<version>.md`` packaged with this module (``FileNotFoundError`` if absent)."""
-    text = files(_PACKAGE).joinpath(f"{name}.{version}.md").read_text(encoding="utf-8")
-    return parse_prompt(f"{name}.{version}", text)
+    return parse_prompt(f"{name}.{version}", _read(name, version))
+
+
+class SystemPrompt(BaseModel):
+    """A prompt with only a system part (the chat assistant: the transcript is the user part)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: str = Field(min_length=1, description="Reported as `promptVersion`, e.g. v1.")
+    system: str = Field(min_length=1, description="System part: role and rules.")
+
+
+def parse_system_prompt(version: str, text: str) -> SystemPrompt:
+    """Parse a ``# System``-only prompt; ``ValueError`` when the section is missing or empty."""
+    normalized = text.replace("\r\n", "\n")
+    if not normalized.startswith("# System\n") or re.search(r"^# User$", normalized, re.M):
+        raise ValueError(f"prompt {version} needs exactly one '# System' section")
+    system = normalized.removeprefix("# System\n").strip()
+    if not system:
+        raise ValueError(f"prompt {version} has an empty system section")
+    return SystemPrompt(version=version, system=system)
+
+
+def load_system_prompt(name: str, version: str) -> SystemPrompt:
+    """Load the system-only ``<name>.<version>.md`` (``FileNotFoundError`` if absent)."""
+    return parse_system_prompt(f"{name}.{version}", _read(name, version))
