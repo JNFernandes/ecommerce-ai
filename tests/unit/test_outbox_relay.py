@@ -156,6 +156,7 @@ async def test_should_log_one_outbox_publish_line_without_the_payload() -> None:
     [line] = [json.loads(text) for text in stream.getvalue().splitlines()]
     assert line["event"] == "outbox_publish"
     assert line["event_id"] == str(message.event_id)
+    assert line["order_id"] == "order-1"
     assert line["attempt"] == 1
     assert line["outcome"] == "published"
     assert "Café" not in stream.getvalue()

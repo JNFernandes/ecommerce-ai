@@ -11,7 +11,8 @@ the triage worker sets ``wake`` after a commit.
 The relay survives its dependencies being down (FR-003): a producer that cannot start and a
 transient database error are retried with the same growing backoff and reported in
 ``RelayState.last_error`` (class name only); any other database error ends the task. Each attempt
-yields one ``outbox_publish`` log line with ids, outcome and error class, never the payload.
+yields one ``outbox_publish`` log line with the event id, the order id (the key), the outcome and
+the error class, never the payload.
 """
 
 import asyncio
@@ -236,6 +237,7 @@ class OutboxRelay:
                 logger.warning(
                     "outbox_publish",
                     event_id=str(message.event_id),
+                    order_id=message.key,
                     topic=message.topic,
                     attempt=attempt,
                     outcome=outcome,
@@ -247,6 +249,7 @@ class OutboxRelay:
         logger.info(
             "outbox_publish",
             event_id=str(message.event_id),
+            order_id=message.key,
             topic=message.topic,
             attempt=attempt,
             outcome="published",

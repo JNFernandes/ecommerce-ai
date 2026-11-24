@@ -38,7 +38,9 @@ class TriageService:
             case = claim.case
             if case is None:
                 return False
-            result = await self._graph.run(case)
+            # Every log line of the run (model calls included) carries the order id (VII).
+            with structlog.contextvars.bound_contextvars(order_id=str(case.order_id)):
+                result = await self._graph.run(case)
             await claim.complete(result)
         logger.info(
             "triage_case",

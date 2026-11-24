@@ -6,6 +6,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+import structlog
 
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
@@ -17,7 +18,7 @@ from ecommerce_ai.agents.triage.model import (
     SuggestedAction,
 )
 from ecommerce_ai.agents.triage.policy import default_action
-from ecommerce_ai.agents.triage.ports import TriageModel
+from ecommerce_ai.agents.triage.ports import ModelReply, PromptInput, TriageModel
 from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.templates import fallback_draft
 from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
@@ -205,3 +206,28 @@ async def test_should_never_log_evidence_reasons_customer_ids_explanations_or_pr
     prompt = load_prompt("triage", "v1")
     for secret in (customer_id, reason, "4242", refund, explanation, prompt.system[:40]):
         assert secret not in logged
+
+
+class LoggingModel:
+    """Logs one line per call, like the real adapter, then answers."""
+
+    async def draft(self, prompt_input: PromptInput) -> ModelReply:
+        structlog.get_logger("test").info("llm_call")
+        return reply("The payment was declined, so the order failed.")
+
+
+async def test_should_tag_every_log_line_of_the_run_with_the_order_id() -> None:
+    queue = InMemoryTriageCaseQueue()
+    case = make_case(TriageCause.PAYMENT_FAILED)
+    queue.add(case, NOW - _settled())
+    service = _service(queue, LoggingModel())
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    assert await service.triage_one()
+    structlog.get_logger("test").info("after_the_run")
+
+    lines = {line["event"]: line for line in map(json.loads, stream.getvalue().splitlines())}
+    assert lines["llm_call"]["order_id"] == str(case.order_id)
+    assert lines["triage_case"]["order_id"] == str(case.order_id)
+    assert "order_id" not in lines["after_the_run"]
