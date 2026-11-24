@@ -5,6 +5,7 @@ import io
 import json
 import time
 from collections.abc import Sequence
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -12,18 +13,28 @@ import respx
 import uvicorn
 
 from ecommerce_ai import main
+from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
 from ecommerce_ai.infrastructure.health import DependencyStatus
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.outbox import OutboxMessage
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app, run
-from ecommerce_ai.messaging.kafka import AIOKafkaConsumerAdapter, ConsumedRecord, TopicPartition
+from ecommerce_ai.messaging.kafka import (
+    AIOKafkaConsumerAdapter,
+    AIOKafkaProducerAdapter,
+    ConsumedRecord,
+    TopicPartition,
+)
+from ecommerce_ai.messaging.triage_published import to_outbox_message
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolDefinition, ToolRegistryError
-from tests.support.kafka import FakeConsumer
+from tests.support.kafka import FakeConsumer, FakeProducer
 from tests.support.mcp import serve_app
 from tests.support.polling import wait_until
 from tests.support.probes import FakeProbe
+from tests.support.stores import InMemoryOutboxStore, InMemoryTriageCaseQueue
+from tests.support.triage import NOW, make_case
 
 DATABASE_DOWN = FakeProbe("database", critical=True, status=DependencyStatus.DOWN)
 
@@ -264,3 +275,83 @@ async def test_should_log_the_error_class_only_when_the_consumer_task_crashed() 
     (failure,) = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_failed"]
     assert failure["error"] == "RuntimeError"
     assert "s3cret" not in stream.getvalue()
+
+
+def _worker_enabled(shutdown_timeout: float = 10.0) -> Settings:
+    return Settings(
+        triage_worker_enabled=True,
+        triage_settle_seconds=0,
+        triage_poll_interval_seconds=0.01,
+        outbox_poll_interval_seconds=0.01,
+        consumer_shutdown_timeout_seconds=shutdown_timeout,
+    )
+
+
+async def test_should_not_start_the_worker_or_relay_when_the_worker_is_disabled() -> None:
+    built: list[FakeProducer] = []
+
+    def factory() -> FakeProducer:
+        built.append(FakeProducer())
+        return built[-1]
+
+    async with serve_app(create_app(probes=[], producer_factory=factory)) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    assert built == []
+
+
+async def test_should_triage_and_publish_in_the_background_then_stop_both_on_shutdown() -> None:
+    producer = FakeProducer()
+    outbox = InMemoryOutboxStore()
+    queue = InMemoryTriageCaseQueue(
+        serializer=lambda result, case: _stored(outbox, to_outbox_message(result, case))
+    )
+    case = make_case(TriageCause.INSUFFICIENT_STOCK)
+    queue.add(case, NOW - timedelta(hours=1))
+    app = create_app(
+        _worker_enabled(),
+        probes=[],
+        producer_factory=lambda: producer,
+        triage_queue=queue,
+        outbox_store=outbox,
+    )
+
+    async with serve_app(app):
+        await wait_until(lambda: bool(producer.sent))
+        running = (producer.started, producer.stopped)
+
+    assert running == (True, False)
+    assert producer.stopped
+    assert queue.status(case.case_id) is TriageStatus.COMPLETED
+    [record] = producer.sent
+    assert record.key == str(case.order_id).encode()
+    assert json.loads(record.value)["source"] == "FALLBACK_TEMPLATE"
+
+
+def _stored(outbox: InMemoryOutboxStore, message: OutboxMessage) -> OutboxMessage:
+    outbox.add(message, message.occurred_at)
+    return message
+
+
+async def test_should_log_the_relay_failure_class_when_the_producer_cannot_start() -> None:
+    producer = FakeProducer(start_error=ConnectionRefusedError("kafka://ai:s3cret@broker"))
+    app = create_app(
+        _worker_enabled(),
+        probes=[],
+        producer_factory=lambda: producer,
+        triage_queue=InMemoryTriageCaseQueue(),
+        outbox_store=InMemoryOutboxStore(),
+    )
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    async with serve_app(app) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    (failure,) = [line for line in _log_lines(stream) if line["event"] == "outbox_relay_failed"]
+    assert failure["error"] == "ConnectionRefusedError"
+    assert "s3cret" not in stream.getvalue()
+
+
+async def test_should_build_aiokafka_producers() -> None:
+    assert isinstance(main.kafka_producer_factory(Settings())(), AIOKafkaProducerAdapter)

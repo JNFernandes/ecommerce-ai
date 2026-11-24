@@ -8,8 +8,10 @@ IV, FR-011): the triage consumer runs as a background task that connects on its 
 database engine opens its first connection on first use. Each upstream (Orders, which JWKS
 shares, Inventory, Notifications) has its own HTTP client, so a slow service cannot exhaust
 another's connection pool; clients connect only on first use and are all closed when the app
-shuts down, after the consumer has stopped. An invalid tool registry makes ``create_app``
-raise ``ToolRegistryError``.
+shuts down, after the background tasks have stopped. With ``TRIAGE_WORKER_ENABLED`` the triage
+worker and the outbox relay run as two more background tasks; both stop (cancelled after
+``CONSUMER_SHUTDOWN_TIMEOUT_SECONDS``) before the database engine is disposed. An invalid tool
+registry makes ``create_app`` raise ``ToolRegistryError``.
 """
 
 import argparse
@@ -22,6 +24,12 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 
+from ecommerce_ai.agents.prompts.loader import load_prompt
+from ecommerce_ai.agents.triage.gatekeeper import check
+from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
+from ecommerce_ai.agents.triage.ports import SystemClock, TriageCaseQueue
+from ecommerce_ai.agents.triage.service import TriageService
+from ecommerce_ai.agents.triage.worker import TriageWorker
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.mcp import mcp_endpoint
@@ -29,6 +37,8 @@ from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
+from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
+from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
@@ -40,8 +50,15 @@ from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport
 from ecommerce_ai.messaging.consumer_state import ConsumerState
 from ecommerce_ai.messaging.contracts import TOPIC_MODELS
-from ecommerce_ai.messaging.kafka import AIOKafkaConsumerAdapter, ConsumerFactory
+from ecommerce_ai.messaging.kafka import (
+    AIOKafkaConsumerAdapter,
+    AIOKafkaProducerAdapter,
+    ConsumerFactory,
+    ProducerFactory,
+)
+from ecommerce_ai.messaging.outbox_relay import OutboxRelay, OutboxStore
 from ecommerce_ai.messaging.triage_consumer import TriageConsumer
+from ecommerce_ai.messaging.triage_published import to_outbox_message
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
 from ecommerce_ai.tools.notifications import list_my_notifications_tool
 from ecommerce_ai.tools.orders import get_order_tool, list_my_orders_tool
@@ -94,27 +111,78 @@ def kafka_consumer_factory(settings: Settings) -> ConsumerFactory:
     return lambda: AIOKafkaConsumerAdapter(settings, tuple(TOPIC_MODELS))
 
 
-async def stop_consumer(task: asyncio.Task[None], stop: asyncio.Event, timeout: float) -> None:
-    """Ask the consumer to stop, cancel it after ``timeout`` seconds, and log how it ended."""
+def kafka_producer_factory(settings: Settings) -> ProducerFactory:
+    """Return a factory of aiokafka producers (``acks=all``, idempotent)."""
+    return lambda: AIOKafkaProducerAdapter(settings)
+
+
+async def stop_task(task: asyncio.Task[None], stop: asyncio.Event, timeout: float) -> None:
+    """Ask a background task to stop, cancel it after ``timeout`` seconds, log how it ended.
+
+    The log events are ``<task name>_cancelled`` and ``<task name>_failed`` (dashes become
+    underscores), with the error class and a sanitized message only.
+    """
+    event = task.get_name().replace("-", "_")
     stop.set()
     done, _ = await asyncio.wait({task}, timeout=timeout)
     if not done:
         task.cancel()
         await asyncio.wait({task})
-        logger.warning("triage_consumer_cancelled", timeout_seconds=timeout)
+        logger.warning(f"{event}_cancelled", timeout_seconds=timeout)
         return
     error = task.exception()
     if error is not None:
         # Root cause and a sanitized message (no password, no query values).
-        logger.error("triage_consumer_failed", **error_fields(error))
+        logger.error(f"{event}_failed", **error_fields(error))
+
+
+async def stop_consumer(task: asyncio.Task[None], stop: asyncio.Event, timeout: float) -> None:
+    """Stop the triage consumer task (``triage_consumer_*`` log events)."""
+    task.set_name("triage-consumer")
+    await stop_task(task, stop, timeout)
+
+
+def build_triage_worker(
+    settings: Settings, queue: TriageCaseQueue, wake: asyncio.Event
+) -> TriageWorker:
+    """Build the triage worker, which sets ``wake`` after each saved result.
+
+    No model is wired yet, so every case gets its cause's template.
+    """
+    clock = SystemClock()
+    graph = build_triage_graph(
+        model=None,
+        gatekeeper=check,
+        prompt=load_prompt("triage", "v1"),
+        limits=TriageLimits(
+            max_retries=settings.llm_max_retries,
+            case_token_cap=settings.case_token_cap,
+            max_output_tokens=settings.llm_max_output_tokens,
+            backoff_base_seconds=settings.triage_backoff_base_seconds,
+        ),
+        clock=clock,
+    )
+    service = TriageService(
+        queue,
+        graph,
+        clock,
+        settle_seconds=settings.triage_settle_seconds,
+    )
+    return TriageWorker(
+        service, poll_interval_seconds=settings.triage_poll_interval_seconds, wake=wake
+    )
 
 
 def create_app(
     settings: Settings | None = None,
     probes: Sequence[DependencyProbe] | None = None,
     consumer_factory: ConsumerFactory | None = None,
+    producer_factory: ProducerFactory | None = None,
+    triage_queue: TriageCaseQueue | None = None,
+    outbox_store: OutboxStore | None = None,
 ) -> FastAPI:
-    """Build the application; ``probes`` and ``consumer_factory`` replace the real ones in tests."""
+    """Build the application; ``probes``, the Kafka factories and the stores replace the real
+    ones in tests."""
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
     checker = ReadinessChecker(build_probes(settings) if probes is None else probes)
@@ -160,6 +228,17 @@ def create_app(
         consumer_state,
         settings,
     )
+    # Building the worker and the relay opens no connection either.
+    wake = asyncio.Event()
+    worker = build_triage_worker(
+        settings, triage_queue or TriageQueueRepository(engine, to_outbox_message), wake
+    )
+    relay = OutboxRelay(
+        outbox_store or OutboxRepository(engine),
+        producer_factory or kafka_producer_factory(settings),
+        poll_interval_seconds=settings.outbox_poll_interval_seconds,
+    )
+    shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 
     @asynccontextmanager
     async def resources() -> AsyncIterator[None]:
@@ -170,10 +249,16 @@ def create_app(
             if settings.triage_consumer_enabled:
                 stop = asyncio.Event()
                 task = asyncio.create_task(triage_consumer.run(stop), name="triage-consumer")
-                # Pushed last, so it runs first: the consumer stops before the engine closes.
-                stack.push_async_callback(
-                    stop_consumer, task, stop, settings.consumer_shutdown_timeout_seconds
-                )
+                # Pushed after the engine, so it runs first: it stops before the engine closes.
+                stack.push_async_callback(stop_consumer, task, stop, shutdown_timeout)
+            if settings.triage_worker_enabled:
+                relay_stop = asyncio.Event()
+                relay_task = asyncio.create_task(relay.run(relay_stop, wake), name="outbox-relay")
+                stack.push_async_callback(stop_task, relay_task, relay_stop, shutdown_timeout)
+                worker_stop = asyncio.Event()
+                worker_task = asyncio.create_task(worker.run(worker_stop), name="triage-worker")
+                # Pushed last, so it runs first: no new result is saved while the relay stops.
+                stack.push_async_callback(stop_task, worker_task, worker_stop, shutdown_timeout)
             yield
 
     return build_api(
