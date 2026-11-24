@@ -20,7 +20,7 @@ story's tests first and see them fail. After every task: quiet gate (CLAUDE.md);
 - [X] T007 [P] Tests for the transport and REST client in `tests/unit/test_upstream.py` and `tests/unit/test_rest_client.py`: headers byte-equal to caller token, retry on 5xx/timeout only, deadline, oversize abort, 401/403/404 types, problem body, non-JSON, path encoding
 - [X] T008 Add three `AllowlistEntry` rows (`ecommerce-inventory GET /api/inventory/products`, `ecommerce-inventory GET /api/inventory/products/{id}`, `ecommerce-notifications GET /api/notifications`) in `src/ecommerce_ai/tools/registry.py`
 - [X] T009 In `src/ecommerce_ai/main.py` create one `httpx.AsyncClient` per upstream (Orders, Inventory, Notifications, JWKS may share Orders'), `RestClient`s for Inventory and Notifications, close all in `resources()`; extend `build_tool_definitions` signature for the new clients; update `tests/unit/test_main.py`
-- [ ] T010 [P] Add respx stubs `tests/support/inventory_stub.py` and `tests/support/notifications_stub.py` (routes, sample pages, capture of request headers/params)
+- [X] T010 [P] Add respx stubs `tests/support/inventory_stub.py` and `tests/support/notifications_stub.py` (routes, sample pages, capture of request headers/params)
 
 **Checkpoint**: gate green; Orders tools unchanged.
 
