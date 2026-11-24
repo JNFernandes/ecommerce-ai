@@ -2,15 +2,16 @@
 
 Each call is one unit of work on the ``TriageCaseStore``: the order's case is created or locked,
 the event is attached as evidence and the cause merged by precedence, all saved together or not
-at all; a redelivered event (known ``eventId``) changes nothing (FR-007). Messaging commits the
-Kafka offset only after ``record`` returns.
+at all; a redelivered event (known ``eventId``) changes nothing (FR-007). A COMPLETED case keeps
+its cause, status and ``updated_at``: the event is stored as evidence only (research 12).
+Messaging commits the Kafka offset only after ``record`` returns.
 """
 
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 from ecommerce_ai.agents.triage_intake.cause import derive_cause, merge_cause
-from ecommerce_ai.agents.triage_intake.model import IntakeOutcome, TriageEventInput
+from ecommerce_ai.agents.triage_intake.model import IntakeOutcome, TriageEventInput, TriageStatus
 from ecommerce_ai.agents.triage_intake.ports import TriageCaseStore
 
 
@@ -44,6 +45,9 @@ class TriageIntakeService:
                 if not await work.add_evidence(case.case_id, event, now):
                     # Roll back: a redelivery must change nothing, not even create a case.
                     raise _DuplicateEventError
+                if case.status is TriageStatus.COMPLETED:
+                    # Already explained and announced: keep the evidence, change nothing else.
+                    return IntakeOutcome.PROCESSED
                 # Every new evidence bumps ``updated_at``; the cause changes only when outranked.
                 await work.update_case(case.case_id, merge_cause(case.cause, cause), now)
         except _DuplicateEventError:

@@ -24,6 +24,14 @@ class LogLevel(StrEnum):
     ERROR = "ERROR"
 
 
+class LlmEffort(StrEnum):
+    """Reasoning effort requested from the model (``LLM_EFFORT``)."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 def _split_csv(value: object) -> object:
     """Turn a comma-separated environment value into a list; leave other values untouched."""
     if isinstance(value, str):
@@ -164,6 +172,30 @@ class Settings(BaseSettings):
         default=10.0, gt=0, le=120, description="Time the consumer gets to stop on shutdown."
     )
 
+    triage_worker_enabled: bool = Field(
+        default=True,
+        description="Run the triage worker and the outbox relay as background tasks.",
+    )
+    triage_settle_seconds: float = Field(
+        default=3.0,
+        ge=0,
+        le=300,
+        description="Quiet time after a case's last event before it is triaged.",
+    )
+    triage_poll_interval_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="Wait of the triage worker when no case is settled."
+    )
+    triage_backoff_base_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="First worker delay after a database failure."
+    )
+    triage_backoff_max_seconds: float = Field(
+        default=30.0, gt=0, le=600, description="Upper bound of one worker failure delay."
+    )
+
+    anthropic_api_key: SecretStr | None = Field(
+        default=None,
+        description="Anthropic API key. Unset means every LLM-backed step uses its fallback.",
+    )
     anthropic_model: str | None = Field(
         default=None,
         description="LLM model id. Unset means every LLM-backed step uses its fallback.",
@@ -171,8 +203,36 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(
         default=30.0, gt=0, le=300, description="Timeout of one LLM call."
     )
+    llm_max_retries: int = Field(
+        default=2, ge=0, le=5, description="LLM retries after the first attempt of one draft."
+    )
+    llm_max_output_tokens: int = Field(
+        default=1024, gt=0, le=32_000, description="Output token limit of one LLM call."
+    )
+    llm_effort: LlmEffort = Field(
+        default=LlmEffort.LOW, description="Reasoning effort requested from the model."
+    )
+    case_token_cap: int = Field(
+        default=8000, gt=0, description="Most LLM tokens one triage case may spend."
+    )
     daily_token_budget: int = Field(
         default=50_000, ge=0, description="Hard cap on LLM tokens per UTC day (0 disables LLM)."
+    )
+
+    outbox_max_attempts: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Publish attempts of one outbox event before giving up.",
+    )
+    outbox_backoff_base_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="First delay after a failed publish; doubles per try."
+    )
+    outbox_backoff_max_seconds: float = Field(
+        default=60.0, gt=0, le=3600, description="Upper bound of one publish retry delay."
+    )
+    outbox_poll_interval_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="Wait of the outbox relay when nothing is due."
     )
 
     @field_validator("cors_allowed_origins", "kafka_brokers", mode="before")
@@ -209,12 +269,17 @@ class Settings(BaseSettings):
                 raise ValueError(f"broker {broker!r} must be host:port")
         return value
 
-    @field_validator("anthropic_model", mode="before")
+    @field_validator("anthropic_model", "anthropic_api_key", mode="before")
     @classmethod
-    def _blank_model_is_unset(cls, value: object) -> object:
+    def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @property
+    def model_configured(self) -> bool:
+        """True when both the API key and the model id are set, so the LLM may be called."""
+        return self.anthropic_api_key is not None and self.anthropic_model is not None
 
     @model_validator(mode="after")
     def _check_backoff_bounds(self) -> Self:
@@ -230,8 +295,25 @@ class Settings(BaseSettings):
                 self.db_retry_backoff_base_seconds,
                 self.db_retry_backoff_max_seconds,
             ),
+            (
+                "triage_backoff",
+                self.triage_backoff_base_seconds,
+                self.triage_backoff_max_seconds,
+            ),
+            (
+                "outbox_backoff",
+                self.outbox_backoff_base_seconds,
+                self.outbox_backoff_max_seconds,
+            ),
         )
         for prefix, base, maximum in pairs:
             if base > maximum:
                 raise ValueError(f"{prefix}_base_seconds must not exceed {prefix}_max_seconds")
+        return self
+
+    @model_validator(mode="after")
+    def _check_token_limits(self) -> Self:
+        """One LLM call must fit in the per-case token cap."""
+        if self.llm_max_output_tokens > self.case_token_cap:
+            raise ValueError("llm_max_output_tokens must not exceed case_token_cap")
         return self

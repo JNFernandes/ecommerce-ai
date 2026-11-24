@@ -32,7 +32,7 @@ Releases are gated by an eval suite ([ADR 0004](docs/adr/0004-evals-as-release-g
 | Route | Access | Behaviour |
 |---|---|---|
 | `GET /health` | public | Liveness: always `200 {"status": "UP"}` while the process answers; checks no dependency. |
-| `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}, "consumer"}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. `consumer` is `{"connected", "caughtUp", "lastError"}` (`lastError`: exception class name only) or `null` when the triage consumer is disabled; it never changes `status` or the code. The LLM provider will be reported (never failing) once its client exists. |
+| `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}, "consumer"}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. `consumer` is `{"connected", "caughtUp", "lastError"}` (`lastError`: exception class name only) or `null` when the triage consumer is disabled; `triageWorker` is `{"running", "lastError", "modelConfigured"}` and `outboxRelay` `{"running", "lastError"}`, or `null` when the worker is disabled. None of them ever changes `status` or the code. |
 | `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools, all read-only: `get_order(orderId)`, `list_my_orders(limit=20 (1–50), status?)`, `list_products(limit=20 (1–50), offset=0)`, `get_product(productId)`, `list_my_notifications(limit, offset, orderId?)`. |
 | `GET /docs`, `GET /openapi.json` | public | API documentation. |
 
@@ -89,6 +89,38 @@ payload, `customerId` or reason. Failures log `error` (the root cause's class, e
 The schema is created by Alembic migrations shipped in the package:
 `uv run python -m ecommerce_ai migrate` (`upgrade head` on `DATABASE_URL`). The image's entrypoint
 runs it before the app; a failure is logged and the service starts anyway.
+
+### Triage worker
+
+With `TRIAGE_WORKER_ENABLED` (default `true`) two more background tasks run:
+
+- **Triage worker**: picks the oldest `PENDING_TRIAGE` case whose last event is at least
+  `TRIAGE_SETTLE_SECONDS` old (`FOR UPDATE SKIP LOCKED`, so concurrent workers never share a case)
+  and runs a LangGraph flow over its stored evidence only: classify (keeps the cause, sets the
+  default action) → draft (Anthropic, structured `DraftOutput`, prompt
+  `agents/prompts/triage.v1.md`) → deterministic gatekeeper (no promises, no facts absent from the
+  evidence, no URLs/e-mails, no internal names, plain language, ≤ 500 characters, allowed action)
+  → finalize, or draft again with the violations as feedback (at most 2 revisions) → fallback
+  template. The fallback (`source: FALLBACK_TEMPLATE`, `modelId: null`) is used without a model
+  (`ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL`), when the model stays unavailable after
+  `LLM_MAX_RETRIES`, when the per-case cap (`CASE_TOKEN_CAP`) or the daily budget
+  (`DAILY_TOKEN_BUDGET`, table `llm_token_usage`, per UTC day) would be passed, and after the last
+  failed revision. The result (`triage_results`, one per case), its outbox event
+  (`outbox_events`) and the case's `COMPLETED` status are saved in one transaction; evidence
+  arriving later is stored but never yields a second result. Database outages back off
+  (`TRIAGE_BACKOFF_*`). One `triage_case` log line per case (ids, source, revisions, violation
+  codes, token usage, latency, `prompt_version`, `model_id`); every line of a run carries
+  `order_id`.
+- **Outbox relay**: publishes each PENDING outbox event to `ai.order-triage-completed` (key = order
+  id, `acks=all`, idempotent producer) with its stored payload, then marks it `RESOLVED`. A failed
+  send is retried at `min(base·2ⁿ, max)` (jittered, `OUTBOX_BACKOFF_*`) with the same `eventId`,
+  until `OUTBOX_MAX_ATTEMPTS` marks it `EXHAUSTED`. The worker wakes it after each commit. Kafka
+  or the database being down is retried with the same backoff and shown in `/ready`. One
+  `outbox_publish` line per attempt, never the payload.
+
+Both stop (cancelled after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before the engine is disposed; a
+case in flight is rolled back and stays pending. The live-model test is opt-in:
+`ANTHROPIC_API_KEY=... ANTHROPIC_MODEL=... uv run pytest -m live_llm`.
 
 ### Logging
 
@@ -168,9 +200,21 @@ use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL
 | `DB_RETRY_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | `0.5` / `10` | Delay between those attempts, full jitter |
 | `DATABASE_TIMEOUT_SECONDS` | `5` | Connect and statement timeout |
 | `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS` | `10` | Time the consumer gets to stop before it is cancelled |
-| `ANTHROPIC_MODEL` | unset | LLM model id; unset = every LLM step uses its fallback |
+| `TRIAGE_WORKER_ENABLED` | `true` | Run the triage worker and the outbox relay |
+| `TRIAGE_SETTLE_SECONDS` | `3` | Quiet time after a case's last event before it is triaged |
+| `TRIAGE_POLL_INTERVAL_SECONDS` | `1` | Worker wait when no case is settled |
+| `TRIAGE_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | `1` / `30` | Worker delay after a database failure (also the LLM retry base) |
+| `ANTHROPIC_API_KEY` | unset | Anthropic API key (secret); unset = every LLM step uses its fallback |
+| `ANTHROPIC_MODEL` | unset | LLM model id (e.g. `claude-opus-5-5`); unset = every LLM step uses its fallback |
 | `LLM_TIMEOUT_SECONDS` | `30` | Timeout of one LLM call (`> 0`, `≤ 300`) |
+| `LLM_MAX_RETRIES` | `2` | Retries of an unavailable model per draft (`0`–`5`) |
+| `LLM_MAX_OUTPUT_TOKENS` | `1024` | Output limit of one call (`≤ CASE_TOKEN_CAP`) |
+| `LLM_EFFORT` | `low` | `low`, `medium` or `high` |
+| `CASE_TOKEN_CAP` | `8000` | Most tokens one case may spend (reserved per call from the daily budget) |
 | `DAILY_TOKEN_BUDGET` | `50000` | Hard cap on LLM tokens per UTC day (`0` = no LLM calls) |
+| `OUTBOX_MAX_ATTEMPTS` | `10` | Publish attempts of one event before `EXHAUSTED` |
+| `OUTBOX_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | `1` / `60` | Publish retry delay `min(base·2ⁿ, max)`, jittered |
+| `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Relay wait when nothing is due |
 
 ### Docker
 
@@ -238,18 +282,19 @@ Actions are pinned by commit SHA and every job has least-privilege permissions.
 
 ```text
 src/ecommerce_ai/
-  main.py            Composition root: settings, logging, probes, engine, consumer task, app factory
+  main.py            Composition root: settings, logging, probes, engine, consumer, worker and relay tasks
   __main__.py        `python -m ecommerce_ai [migrate]`
   api/               FastAPI app, routers, request-id middleware, route access policy, /mcp auth
-  agents/            triage_intake: cause rules, intake service, storage ports (no Kafka/SQL)
+  agents/            triage_intake (cause rules, intake), triage (graph, gatekeeper, templates,
+                     worker, ports), prompts (versioned prompt files); no HTTP/Kafka/SQL
   tools/             MCP server, tool registry/allowlist, Orders/Inventory/Notifications tools
-  messaging/         Event contracts, decoding, Kafka port/adapter, triage consumer, consumer state
-  infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, db/
-                     (async engine, tables, repositories, packaged Alembic migrations)
+  messaging/         Event contracts, decoding, Kafka ports/adapters, triage consumer, outbox relay
+  infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, llm/
+                     (Anthropic adapter), db/ (engine, tables, repositories, Alembic migrations)
 tests/unit/          Unit tests (no network)
-tests/integration/   PostgreSQL tests: migrations, repositories, consumer flow, connection loss
+tests/integration/   PostgreSQL tests: migrations, repositories, consumer and triage flows, live_llm
 tests/contract/      Tool schema snapshot, Orders queries vs its schema, event models vs events.md
-tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka consumer, stores
+tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka, ScriptedModel, stores
 scripts/             Manual tools: mcp_smoke.py (smoke test of /mcp against the local stack)
 docs/adr/            Architecture Decision Records
 ```

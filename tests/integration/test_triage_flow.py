@@ -5,7 +5,7 @@ from collections.abc import Callable
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ecommerce_ai.agents.triage_intake.model import IntakeOutcome, TriageEventInput
@@ -121,6 +121,33 @@ async def test_should_store_the_event_as_evidence_when_a_payment_failure_is_save
     assert evidence["received_at"].utcoffset().total_seconds() == 0
     assert evidence["payload"]["orderId"] == str(order_id)
     assert "failedAt" not in evidence["payload"]
+
+
+async def test_should_store_evidence_but_leave_a_completed_case_unchanged(
+    db_engine: AsyncEngine,
+) -> None:
+    order_id = uuid4()
+    intake = _intake(db_engine)
+    await intake.record(_cancelled(order_id))
+    async with db_engine.begin() as connection:
+        await connection.execute(
+            update(triage_cases)
+            .where(triage_cases.c.order_id == order_id)
+            .values(status="COMPLETED")
+        )
+    the_case = select(triage_cases).where(triage_cases.c.order_id == order_id)
+    async with db_engine.connect() as connection:
+        before = (await connection.execute(the_case)).one()
+
+    outcome = await intake.record(_payment_failed(order_id))
+
+    assert outcome is IntakeOutcome.PROCESSED
+    async with db_engine.connect() as connection:
+        after = (await connection.execute(the_case)).one()
+    assert after == before
+    assert after.status == "COMPLETED"
+    assert after.cause == "CANCELLATION_REQUESTED"
+    assert (await _cases(db_engine))[order_id][2] == 2
 
 
 def _intake(engine: AsyncEngine) -> TriageIntakeService:

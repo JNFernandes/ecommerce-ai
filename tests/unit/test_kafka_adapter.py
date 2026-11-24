@@ -8,7 +8,13 @@ import pytest
 from aiokafka.structs import TopicPartition as KafkaTopicPartition
 
 from ecommerce_ai.infrastructure.settings import Settings
-from ecommerce_ai.messaging.kafka import AIOKafkaConsumerAdapter, ConsumedRecord, TopicPartition
+from ecommerce_ai.messaging.kafka import (
+    AIOKafkaConsumerAdapter,
+    AIOKafkaProducerAdapter,
+    ConsumedRecord,
+    ProducerPort,
+    TopicPartition,
+)
 
 TP = KafkaTopicPartition("payments.payment-failed", 1)
 
@@ -99,3 +105,45 @@ async def test_should_commit_with_aiokafka_partitions_and_delegate_start_and_sto
     assert stub.calls == ["start", "stop"]
     assert stub.committed == {TP: 8}
     assert all(isinstance(tp, KafkaTopicPartition) for tp in stub.committed)
+
+
+class StubAIOKafkaProducer:
+    """Records the configuration and calls the producer adapter makes."""
+
+    def __init__(self, **config: object) -> None:
+        self.config = config
+        self.calls: list[object] = []
+
+    async def start(self) -> None:
+        self.calls.append("start")
+
+    async def stop(self) -> None:
+        self.calls.append("stop")
+
+    async def send_and_wait(self, topic: str, *, value: bytes, key: bytes) -> None:
+        self.calls.append((topic, key, value))
+
+
+async def test_should_send_with_acks_all_and_idempotence_when_producing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(aiokafka, "AIOKafkaProducer", StubAIOKafkaProducer)
+    adapter = AIOKafkaProducerAdapter(Settings(kafka_brokers=["k1:9092", "k2:9092"]))
+    port: ProducerPort = adapter
+
+    await port.start()
+    await port.send("ai.order-triage-completed", b"order-1", b'{"a":1}')
+    await port.stop()
+
+    stub = adapter._producer
+    assert isinstance(stub, StubAIOKafkaProducer)
+    assert stub.config == {
+        "bootstrap_servers": "k1:9092,k2:9092",
+        "acks": "all",
+        "enable_idempotence": True,
+    }
+    assert stub.calls == [
+        "start",
+        ("ai.order-triage-completed", b"order-1", b'{"a":1}'),
+        "stop",
+    ]

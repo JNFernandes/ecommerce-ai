@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from ecommerce_ai.infrastructure.db.engine import async_database_url
-from ecommerce_ai.infrastructure.settings import ENV_FILE, LogLevel, Settings
+from ecommerce_ai.infrastructure.settings import ENV_FILE, LlmEffort, LogLevel, Settings
 
 
 def test_should_use_local_defaults_when_the_environment_is_empty() -> None:
@@ -266,3 +266,131 @@ def test_should_use_defaults_when_there_is_no_env_file(
     monkeypatch.chdir(tmp_path)
 
     assert Settings().port == 8002
+
+
+def test_should_use_triage_worker_defaults_when_the_environment_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRIAGE_WORKER_ENABLED")  # set by tests/conftest.py
+    settings = Settings()
+
+    assert settings.triage_worker_enabled is True
+    assert settings.triage_settle_seconds == 3.0
+    assert settings.triage_poll_interval_seconds == 1.0
+    assert settings.triage_backoff_base_seconds == 1.0
+    assert settings.triage_backoff_max_seconds == 30.0
+    assert settings.anthropic_api_key is None
+    assert settings.anthropic_model is None
+    assert settings.model_configured is False
+    assert settings.llm_timeout_seconds == 30.0
+    assert settings.llm_max_retries == 2
+    assert settings.llm_max_output_tokens == 1024
+    assert settings.llm_effort is LlmEffort.LOW
+    assert settings.case_token_cap == 8000
+    assert settings.daily_token_budget == 50_000
+    assert settings.outbox_max_attempts == 10
+    assert settings.outbox_backoff_base_seconds == 1.0
+    assert settings.outbox_backoff_max_seconds == 60.0
+    assert settings.outbox_poll_interval_seconds == 1.0
+
+
+def test_should_read_triage_worker_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_WORKER_ENABLED", "true")
+    monkeypatch.setenv("TRIAGE_SETTLE_SECONDS", "0")
+    monkeypatch.setenv("TRIAGE_POLL_INTERVAL_SECONDS", "0.5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-5-5")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "0")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "500")
+    monkeypatch.setenv("LLM_EFFORT", "medium")
+    monkeypatch.setenv("CASE_TOKEN_CAP", "500")
+    monkeypatch.setenv("OUTBOX_MAX_ATTEMPTS", "3")
+
+    settings = Settings()
+
+    assert settings.triage_worker_enabled is True
+    assert settings.triage_settle_seconds == 0.0
+    assert settings.triage_poll_interval_seconds == 0.5
+    assert settings.anthropic_api_key is not None
+    assert settings.anthropic_api_key.get_secret_value() == "sk-test"
+    assert settings.model_configured is True
+    assert settings.llm_max_retries == 0
+    assert settings.llm_max_output_tokens == 500
+    assert settings.llm_effort is LlmEffort.MEDIUM
+    assert settings.case_token_cap == 500
+    assert settings.outbox_max_attempts == 3
+
+
+@pytest.mark.parametrize(
+    ("key", "model"), [("sk-test", None), (None, "claude-opus-5-5"), ("  ", "claude-opus-5-5")]
+)
+def test_should_not_configure_the_model_when_the_key_or_the_model_is_missing(
+    monkeypatch: pytest.MonkeyPatch, key: str | None, model: str | None
+) -> None:
+    if key is not None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    if model is not None:
+        monkeypatch.setenv("ANTHROPIC_MODEL", model)
+
+    assert Settings().model_configured is False
+
+
+def test_should_never_show_the_anthropic_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-very-secret")
+
+    settings = Settings()
+
+    assert "sk-very-secret" not in repr(settings)
+    assert "sk-very-secret" not in str(settings.model_dump())
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TRIAGE_SETTLE_SECONDS", "-1"),
+        ("TRIAGE_POLL_INTERVAL_SECONDS", "0"),
+        ("TRIAGE_BACKOFF_BASE_SECONDS", "0"),
+        ("TRIAGE_BACKOFF_MAX_SECONDS", "0"),
+        ("LLM_TIMEOUT_SECONDS", "0"),
+        ("LLM_MAX_RETRIES", "-1"),
+        ("LLM_MAX_RETRIES", "6"),
+        ("LLM_MAX_OUTPUT_TOKENS", "0"),
+        ("LLM_EFFORT", "extreme"),
+        ("CASE_TOKEN_CAP", "0"),
+        ("DAILY_TOKEN_BUDGET", "-1"),
+        ("OUTBOX_MAX_ATTEMPTS", "0"),
+        ("OUTBOX_BACKOFF_BASE_SECONDS", "0"),
+        ("OUTBOX_BACKOFF_MAX_SECONDS", "0"),
+        ("OUTBOX_POLL_INTERVAL_SECONDS", "0"),
+    ],
+)
+def test_should_reject_an_invalid_triage_worker_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()
+
+
+@pytest.mark.parametrize("prefix", ["TRIAGE_BACKOFF", "OUTBOX_BACKOFF"])
+def test_should_reject_a_worker_backoff_base_above_its_maximum_when_both_are_set(
+    monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    monkeypatch.setenv(f"{prefix}_BASE_SECONDS", "5")
+    monkeypatch.setenv(f"{prefix}_MAX_SECONDS", "4")
+
+    with pytest.raises(ValidationError, match=f"{prefix.lower()}_base_seconds must not exceed"):
+        Settings()
+
+
+def test_should_reject_an_output_limit_above_the_case_cap_when_both_are_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "2000")
+    monkeypatch.setenv("CASE_TOKEN_CAP", "1000")
+
+    with pytest.raises(ValidationError, match="llm_max_output_tokens must not exceed"):
+        Settings()

@@ -166,6 +166,24 @@ async def test_should_keep_the_cause_but_bump_updated_at_when_a_lower_cause_arri
     }
 
 
+async def test_should_store_evidence_but_keep_cause_status_and_time_when_the_case_is_completed(
+    service: TriageIntakeService, store: InMemoryTriageCaseStore, clock: FakeClock
+) -> None:
+    order_id = uuid4()
+    await service.record(_event(ORDER_CANCELLED_TOPIC, order_id, None))
+    store.mark_completed(order_id)
+    before = store.case_for(order_id)
+    clock.now = RECEIVED_AT + timedelta(seconds=30)
+
+    outcome = await service.record(_event(PAYMENT_FAILED_TOPIC, order_id, "card declined"))
+
+    assert outcome is IntakeOutcome.PROCESSED
+    assert store.case_for(order_id) == before
+    assert before.status is TriageStatus.COMPLETED
+    assert before.cause is TriageCause.CANCELLATION_REQUESTED
+    assert len(store.evidence) == 2
+
+
 async def test_should_report_a_duplicate_and_change_nothing_when_an_event_is_redelivered(
     service: TriageIntakeService, store: InMemoryTriageCaseStore, clock: FakeClock
 ) -> None:

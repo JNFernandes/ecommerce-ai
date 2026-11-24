@@ -17,9 +17,10 @@ class TriageCause(StrEnum):
 
 
 class TriageStatus(StrEnum):
-    """Lifecycle of a triage case; this story only creates pending cases."""
+    """Lifecycle of a triage case: PENDING_TRIAGE until its result is saved, then COMPLETED."""
 
     PENDING_TRIAGE = "PENDING_TRIAGE"
+    COMPLETED = "COMPLETED"
 
 
 class IntakeOutcome(StrEnum):
@@ -50,3 +51,4 @@ class LockedCase(BaseModel):
 
     case_id: UUID = Field(description="Id of the case.")
     cause: TriageCause = Field(description="Cause currently stored on the case.")
+    status: TriageStatus = Field(description="Status currently stored on the case.")

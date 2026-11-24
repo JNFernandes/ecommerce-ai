@@ -49,12 +49,14 @@ class SqlTriageUnitOfWork:
         )
         row = (
             await self._connection.execute(
-                select(triage_cases.c.id, triage_cases.c.cause)
+                select(triage_cases.c.id, triage_cases.c.cause, triage_cases.c.status)
                 .where(triage_cases.c.order_id == order_id)
                 .with_for_update()
             )
         ).one()
-        return LockedCase(case_id=row.id, cause=TriageCause(row.cause))
+        return LockedCase(
+            case_id=row.id, cause=TriageCause(row.cause), status=TriageStatus(row.status)
+        )
 
     async def add_evidence(
         self, case_id: UUID, event: TriageEventInput, received_at: datetime

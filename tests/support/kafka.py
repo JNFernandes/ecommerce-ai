@@ -1,9 +1,10 @@
-"""Fake Kafka consumer and builders of valid failure events, for tests without a broker."""
+"""Fake Kafka consumer and producer, and builders of valid failure events (no broker)."""
 
 import asyncio
 import json
 from collections import deque
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -176,3 +177,51 @@ TOPIC_PAYLOADS = {
     STOCK_REJECTED_TOPIC: stock_rejected_payload,
 }
 """Valid-payload builder per consumed topic."""
+
+
+@dataclass(frozen=True)
+class SentRecord:
+    """A record handed to ``FakeProducer.send``."""
+
+    topic: str
+    key: bytes
+    value: bytes
+
+
+class FakeProducer:
+    """In-memory producer: records every sent record; queued failures make the next sends raise.
+
+    ``start_error`` / ``stop_error`` make those calls raise.
+    """
+
+    def __init__(
+        self,
+        *,
+        start_error: BaseException | None = None,
+        stop_error: BaseException | None = None,
+    ) -> None:
+        """Start with nothing sent and no send failure queued."""
+        self.start_error = start_error
+        self.stop_error = stop_error
+        self.started = False
+        self.stopped = False
+        self.sent: list[SentRecord] = []
+        self.failures: deque[BaseException] = deque()
+
+    async def start(self) -> None:
+        """Raise ``start_error`` if set, else mark the producer started."""
+        if self.start_error is not None:
+            raise self.start_error
+        self.started = True
+
+    async def stop(self) -> None:
+        """Mark the producer stopped, then raise ``stop_error`` if set."""
+        self.stopped = True
+        if self.stop_error is not None:
+            raise self.stop_error
+
+    async def send(self, topic: str, key: bytes, value: bytes) -> None:
+        """Raise the next queued failure, else record the record as acknowledged."""
+        if self.failures:
+            raise self.failures.popleft()
+        self.sent.append(SentRecord(topic=topic, key=key, value=value))

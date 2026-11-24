@@ -75,5 +75,8 @@ async def _empty_tables(db_engine: AsyncEngine) -> None:
     """Start every integration test from empty triage tables."""
     async with db_engine.begin() as connection:
         await connection.execute(
-            text("TRUNCATE triage_evidence, triage_cases, inbound_dead_letters")
+            text(
+                "TRUNCATE triage_results, outbox_events, llm_token_usage, triage_evidence,"
+                " triage_cases, inbound_dead_letters"
+            )
         )

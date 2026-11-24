@@ -9,10 +9,12 @@ from ecommerce_ai.infrastructure.settings import Settings
 def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove every variable a ``Settings`` field reads and ignore ``.env``: tests see defaults.
 
-    The one exception: the triage consumer is disabled, so an app built by a test never tries to
-    reach a real Kafka broker. Tests of the consumer enable it with a fake consumer factory.
+    The exceptions: the triage consumer, the triage worker and the outbox relay are disabled, so an
+    app built by a test never tries to reach a real Kafka broker or database. Tests of those tasks
+    enable them with fake factories.
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)  # never the developer's .env
     for name in Settings.model_fields:
         monkeypatch.delenv(name.upper(), raising=False)
     monkeypatch.setenv("TRIAGE_CONSUMER_ENABLED", "false")
+    monkeypatch.setenv("TRIAGE_WORKER_ENABLED", "false")
