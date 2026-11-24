@@ -8,6 +8,7 @@ from ecommerce_ai.agents.triage.ports import ModelOutputInvalid
 from ecommerce_ai.agents.triage.templates import fallback_draft
 from ecommerce_ai.agents.triage_intake.model import TriageCause
 from tests.support.llm import ScriptedModel, reply
+from tests.support.stores import InMemoryTokenBudget
 from tests.support.triage import NOW, FakeClock, make_case
 
 PROMPT = load_prompt("triage", "v1")
@@ -22,7 +23,12 @@ URL = "The payment was declined; see https://example.com for details."
 
 def _graph(model: ScriptedModel) -> TriageGraph:
     return build_triage_graph(
-        model=model, gatekeeper=check, prompt=PROMPT, limits=LIMITS, clock=FakeClock()
+        model=model,
+        budget=InMemoryTokenBudget(budget=1_000_000),
+        gatekeeper=check,
+        prompt=PROMPT,
+        limits=LIMITS,
+        clock=FakeClock(),
     )
 
 

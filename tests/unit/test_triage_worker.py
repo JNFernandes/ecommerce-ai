@@ -10,7 +10,7 @@ from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker, wait_or_stop
 from ecommerce_ai.agents.triage_intake.model import TriageStatus
 from tests.support.polling import wait_until
-from tests.support.stores import InMemoryTriageCaseQueue
+from tests.support.stores import InMemoryTokenBudget, InMemoryTriageCaseQueue
 from tests.support.triage import NOW, FakeClock, make_case
 
 POLL_SECONDS = 0.75
@@ -34,6 +34,7 @@ def _worker(
     clock = FakeClock()
     graph = build_triage_graph(
         model=None,
+        budget=InMemoryTokenBudget(budget=1_000_000),
         gatekeeper=check,
         prompt=load_prompt("triage", "v1"),
         limits=TriageLimits(

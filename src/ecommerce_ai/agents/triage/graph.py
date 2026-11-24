@@ -8,7 +8,9 @@ feedback, at most ``MAX_REVISIONS`` times; then the fixed template of the cause 
 (FR-005, FR-007, FR-008, FR-010).
 """
 
-from collections.abc import Callable
+import asyncio
+import math
+from collections.abc import Awaitable, Callable
 from typing import Final, Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -29,18 +31,25 @@ from ecommerce_ai.agents.triage.policy import allowed_actions, default_action
 from ecommerce_ai.agents.triage.ports import (
     Clock,
     ModelError,
+    ModelOutputInvalid,
+    ModelReply,
     ModelUnavailable,
     PromptInput,
+    TokenBudget,
     TriageModel,
 )
 from ecommerce_ai.agents.triage.templates import fallback_draft
 from ecommerce_ai.agents.triage_intake.model import TriageCause
+from ecommerce_ai.infrastructure.retry import call_with_retry
 
 type Gatekeeper = Callable[[DraftOutput, CaseForTriage, int], list[Violation]]
 """Checks one draft attempt of a case; returns its violations (empty = usable)."""
 
 type StateUpdate = dict[str, object]
 """Fields a node changes; LangGraph merges them into a new state."""
+
+type Sleep = Callable[[float], Awaitable[None]]
+"""Waits between retries of an unavailable model (injected in tests)."""
 
 _CLASSIFY: Final = "classify"
 _DRAFT: Final = "draft"
@@ -59,6 +68,27 @@ class TriageLimits(BaseModel):
     case_token_cap: int = Field(gt=0, description="Most tokens one case may spend.")
     max_output_tokens: int = Field(gt=0, description="Most output tokens of one call.")
     backoff_base_seconds: float = Field(gt=0, description="First retry delay, doubled after.")
+
+
+class _Halted(Exception):
+    """No further model call is allowed (budget or per-case cap); never retried."""
+
+
+class _Spend:
+    """Tokens a case has spent so far, updated by each call of one draft attempt."""
+
+    def __init__(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.calls = 0
+
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def add(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
 
 
 class TriageState(BaseModel):
@@ -114,13 +144,17 @@ class TriageGraph:
         self,
         *,
         model: TriageModel | None,
+        budget: TokenBudget,
         gatekeeper: Gatekeeper,
         prompt: Prompt,
         limits: TriageLimits,
         clock: Clock,
+        sleep: Sleep = asyncio.sleep,
     ) -> None:
         """Compile the graph; ``model=None`` (not configured) sends every case to the fallback."""
         self._model = model
+        self._budget = budget
+        self._sleep = sleep
         self._gatekeeper = gatekeeper
         self._prompt = prompt
         self._limits = limits
@@ -161,31 +195,67 @@ class TriageGraph:
     async def _draft(self, state: TriageState) -> StateUpdate:
         """Ask the model for one draft, with the latest violations as feedback.
 
-        No model, or an unavailable one, halts the run (fallback); invalid output leaves
-        ``draft`` unset and counts as an attempt.
+        Each call first checks the per-case cap and reserves the case's remaining allowance from
+        the daily budget, then settles the tokens it actually spent (research 4). An unavailable
+        model is retried up to ``max_retries`` times with backoff. No model, a spent budget or
+        cap, or a model still unavailable after the retries halts the run (fallback, FR-009);
+        invalid output leaves ``draft`` unset and counts as an attempt (FR-007).
         """
         if self._model is None:
             return {"draft": None, "halted": True}
-        attempt = state.attempt + 1
-        revisions = attempt - 1
+        model = self._model
+        prompt_input = self._prompt_input(state)
+        spend = _Spend(state.input_tokens, state.output_tokens)
+        day = self._clock.now().date()
+
+        async def call(_timeout: float) -> ModelReply:
+            # The adapter enforces the per-call timeout itself (LLM_TIMEOUT_SECONDS).
+            reservation = self._limits.case_token_cap - spend.total
+            if reservation < self._limits.max_output_tokens:
+                raise _Halted("the per-case token cap is reached")
+            if not await self._budget.reserve(day, reservation):
+                raise _Halted("the daily token budget is spent")
+            spend.calls += 1
+            try:
+                reply = await model.draft(prompt_input)
+            except ModelError as error:
+                spend.add(error.input_tokens, error.output_tokens)
+                await self._budget.settle(
+                    day, reservation, error.input_tokens + error.output_tokens
+                )
+                raise
+            spend.add(reply.input_tokens, reply.output_tokens)
+            await self._budget.settle(day, reservation, reply.input_tokens + reply.output_tokens)
+            return reply
+
         try:
-            reply = await self._model.draft(self._prompt_input(state))
-        except ModelError as error:
+            reply = await call_with_retry(
+                call,
+                deadline=math.inf,
+                max_retries=self._limits.max_retries,
+                backoff_base=self._limits.backoff_base_seconds,
+                attempt_timeout=math.inf,
+                is_retryable=lambda error: isinstance(error, ModelUnavailable),
+                sleep=self._sleep,
+            )
+        except (_Halted, ModelError) as error:
+            attempt = state.attempt + 1 if spend.calls else state.attempt
             return {
                 "attempt": attempt,
-                "revisions": revisions,
+                "revisions": max(0, attempt - 1),
                 "draft": None,
-                "halted": isinstance(error, ModelUnavailable),
-                "input_tokens": state.input_tokens + error.input_tokens,
-                "output_tokens": state.output_tokens + error.output_tokens,
+                "halted": not isinstance(error, ModelOutputInvalid),
+                "input_tokens": spend.input_tokens,
+                "output_tokens": spend.output_tokens,
             }
+        attempt = state.attempt + 1
         return {
             "attempt": attempt,
-            "revisions": revisions,
+            "revisions": attempt - 1,
             "draft": reply.draft,
             "model_id": reply.model_id,
-            "input_tokens": state.input_tokens + reply.input_tokens,
-            "output_tokens": state.output_tokens + reply.output_tokens,
+            "input_tokens": spend.input_tokens,
+            "output_tokens": spend.output_tokens,
         }
 
     def _check(self, state: TriageState) -> StateUpdate:
@@ -235,12 +305,20 @@ class TriageGraph:
 def build_triage_graph(
     *,
     model: TriageModel | None,
+    budget: TokenBudget,
     gatekeeper: Gatekeeper,
     prompt: Prompt,
     limits: TriageLimits,
     clock: Clock,
+    sleep: Sleep = asyncio.sleep,
 ) -> TriageGraph:
     """Build the triage graph with its dependencies."""
     return TriageGraph(
-        model=model, gatekeeper=gatekeeper, prompt=prompt, limits=limits, clock=clock
+        model=model,
+        budget=budget,
+        gatekeeper=gatekeeper,
+        prompt=prompt,
+        limits=limits,
+        clock=clock,
+        sleep=sleep,
     )

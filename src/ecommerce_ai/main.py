@@ -27,7 +27,7 @@ from fastapi import FastAPI
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
-from ecommerce_ai.agents.triage.ports import SystemClock, TriageCaseQueue
+from ecommerce_ai.agents.triage.ports import SystemClock, TokenBudget, TriageCaseQueue
 from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
@@ -38,6 +38,7 @@ from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepo
 from ecommerce_ai.infrastructure.db.engine import build_engine
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
+from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
 from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
@@ -143,7 +144,7 @@ async def stop_consumer(task: asyncio.Task[None], stop: asyncio.Event, timeout: 
 
 
 def build_triage_worker(
-    settings: Settings, queue: TriageCaseQueue, wake: asyncio.Event
+    settings: Settings, queue: TriageCaseQueue, budget: TokenBudget, wake: asyncio.Event
 ) -> TriageWorker:
     """Build the triage worker, which sets ``wake`` after each saved result.
 
@@ -152,6 +153,7 @@ def build_triage_worker(
     clock = SystemClock()
     graph = build_triage_graph(
         model=None,
+        budget=budget,
         gatekeeper=check,
         prompt=load_prompt("triage", "v1"),
         limits=TriageLimits(
@@ -231,7 +233,10 @@ def create_app(
     # Building the worker and the relay opens no connection either.
     wake = asyncio.Event()
     worker = build_triage_worker(
-        settings, triage_queue or TriageQueueRepository(engine, to_outbox_message), wake
+        settings,
+        triage_queue or TriageQueueRepository(engine, to_outbox_message),
+        TokenBudgetRepository(engine, settings.daily_token_budget),
+        wake,
     )
     relay = OutboxRelay(
         outbox_store or OutboxRepository(engine),

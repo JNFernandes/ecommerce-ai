@@ -57,10 +57,10 @@ fail. After every task: quiet gate (CLAUDE.md); commit after green.
 
 **Independent test**: no key, timing-out model, exhausted budget → one template result and event each.
 
-- [ ] T025 [P] [US3] Tests in `tests/unit/test_triage_graph.py`: no model → fallback with no call, `model_id` null; `ModelUnavailable` on every attempt → fallback after `llm_max_retries`; budget `reserve` False → fallback, no call; per-case cap reached → fallback; budget `settle` called with actual tokens after each attempt (also after a failed one)
-- [ ] T026 [US3] Fallback paths and budget/per-case checks in `graph.py` draft node, retries via `infrastructure/retry.py::call_with_retry` (each attempt reserves first; research 2, 4)
+- [X] T025 [P] [US3] Tests in `tests/unit/test_triage_graph.py`: no model → fallback with no call, `model_id` null; `ModelUnavailable` on every attempt → fallback after `llm_max_retries`; budget `reserve` False → fallback, no call; per-case cap reached → fallback; budget `settle` called with actual tokens after each attempt (also after a failed one)
+- [X] T026 [US3] Fallback paths and budget/per-case checks in `graph.py` draft node, retries via `infrastructure/retry.py::call_with_retry` (each attempt reserves first; research 2, 4)
 - [ ] T027 [US3] Implement `src/ecommerce_ai/infrastructure/llm/__init__.py` and `anthropic_model.py::AnthropicTriageModel` (`AsyncAnthropic(max_retries=0)`, `with_options(timeout=…)`, `messages.parse(output_format=DraftOutput)`, `max_tokens`, effort from settings; `refusal`/`max_tokens` stop reason and parse errors → `ModelOutputInvalid`; SDK timeout/API errors → `ModelUnavailable`; usage returned); tests in `tests/unit/test_anthropic_model.py` with a fake SDK client object (no network)
-- [ ] T028 [US3] Implement `src/ecommerce_ai/infrastructure/db/token_budget_repository.py` (conditional `ON CONFLICT … WHERE tokens + cap <= budget RETURNING`, settle `tokens - reserved + actual`, UTC day); tests in `tests/integration/test_token_budget.py` (reserve until budget, concurrent reserves never exceed it, next UTC day resets, SC-005)
+- [X] T028 [US3] Implement `src/ecommerce_ai/infrastructure/db/token_budget_repository.py` (conditional `ON CONFLICT … WHERE tokens + cap <= budget RETURNING`, settle `tokens - reserved + actual`, UTC day); tests in `tests/integration/test_token_budget.py` (reserve until budget, concurrent reserves never exceed it, next UTC day resets, SC-005)
 - [ ] T029 [P] [US3] `tests/integration/test_live_llm.py` (`live_llm`, skipped without key/model): one case per cause through the real model passes the gatekeeper or falls back
 
 ## Phase 6: US4 — Reliable, exactly-once publishing (P2)

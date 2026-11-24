@@ -21,6 +21,7 @@ from ecommerce_ai.agents.triage.ports import ModelUnavailable, TriageModel
 from ecommerce_ai.agents.triage.templates import fallback_draft
 from ecommerce_ai.agents.triage_intake.model import TriageCause
 from tests.support.llm import MODEL_ID, ScriptedModel, reply
+from tests.support.stores import InMemoryTokenBudget
 from tests.support.triage import FakeClock, make_case
 
 PROMPT = load_prompt("triage", "v1")
@@ -37,6 +38,7 @@ REFUND = "The order failed, and a refund was issued to the customer."
 def _graph(model: TriageModel | None, clock: FakeClock | None = None) -> TriageGraph:
     return build_triage_graph(
         model=model,
+        budget=InMemoryTokenBudget(budget=1_000_000),
         gatekeeper=check,
         prompt=PROMPT,
         limits=LIMITS,

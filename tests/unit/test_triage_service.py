@@ -18,7 +18,7 @@ from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.messaging.triage_published import to_outbox_message
 from tests.support.llm import MODEL_ID, ScriptedModel, reply
-from tests.support.stores import InMemoryTriageCaseQueue
+from tests.support.stores import InMemoryTokenBudget, InMemoryTriageCaseQueue
 from tests.support.triage import NOW, FakeClock, make_case
 
 SETTLE_SECONDS = 3.0
@@ -33,6 +33,7 @@ def _service(
     clock = clock or FakeClock()
     graph = build_triage_graph(
         model=model,
+        budget=InMemoryTokenBudget(budget=1_000_000),
         gatekeeper=check,
         prompt=load_prompt("triage", "v1"),
         limits=LIMITS,

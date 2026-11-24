@@ -17,6 +17,7 @@ from ecommerce_ai.agents.triage_intake.model import TriageEventInput
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.tables import outbox_events, triage_cases, triage_results
+from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
 from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
 from ecommerce_ai.messaging.contracts import (
@@ -48,6 +49,7 @@ EXPLANATION = "The card was declined, so the order failed."
 def _service(engine: AsyncEngine, model: TriageModel | None, clock: FakeClock) -> TriageService:
     graph = build_triage_graph(
         model=model,
+        budget=TokenBudgetRepository(engine, daily_budget=1_000_000),
         gatekeeper=check,
         prompt=load_prompt("triage", "v1"),
         limits=LIMITS,
