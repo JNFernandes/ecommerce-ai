@@ -127,3 +127,40 @@ def test_should_use_an_aware_utc_clock_by_default(store: InMemoryTriageCaseStore
     now = TriageIntakeService(store).now()
 
     assert now.tzinfo is UTC
+
+
+async def test_should_upgrade_the_cause_and_bump_updated_at_when_a_failure_follows_a_cancellation(
+    service: TriageIntakeService, store: InMemoryTriageCaseStore, clock: FakeClock
+) -> None:
+    order_id = uuid4()
+    await service.record(_event(ORDER_CANCELLED_TOPIC, order_id, None))
+    clock.now = RECEIVED_AT + timedelta(seconds=30)
+
+    outcome = await service.record(_event(PAYMENT_FAILED_TOPIC, order_id, "card declined"))
+
+    assert outcome is IntakeOutcome.PROCESSED
+    case = store.case_for(order_id)
+    assert case.cause is TriageCause.PAYMENT_FAILED
+    assert (case.created_at, case.updated_at) == (RECEIVED_AT, clock.now)
+    assert len(store.evidence) == 2
+
+
+async def test_should_keep_the_cause_but_bump_updated_at_when_a_lower_cause_arrives(
+    service: TriageIntakeService, store: InMemoryTriageCaseStore, clock: FakeClock
+) -> None:
+    order_id = uuid4()
+    await service.record(_event(STOCK_REJECTED_TOPIC, order_id, "insufficient stock"))
+    clock.now = RECEIVED_AT + timedelta(seconds=30)
+
+    await service.record(_event(ORDER_CANCELLED_TOPIC, order_id, None))
+    await service.record(_event(PAYMENT_FAILED_TOPIC, order_id, "card declined"))
+
+    case = store.case_for(order_id)
+    assert case.cause is TriageCause.INSUFFICIENT_STOCK
+    assert case.updated_at == clock.now
+    assert len(store.cases) == 1
+    assert {evidence.source_topic for evidence in store.evidence} == {
+        STOCK_REJECTED_TOPIC,
+        ORDER_CANCELLED_TOPIC,
+        PAYMENT_FAILED_TOPIC,
+    }

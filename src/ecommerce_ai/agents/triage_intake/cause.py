@@ -38,6 +38,24 @@ def _cancellation_cause(reason: str | None) -> TriageCause:
     return TriageCause.UNKNOWN
 
 
+_RANK: Final = {
+    TriageCause.PAYMENT_FAILED: 2,
+    TriageCause.INSUFFICIENT_STOCK: 2,
+    TriageCause.UNKNOWN_PRODUCT: 2,
+    TriageCause.CANCELLATION_REQUESTED: 1,
+    TriageCause.UNKNOWN: 0,
+}
+
+
+def merge_cause(current: TriageCause, incoming: TriageCause) -> TriageCause:
+    """Return the case's cause after ``incoming``: a higher rank replaces, a tie keeps ``current``.
+
+    Failure causes outrank ``CANCELLATION_REQUESTED``, which outranks ``UNKNOWN``; between two
+    failure causes the first received is kept (FR-006).
+    """
+    return incoming if _RANK[incoming] > _RANK[current] else current
+
+
 def derive_cause(topic: str, reason: str | None) -> TriageCause:
     """Return the cause one event implies on its own; ``ValueError`` for an unknown topic."""
     if topic == PAYMENT_FAILED:

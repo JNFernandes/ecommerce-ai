@@ -47,8 +47,8 @@ Testcontainers. Write each story's tests first and see them fail. After every ta
 
 **Independent test**: cancellation + failure for one order in both orders → one case, two evidence items, failure cause.
 
-- [ ] T020 [P] [US2] Tests for `merge_cause(current, incoming)` in `tests/unit/test_cause.py` (rank failure > CANCELLATION_REQUESTED > UNKNOWN; equal failure rank keeps the first) and in `tests/unit/test_triage_intake.py` (upgrade bumps `updated_at`; no upgrade keeps cause; evidence always added)
-- [ ] T021 [US2] Implement `merge_cause` in `src/ecommerce_ai/agents/triage_intake/cause.py` and apply it in `service.py` (update case only when cause changes or evidence added: `updated_at` on each new evidence)
+- [X] T020 [P] [US2] Tests for `merge_cause(current, incoming)` in `tests/unit/test_cause.py` (rank failure > CANCELLATION_REQUESTED > UNKNOWN; equal failure rank keeps the first) and in `tests/unit/test_triage_intake.py` (upgrade bumps `updated_at`; no upgrade keeps cause; evidence always added)
+- [X] T021 [US2] Implement `merge_cause` in `src/ecommerce_ai/agents/triage_intake/cause.py` and apply it in `service.py` (update case only when cause changes or evidence added: `updated_at` on each new evidence)
 - [ ] T022 [US2] Extend `tests/integration/test_triage_flow.py`: all arrival orders of cancellation + each failure, PAYMENT_FAILED then stock-rejected (and reverse), cancellation `payment failed: …` first (SC-001); race: two concurrent `record` calls for the same new order on separate sessions → one case, two evidence items
 
 ## Phase 5: US3 — Redelivery changes nothing (P1)

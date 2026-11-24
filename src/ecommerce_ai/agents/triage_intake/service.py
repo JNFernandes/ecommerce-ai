@@ -1,14 +1,14 @@
 """Entry point of the triage intake: record one validated failure event (FR-004, FR-005, FR-008).
 
-Each call is one unit of work on the ``TriageCaseStore``: the order's case is created or locked
-and the event is attached as evidence, all saved together or not at all. Messaging commits the
-Kafka offset only after ``record`` returns.
+Each call is one unit of work on the ``TriageCaseStore``: the order's case is created or locked,
+the event is attached as evidence and the cause merged by precedence, all saved together or not
+at all. Messaging commits the Kafka offset only after ``record`` returns.
 """
 
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from ecommerce_ai.agents.triage_intake.cause import derive_cause
+from ecommerce_ai.agents.triage_intake.cause import derive_cause, merge_cause
 from ecommerce_ai.agents.triage_intake.model import IntakeOutcome, TriageEventInput
 from ecommerce_ai.agents.triage_intake.ports import TriageCaseStore
 
@@ -35,5 +35,7 @@ class TriageIntakeService:
         now = self.now()
         async with self._store.transaction() as work:
             case = await work.get_or_create_locked_case(event.order_id, cause, now)
-            await work.add_evidence(case.case_id, event, now)
+            if await work.add_evidence(case.case_id, event, now):
+                # Every new evidence bumps ``updated_at``; the cause changes only when outranked.
+                await work.update_case(case.case_id, merge_cause(case.cause, cause), now)
         return IntakeOutcome.PROCESSED

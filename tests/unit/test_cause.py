@@ -2,7 +2,7 @@
 
 import pytest
 
-from ecommerce_ai.agents.triage_intake.cause import TRIAGE_TOPICS, derive_cause
+from ecommerce_ai.agents.triage_intake.cause import TRIAGE_TOPICS, derive_cause, merge_cause
 from ecommerce_ai.agents.triage_intake.model import TriageCause
 from ecommerce_ai.messaging.contracts import (
     ORDER_CANCELLED_TOPIC,
@@ -58,3 +58,38 @@ def test_should_reject_a_topic_the_intake_does_not_know() -> None:
 
 def test_should_know_exactly_the_topics_messaging_consumes() -> None:
     assert set(TRIAGE_TOPICS) == set(TOPIC_MODELS)
+
+
+FAILURES = (
+    TriageCause.PAYMENT_FAILED,
+    TriageCause.INSUFFICIENT_STOCK,
+    TriageCause.UNKNOWN_PRODUCT,
+)
+
+
+@pytest.mark.parametrize("failure", FAILURES)
+@pytest.mark.parametrize(
+    "lower", [TriageCause.CANCELLATION_REQUESTED, TriageCause.UNKNOWN], ids=str
+)
+def test_should_rank_a_failure_above_cancellation_and_unknown_in_either_arrival_order(
+    failure: TriageCause, lower: TriageCause
+) -> None:
+    assert merge_cause(lower, failure) is failure
+    assert merge_cause(failure, lower) is failure
+
+
+def test_should_rank_a_requested_cancellation_above_unknown() -> None:
+    assert merge_cause(TriageCause.UNKNOWN, TriageCause.CANCELLATION_REQUESTED) is (
+        TriageCause.CANCELLATION_REQUESTED
+    )
+    assert merge_cause(TriageCause.CANCELLATION_REQUESTED, TriageCause.UNKNOWN) is (
+        TriageCause.CANCELLATION_REQUESTED
+    )
+
+
+@pytest.mark.parametrize("current", FAILURES)
+@pytest.mark.parametrize("incoming", FAILURES)
+def test_should_keep_the_first_failure_when_another_failure_arrives(
+    current: TriageCause, incoming: TriageCause
+) -> None:
+    assert merge_cause(current, incoming) is current
