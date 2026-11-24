@@ -35,10 +35,10 @@ def upgrade() -> None:
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("id", name="pk_triage_cases"),
-        sa.UniqueConstraint("order_id", name="uq_triage_cases_order_id"),
-        sa.CheckConstraint(f"cause IN ({_CAUSES})", name="ck_triage_cases_cause"),
-        sa.CheckConstraint(f"status IN ({_STATUSES})", name="ck_triage_cases_status"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_triage_cases")),
+        sa.UniqueConstraint("order_id", name=op.f("uq_triage_cases_order_id")),
+        sa.CheckConstraint(f"cause IN ({_CAUSES})", name=op.f("ck_triage_cases_cause")),
+        sa.CheckConstraint(f"status IN ({_STATUSES})", name=op.f("ck_triage_cases_status")),
     )
     op.create_table(
         "triage_evidence",
@@ -50,16 +50,16 @@ def upgrade() -> None:
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("payload", postgresql.JSONB(), nullable=False),
-        sa.PrimaryKeyConstraint("id", name="pk_triage_evidence"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_triage_evidence")),
         sa.ForeignKeyConstraint(
             ["case_id"],
             ["triage_cases.id"],
-            name="fk_triage_evidence_case_id_triage_cases",
+            name=op.f("fk_triage_evidence_case_id_triage_cases"),
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint("event_id", name="uq_triage_evidence_event_id"),
+        sa.UniqueConstraint("event_id", name=op.f("uq_triage_evidence_event_id")),
     )
-    op.create_index("ix_triage_evidence_case_id", "triage_evidence", ["case_id"])
+    op.create_index(op.f("ix_triage_evidence_case_id"), "triage_evidence", ["case_id"])
     op.create_table(
         "inbound_dead_letters",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -70,13 +70,13 @@ def upgrade() -> None:
         sa.Column("raw_payload", sa.LargeBinary(), nullable=False),
         sa.Column("failure_reason", sa.String(500), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("id", name="pk_inbound_dead_letters"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_inbound_dead_letters")),
     )
 
 
 def downgrade() -> None:
     """Drop the three tables."""
     op.drop_table("inbound_dead_letters")
-    op.drop_index("ix_triage_evidence_case_id", table_name="triage_evidence")
+    op.drop_index(op.f("ix_triage_evidence_case_id"), table_name="triage_evidence")
     op.drop_table("triage_evidence")
     op.drop_table("triage_cases")
