@@ -12,8 +12,8 @@ wins.
 - Runtime now: FastAPI + uvicorn, Pydantic v2 + pydantic-settings, httpx, structlog,
   PyJWT[crypto], FastMCP, aiokafka, SQLAlchemy 2 async + asyncpg, Alembic. Dev: Ruff, mypy strict
   (pydantic plugin), pytest, pytest-asyncio (`asyncio_mode = "auto"`), pytest-cov, respx,
-  testcontainers[postgres]. aiokafka is untyped: only `messaging/kafka.py` imports it.
-- LangGraph and the Anthropic SDK are added only by the story that needs them.
+  testcontainers[postgres], LangGraph, anthropic (SDK 2.x, on `httpx2`). aiokafka is untyped:
+  only `messaging/kafka.py` imports it; only `infrastructure/llm/` imports `anthropic`.
 - HTTP port `8002`. Run: `uv run python -m ecommerce_ai`; schema: `uv run python -m ecommerce_ai
   migrate` (Alembic `upgrade head`, migrations packaged in `infrastructure/db/migrations`,
   hand-written revisions, schema only via migrations). Local infra comes from
@@ -64,33 +64,57 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `agents/triage_intake`: `derive_cause`/`merge_cause` (FR-006), `TriageIntakeService.record`
   (one transaction per event, `processed`/`duplicate`), ports `TriageCaseStore`/`DeadLetterStore`.
   Agents never import messaging (topic names are repeated in `cause.py`, a test keeps them equal).
+  `agents/triage`: `graph.py` (LangGraph, no checkpointer: classify → draft → gatekeeper →
+  finalize | redraft ≤2 | fallback; draft reserves the case's remaining `CASE_TOKEN_CAP` from the
+  daily budget, settles actual tokens, retries `ModelUnavailable` via `call_with_retry`),
+  `gatekeeper.py` (pure), `templates.py`, `policy.py`, `service.py` (`triage_one`, one
+  `triage_case` log line, `order_id` bound for the run), `worker.py` (`WorkerState`, DB backoff via
+  injected `is_transient`), ports `TriageModel`/`TokenBudget`/`TriageCaseQueue`/`Clock`.
 - `tools`: MCP server and tools, one documented endpoint each. No prompts, LLM calls or decisions.
 - `messaging`: consumers/producers, dead letters, retry worker. No business logic.
   `contracts/` (frozen event models, `TOPIC_MODELS`), `decoding.py` (bytes → `TriageEventInput` or
-  `DecodeFailure` with a reason free of payload values), `kafka.py` (`ConsumerPort` + aiokafka
-  adapter), `triage_consumer.py` (decode → intake or dead letter → commit offset+1 → one
+  `DecodeFailure` with a reason free of payload values), `kafka.py` (`ConsumerPort`/`ProducerPort`
+  + aiokafka adapters), `outbox_relay.py` (`OutboxRelay`, `RelayState`: publish stored payload,
+  retry `min(base·2ⁿ, max)` jittered, EXHAUSTED at `OUTBOX_MAX_ATTEMPTS`, producer start and
+  transient DB errors back off), `triage_published.py` (result → outbox message), `triage_consumer.py` (decode → intake or dead letter → commit offset+1 → one
   `triage_message` log line; DB retries, reconnect backoff), `consumer_state.py` (for `/ready`).
 - `infrastructure/db`: lazy async engine (`DATABASE_URL` → `postgresql+asyncpg`),
   `is_transient_db_error`, Core tables, `TriageRepository` (`ON CONFLICT` + `FOR UPDATE`),
-  `DeadLetterRepository`, `migrate.py`.
+  `DeadLetterRepository`, `TriageQueueRepository` (`SKIP LOCKED` pick; result + outbox +
+  COMPLETED in one transaction), `OutboxRepository`, `TokenBudgetRepository` (conditional upsert
+  on `llm_token_usage`), `migrate.py`. Tables: `triage_cases`, `triage_evidence`,
+  `inbound_dead_letters`, `triage_results`, `outbox_events`, `llm_token_usage`.
+- `infrastructure/llm/anthropic_model.py`: `AnthropicTriageModel` (`messages.parse`,
+  `output_format=DraftOutput`, `max_retries=0`, per-call timeout, effort; refusal/truncation/schema
+  → `ModelOutputInvalid`, API errors → `ModelUnavailable`); `build_anthropic_model(settings)`.
 - `infrastructure`: settings, logging, probes, HTTP/DB/LLM clients. No business decisions.
 - `main.py` is the composition root (`create_app(settings=None, probes=None,
-  consumer_factory=None)`): builds the engine and repositories, starts the consumer task in the
-  lifespan when `TRIAGE_CONSUMER_ENABLED`, stops it (cancel after
-  `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before disposing the engine.
-- Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`), immutable once
-  released; never inline prompt strings in Python.
+  consumer_factory=None, producer_factory=None, triage_queue=None, outbox_store=None)`): builds
+  the engine, repositories and (only when `model_configured`) the Anthropic client; starts the
+  consumer (`TRIAGE_CONSUMER_ENABLED`) and the worker + relay (`TRIAGE_WORKER_ENABLED`) tasks in
+  the lifespan and stops them (cancel after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before closing
+  the LLM client and disposing the engine.
+- Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, loaded by
+  `loader.py::load_prompt`, SHA-256 pinned by a test), immutable once released; never inline
+  prompt strings in Python.
 
 ## HTTP and security
 
 - Now: `GET /health` (liveness, no dependencies, always 200) and `GET /ready` (TCP probes:
   `database` critical → 503 when down; `kafka` reported only; `consumer`
-  `{connected, caughtUp, lastError}` or `null` when disabled, never affecting status; `lastError`
-  is a class name only). Probes live in `infrastructure/health.py`; startup never waits for a
+  `{connected, caughtUp, lastError}`, `triageWorker` `{running, lastError, modelConfigured}`,
+  `outboxRelay` `{running, lastError}`, each `null` when disabled, never affecting status;
+  `lastError` is a class name only). Probes live in `infrastructure/health.py`; startup never waits for a
   dependency (the consumer connects in its own task, the engine on first use).
 - Triage consumer settings: `TRIAGE_CONSUMER_ENABLED`, `KAFKA_CONSUMER_GROUP` (`ai-triage`),
   `KAFKA_RECONNECT_BACKOFF_*`, `DB_RETRY_*`, `DATABASE_TIMEOUT_SECONDS`,
   `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`. Consumer logs never carry payload, `customerId` or reason.
+- Triage worker settings: `TRIAGE_WORKER_ENABLED`, `TRIAGE_SETTLE_SECONDS`,
+  `TRIAGE_POLL_INTERVAL_SECONDS`, `TRIAGE_BACKOFF_*`, `ANTHROPIC_API_KEY` (`SecretStr`),
+  `ANTHROPIC_MODEL` (no code default; both set = `model_configured`), `LLM_TIMEOUT_SECONDS`,
+  `LLM_MAX_RETRIES`, `LLM_MAX_OUTPUT_TOKENS`, `LLM_EFFORT`, `CASE_TOKEN_CAP`,
+  `DAILY_TOKEN_BUDGET`, `OUTBOX_*`. Triage, relay and model logs never carry evidence, reasons,
+  explanations or prompt text (FR-020).
 - `POST /mcp` (exact path, `x-roles: [CUSTOMER]`): stateless FastMCP, plain JSON, five read-only
   tools: `get_order`, `list_my_orders` (Orders GraphQL via `ORDERS_GRAPHQL_URL`), `list_products`,
   `get_product` (`INVENTORY_BASE_URL`), `list_my_notifications` (`NOTIFICATIONS_BASE_URL`,
@@ -131,12 +155,14 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 
 ## Tests
 
-- `tests/unit/`: no network, no containers; Kafka via `tests/support/kafka.py::FakeConsumer`
-  and payload builders, storage via `tests/support/stores.py` (in-memory, injectable failures).
+- `tests/unit/`: no network, no containers; Kafka via `tests/support/kafka.py::FakeConsumer`/
+  `FakeProducer` and payload builders, the LLM via `tests/support/llm.py::ScriptedModel`, storage
+  via `tests/support/stores.py` (in-memory queue, outbox, token budget; injectable failures).
 - `tests/integration/` (all marked `integration`, run by default and in CI): real PostgreSQL from
   `TEST_DATABASE_URL`, else Testcontainers `postgres:16-alpine`, else skipped
   (`INTEGRATION_REQUIRED=true`, set in CI, fails instead); schema by the real migrations, tables
-  truncated per test. Live-model tests get the `live_llm` marker (excluded by default).
+  truncated per test. Live-model tests get the `live_llm` marker (excluded by default;
+  `tests/integration/test_live_llm.py`, needs `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` in the env).
 - Drive the app with an httpx `AsyncClient` over `ASGITransport`, building it with
   `create_app(probes=[...])`. `create_app` reconfigures logging, so tests capturing logs call
   `configure_logging("INFO", stream)` after building the app.
@@ -171,6 +197,9 @@ layers (evals) extend `ci.yml` in the story that adds them. The image's entrypoi
   token passthrough, 0002 human-in-the-loop, 0003 fallback and cost caps, 0004 evals as release
   gate.
 - Keep `README.md`, this file and the `Dockerfile` up to date with every behaviour change.
+- Constitution 2.0.0 (US-04): IV one result per order + outbox relay, `modelId` null on fallback;
+  VI interim LLM gate until US-09 (gatekeeper/injection tests, pinned prompt hash, `live_llm`);
+  VII one structured log line per graph run until US-08 adds tracing.
 - ecommerce-infra has the `ai.order-triage-completed` contract (`docs/events.md`: `cause` and
   `suggestedAction` enums, consumer group `ai-triage`, the HTTP exception for calls with the
   caller's token), the topic in `kafka-init`, `postgres-ai` on `5436` and the `ai` compose service.
