@@ -542,3 +542,39 @@ async def test_should_log_and_go_on_when_closing_the_consumer_fails(
     closing = {line["error"] for line in lines if line["event"] == "triage_consumer_close_failed"}
     assert closing == {"RuntimeError"}
     assert state.last_error == "ConnectionRefusedError"
+
+
+async def test_should_log_no_payload_customer_id_or_reason_for_any_outcome(
+    store: InMemoryTriageCaseStore, state: ConsumerState
+) -> None:
+    customer_reason = "payment failed: card 4111-1111-1111-1111 declined for Ana Silva"
+    cancelled = order_cancelled_payload(uuid4(), reason=customer_reason)
+    failed = payment_failed_payload(uuid4(), reason="insufficient funds on account PT50-0002")
+    malformed = {**failed, "version": 2, "note": "do not log me"}
+    records = [
+        make_record(ORDER_CANCELLED_TOPIC, cancelled, offset=0),
+        make_record(PAYMENT_FAILED_TOPIC, failed, offset=0),
+        make_record(PAYMENT_FAILED_TOPIC, failed, offset=1),
+        make_record(PAYMENT_FAILED_TOPIC, malformed, offset=2),
+    ]
+    fake = FakeConsumer(records)
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    await _run_until(_triage_consumer(fake, store, state), lambda: len(fake.commits) == 4)
+
+    output = stream.getvalue()
+    lines = [json.loads(line) for line in output.splitlines()]
+    outcomes = sorted(line["outcome"] for line in lines if line["event"] == "triage_message")
+    assert outcomes == ["dead_lettered", "duplicate", "processed", "processed"]
+    for secret in (
+        str(cancelled["customerId"]),
+        "customerId",
+        "4111",
+        "Ana Silva",
+        "PT50-0002",
+        "insufficient funds",
+        "do not log me",
+        "occurredAt",
+    ):
+        assert secret not in output
