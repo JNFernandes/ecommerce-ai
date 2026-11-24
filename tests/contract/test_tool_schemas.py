@@ -38,7 +38,7 @@ DOCUMENTS: Final[dict[str, tuple[str, AllowlistEntry]]] = {
 }
 """GraphQL tools and the one document each sends."""
 
-TOOL_NAMES: Final = frozenset({*DOCUMENTS, "list_products", "get_product"})
+TOOL_NAMES: Final = frozenset({*DOCUMENTS, "list_products", "get_product", "list_my_notifications"})
 """Every tool ``tools/list`` serves."""
 
 
