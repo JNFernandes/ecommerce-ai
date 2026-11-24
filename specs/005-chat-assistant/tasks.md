@@ -123,7 +123,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: post a message, get the SSE event sequence grounded in tool results, both messages stored.
 **Independent test**: scripted model calls `list_my_orders`; exact event sequence, ids, payloads.
 
-- [ ] T017 [P] [US1] Tests `tests/unit/test_segmenter.py`: split at `. ! ?`+space and newline,
+- [X] T017 [P] [US1] Tests `tests/unit/test_segmenter.py`: split at `. ! ?`+space and newline,
   remainder at turn end, no empty segments, decimals/ids not split mid-token
 - [ ] T018 [P] [US1] Tests `tests/unit/test_chat_sse.py`: frame format (`id`/`event`/`data`, blank
   line), ids strictly increasing from 1, keep-alive comment after `CHAT_KEEPALIVE_SECONDS` of
@@ -136,7 +136,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 - [ ] T020 [P] [US1] Tests `tests/unit/test_anthropic_chat_model.py`: maps `messages.stream`
   deltas/tool_use/usage to `ChatModelEvent`s, tools from registry input schemas, `max_retries=0`,
   timeout, effort, API errors Ã¢â€ â€™ `ModelUnavailable` (fake client, no network)
-- [ ] T021 [US1] Implement `src/ecommerce_ai/agents/assistant/segmenter.py` (research Ã‚Â§10)
+- [X] T021 [US1] Implement `src/ecommerce_ai/agents/assistant/segmenter.py` (research Ã‚Â§10)
 - [ ] T022 [P] [US1] Implement `src/ecommerce_ai/agents/assistant/summaries.py` (fixed phrase per
   tool and outcome: count / found / not found / unavailable / refused; never upstream data)
 - [ ] T023 [US1] Implement `src/ecommerce_ai/agents/assistant/graph.py`: `ChatState` TypedDict
