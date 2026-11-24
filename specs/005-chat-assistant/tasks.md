@@ -95,14 +95,14 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: create, list, read, delete own conversations; foreign ids indistinguishable from unknown.
 **Independent test**: two subjects; every cross-user read/post/delete Ã¢â€ â€™ identical 404.
 
-- [ ] T012 [P] [US2] Integration tests `tests/integration/test_conversation_repository.py`: create,
+- [X] T012 [P] [US2] Integration tests `tests/integration/test_conversation_repository.py`: create,
   list newest `updated_at` first with total/limit/offset, get with history oldest first, user_id
   filter on every query, delete cascades messages, count, add message bumps `updated_at`
 - [ ] T013 [P] [US2] API tests `tests/unit/test_chat_api.py`: 201 with/without title (>200 Ã¢â€ â€™ 422),
   list paging (limit 0/101, offset Ã¢Ë†â€™1 Ã¢â€ â€™ 422), get with messages, delete 204 then 404, cross-user
   and malformed id Ã¢â€ â€™ same 404 body `NOT_FOUND`, 401/403/503 same as `/mcp`, DB down Ã¢â€ â€™ 503
   `UNAVAILABLE`, every route has an access policy
-- [ ] T014 [US2] Implement `src/ecommerce_ai/infrastructure/db/conversation_repository.py::
+- [X] T014 [US2] Implement `src/ecommerce_ai/infrastructure/db/conversation_repository.py::
   ConversationRepository` (implements `ConversationStore`; every query filters `user_id`; delete
   also removes `chat_checkpoints`/`chat_checkpoint_writes` rows of the thread in the same
   transaction)
