@@ -7,15 +7,17 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 from ecommerce_ai.api.route_policy import RoutePolicyError, assert_route_policies
 from ecommerce_ai.infrastructure.health import DependencyProbe, DependencyStatus
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
-from tests.support.kafka import FakeConsumer
+from tests.support.kafka import FakeConsumer, FakeProducer
 from tests.support.mcp import serve_app
 from tests.support.polling import poll_until
 from tests.support.probes import FakeProbe
+from tests.support.stores import InMemoryOutboxStore, InMemoryTriageCaseQueue
 
 UP, DOWN = DependencyStatus.UP, DependencyStatus.DOWN
 
@@ -43,6 +45,8 @@ async def test_should_be_ready_when_every_dependency_is_up() -> None:
         "status": "UP",
         "dependencies": {"database": "UP", "kafka": "UP"},
         "consumer": None,
+        "triageWorker": None,
+        "outboxRelay": None,
     }
 
 
@@ -65,6 +69,8 @@ async def test_should_answer_503_when_the_database_is_down() -> None:
         "status": "DOWN",
         "dependencies": {"database": "DOWN", "kafka": "UP"},
         "consumer": None,
+        "triageWorker": None,
+        "outboxRelay": None,
     }
 
 
@@ -168,3 +174,65 @@ async def test_should_answer_health_and_ready_within_5_seconds_without_kafka_or_
 
     assert (health.status_code, ready.status_code) == (200, 503)
     assert time.perf_counter() - started < 5
+
+
+def _worker_app(
+    producer: FakeProducer, database: DependencyStatus = UP, *, model: bool = False
+) -> FastAPI:
+    return create_app(
+        Settings(
+            triage_worker_enabled=True,
+            triage_poll_interval_seconds=0.01,
+            outbox_poll_interval_seconds=0.01,
+            anthropic_api_key=SecretStr("sk-test") if model else None,
+            anthropic_model="claude-test" if model else None,
+        ),
+        probes=[FakeProbe("database", True, database), FakeProbe("kafka", False, DOWN)],
+        producer_factory=lambda: producer,
+        triage_queue=InMemoryTriageCaseQueue(),
+        outbox_store=InMemoryOutboxStore(),
+    )
+
+
+async def test_should_report_the_worker_and_relay_as_running_when_enabled() -> None:
+    async with serve_app(_worker_app(FakeProducer(), model=True)) as client:
+        body = await _ready_body(
+            client, lambda body: body["triageWorker"]["running"] and body["outboxRelay"]["running"]
+        )
+
+    assert body["status"] == "UP"
+    assert body["triageWorker"] == {"running": True, "lastError": None, "modelConfigured": True}
+    assert body["outboxRelay"] == {"running": True, "lastError": None}
+
+
+async def test_should_stay_ready_and_name_the_error_when_the_relay_cannot_reach_kafka() -> None:
+    producer = FakeProducer(start_error=ConnectionRefusedError("kafka://ai:s3cret@broker"))
+    async with serve_app(_worker_app(producer)) as client:
+        body = await _ready_body(client, lambda body: body["outboxRelay"]["lastError"] is not None)
+        response = await client.get("/ready")
+
+    assert response.status_code == 200
+    assert body["outboxRelay"] == {"running": False, "lastError": "ConnectionRefusedError"}
+    assert body["triageWorker"]["modelConfigured"] is False
+    assert "s3cret" not in response.text
+
+
+async def test_should_answer_503_for_the_database_only_whatever_the_worker_state() -> None:
+    async with serve_app(_worker_app(FakeProducer(), database=DOWN)) as client:
+        await _ready_body(client, lambda body: body["triageWorker"]["running"])
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["triageWorker"]["running"] is True
+
+
+async def test_should_answer_health_within_1_second_with_every_dependency_down() -> None:
+    producer = FakeProducer(start_error=ConnectionRefusedError("broker down"))
+    started = time.perf_counter()
+
+    async with serve_app(_worker_app(producer, database=DOWN, model=True)) as client:
+        health = await client.get("/health")
+        elapsed = time.perf_counter() - started
+
+    assert health.status_code == 200
+    assert elapsed < 1
