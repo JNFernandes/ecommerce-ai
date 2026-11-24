@@ -1,9 +1,11 @@
-"""The triage graph (research 1): classify → draft → gatekeeper → finalize | fallback.
+"""The triage graph (research 1): classify → draft → gatekeeper → finalize | revise | fallback.
 
 A LangGraph ``StateGraph`` over the frozen ``TriageState``, compiled without a checkpointer: a
 run is short and re-runnable from the stored case, so a crash simply leaves the case pending.
 Every path ends in exactly one ``TriageResult``; a draft is used only when the gatekeeper finds
-no violation, otherwise the fixed template of the cause is (FR-008, FR-010).
+no violation. A rejected draft, or invalid model output, is drafted again with the violations as
+feedback, at most ``MAX_REVISIONS`` times; then the fixed template of the cause is used
+(FR-005, FR-007, FR-008, FR-010).
 """
 
 from collections.abc import Callable
@@ -15,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ecommerce_ai.agents.prompts.loader import Prompt
 from ecommerce_ai.agents.triage.model import (
+    MAX_REVISIONS,
     CaseForTriage,
     DraftOutput,
     ResultSource,
@@ -23,7 +26,13 @@ from ecommerce_ai.agents.triage.model import (
     Violation,
 )
 from ecommerce_ai.agents.triage.policy import allowed_actions, default_action
-from ecommerce_ai.agents.triage.ports import Clock, ModelError, PromptInput, TriageModel
+from ecommerce_ai.agents.triage.ports import (
+    Clock,
+    ModelError,
+    ModelUnavailable,
+    PromptInput,
+    TriageModel,
+)
 from ecommerce_ai.agents.triage.templates import fallback_draft
 from ecommerce_ai.agents.triage_intake.model import TriageCause
 
@@ -38,6 +47,7 @@ _DRAFT: Final = "draft"
 _GATEKEEPER: Final = "gatekeeper"
 _FINALIZE: Final = "finalize"
 _FALLBACK: Final = "fallback"
+_MAX_ATTEMPTS: Final = 1 + MAX_REVISIONS
 
 
 class TriageLimits(BaseModel):
@@ -62,6 +72,7 @@ class TriageState(BaseModel):
     attempt: int = Field(default=0, ge=0, description="Draft attempts made so far.")
     draft: DraftOutput | None = Field(default=None, description="Latest draft, if any.")
     model_id: str | None = Field(default=None, description="Model that wrote the latest draft.")
+    halted: bool = Field(default=False, description="No further draft may be asked for.")
     violations: tuple[Violation, ...] = Field(default=(), description="Every finding so far.")
     input_tokens: int = Field(default=0, ge=0, description="Input tokens over every attempt.")
     output_tokens: int = Field(default=0, ge=0, description="Output tokens over every attempt.")
@@ -83,12 +94,17 @@ def _after_classify(state: TriageState) -> Literal["draft", "fallback"]:
     return _DRAFT if state.case.evidence else _FALLBACK
 
 
-def _after_draft(state: TriageState) -> Literal["gatekeeper", "fallback"]:
-    return _GATEKEEPER if state.draft is not None else _FALLBACK
+def _retry_or_fallback(state: TriageState) -> Literal["draft", "fallback"]:
+    return _DRAFT if not state.halted and state.attempt < _MAX_ATTEMPTS else _FALLBACK
 
 
-def _after_gatekeeper(state: TriageState) -> Literal["finalize", "fallback"]:
-    return _FINALIZE if not state.current_violations() else _FALLBACK
+def _after_draft(state: TriageState) -> Literal["gatekeeper", "draft", "fallback"]:
+    # Invalid output counts as a failed attempt (FR-007): draft again while attempts remain.
+    return _GATEKEEPER if state.draft is not None else _retry_or_fallback(state)
+
+
+def _after_gatekeeper(state: TriageState) -> Literal["finalize", "draft", "fallback"]:
+    return _FINALIZE if not state.current_violations() else _retry_or_fallback(state)
 
 
 class TriageGraph:
@@ -143,21 +159,29 @@ class TriageGraph:
         return PromptInput(system=self._prompt.system, user=user)
 
     async def _draft(self, state: TriageState) -> StateUpdate:
-        """Ask the model for one draft; no model or a failed call leaves ``draft`` unset."""
+        """Ask the model for one draft, with the latest violations as feedback.
+
+        No model, or an unavailable one, halts the run (fallback); invalid output leaves
+        ``draft`` unset and counts as an attempt.
+        """
         if self._model is None:
-            return {"draft": None}
+            return {"draft": None, "halted": True}
         attempt = state.attempt + 1
+        revisions = attempt - 1
         try:
             reply = await self._model.draft(self._prompt_input(state))
         except ModelError as error:
             return {
                 "attempt": attempt,
+                "revisions": revisions,
                 "draft": None,
+                "halted": isinstance(error, ModelUnavailable),
                 "input_tokens": state.input_tokens + error.input_tokens,
                 "output_tokens": state.output_tokens + error.output_tokens,
             }
         return {
             "attempt": attempt,
+            "revisions": revisions,
             "draft": reply.draft,
             "model_id": reply.model_id,
             "input_tokens": state.input_tokens + reply.input_tokens,

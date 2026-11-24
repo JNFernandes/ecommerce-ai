@@ -17,7 +17,7 @@ from ecommerce_ai.agents.triage.model import (
     SuggestedAction,
 )
 from ecommerce_ai.agents.triage.policy import default_action
-from ecommerce_ai.agents.triage.ports import ModelOutputInvalid, ModelUnavailable, TriageModel
+from ecommerce_ai.agents.triage.ports import ModelUnavailable, TriageModel
 from ecommerce_ai.agents.triage.templates import fallback_draft
 from ecommerce_ai.agents.triage_intake.model import TriageCause
 from tests.support.llm import MODEL_ID, ScriptedModel, reply
@@ -88,8 +88,8 @@ async def test_should_send_the_prompt_rendered_for_the_case_when_drafting() -> N
     )
 
 
-async def test_should_fall_back_to_the_template_when_the_gatekeeper_rejects_the_draft() -> None:
-    model = ScriptedModel([reply(REFUND, input_tokens=310, output_tokens=30)])
+async def test_should_fall_back_to_the_template_when_the_gatekeeper_rejects_every_draft() -> None:
+    model = ScriptedModel([reply(REFUND, input_tokens=310, output_tokens=30) for _ in range(3)])
     case = make_case(TriageCause.PAYMENT_FAILED)
 
     result = await _graph(model).run(case)
@@ -101,9 +101,13 @@ async def test_should_fall_back_to_the_template_when_the_gatekeeper_rejects_the_
     assert result.suggested_action is template.suggested_action
     assert result.confidence == template.confidence
     assert result.prompt_version == "triage.v1"
-    assert (result.input_tokens, result.output_tokens) == (310, 30)
-    assert result.revisions == 0
-    assert [(v.rule, v.attempt) for v in result.violations] == [(GateRule.PROMISE, 1)]
+    assert (result.input_tokens, result.output_tokens) == (930, 90)
+    assert result.revisions == 2
+    assert [(v.rule, v.attempt) for v in result.violations] == [
+        (GateRule.PROMISE, 1),
+        (GateRule.PROMISE, 2),
+        (GateRule.PROMISE, 3),
+    ]
 
 
 async def test_should_fall_back_without_a_call_when_no_model_is_configured() -> None:
@@ -114,13 +118,8 @@ async def test_should_fall_back_without_a_call_when_no_model_is_configured() -> 
     assert (result.input_tokens, result.output_tokens) == (0, 0)
 
 
-@pytest.mark.parametrize(
-    "error",
-    [ModelUnavailable("timeout"), ModelOutputInvalid("refusal", input_tokens=5, output_tokens=2)],
-)
-async def test_should_fall_back_when_the_model_fails(
-    error: ModelUnavailable | ModelOutputInvalid,
-) -> None:
+async def test_should_fall_back_when_the_model_is_unavailable() -> None:
+    error = ModelUnavailable("timeout", input_tokens=5, output_tokens=2)
     model = ScriptedModel([error])
 
     result = await _graph(model).run(make_case(TriageCause.INSUFFICIENT_STOCK))

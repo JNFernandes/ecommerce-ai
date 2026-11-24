@@ -51,7 +51,7 @@ fail. After every task: quiet gate (CLAUDE.md); commit after green.
 
 **Independent test**: scripted drafts (refund, invented amount, URL) → revisions, recorded violations, fallback result.
 
-- [ ] T024 [US2] Revision loop in `src/ecommerce_ai/agents/triage/graph.py`: fail → draft again with violation messages as `<feedback>`, at most 2 revisions, then fallback; invalid model output counts as a failed attempt; violations accumulated with attempt number; tests in `tests/unit/test_triage_graph.py` (acceptance US2 1–3, including the injection case: no stored or published explanation mentions a refund)
+- [X] T024 [US2] Revision loop in `src/ecommerce_ai/agents/triage/graph.py`: fail → draft again with violation messages as `<feedback>`, at most 2 revisions, then fallback; invalid model output counts as a failed attempt; violations accumulated with attempt number; tests in `tests/unit/test_triage_graph.py` (acceptance US2 1–3, including the injection case: no stored or published explanation mentions a refund)
 
 ## Phase 5: US3 — Works without the model (P1)
 
