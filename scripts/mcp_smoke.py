@@ -1,8 +1,10 @@
 """Manual smoke test of the running MCP endpoint against the local stack.
 
-Lists the tools, calls ``list_my_orders`` and, given an order id, ``get_order``, with the
-customer access token in ``TOKEN``. ``MCP_URL`` overrides the default
-``http://localhost:8002/mcp``. Usage: ``uv run python scripts/mcp_smoke.py [ORDER_ID]``.
+Lists the tools, calls ``list_my_orders``, ``list_products``, ``get_product`` (``SKU-001``, then
+the missing ``SKU-999``, whose error is printed) and ``list_my_notifications`` and, given an order
+id, ``get_order``, with the customer access token in ``TOKEN`` (never printed). ``MCP_URL``
+overrides the default ``http://localhost:8002/mcp``.
+Usage: ``uv run python scripts/mcp_smoke.py [ORDER_ID]``.
 """
 
 import asyncio
@@ -10,9 +12,26 @@ import os
 import sys
 
 from fastmcp import Client
+from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StreamableHttpTransport
 
 DEFAULT_MCP_URL = "http://localhost:8002/mcp"
+
+CALLS: list[tuple[str, dict[str, object]]] = [
+    ("list_products", {}),
+    ("get_product", {"productId": "SKU-001"}),
+    ("get_product", {"productId": "SKU-999"}),
+    ("list_my_notifications", {}),
+]
+"""Tools called after ``list_my_orders``, in order, with their arguments."""
+
+
+def summary(result: CallToolResult) -> str:
+    """Return the structured result, or the error text when the tool failed."""
+    if result.is_error:
+        text = " ".join(getattr(block, "text", "") for block in result.content)
+        return f"error: {text}"
+    return str(result.structured_content)
 
 
 async def smoke(url: str, token: str, order_id: str | None) -> None:
@@ -22,6 +41,9 @@ async def smoke(url: str, token: str, order_id: str | None) -> None:
         tools = await client.list_tools()
         print("Tools:", [tool.name for tool in tools])
         print("list_my_orders:", await client.call_tool("list_my_orders", {}))
+        for name, arguments in CALLS:
+            result = await client.call_tool(name, arguments, raise_on_error=False)
+            print(f"{name} {arguments}:", summary(result))
         if order_id is not None:
             print("get_order:", await client.call_tool("get_order", {"orderId": order_id}))
 

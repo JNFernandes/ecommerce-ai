@@ -91,7 +91,9 @@ curl localhost:8002/ready
 `python -m ecommerce_ai` serves `ecommerce_ai.main:create_app` on `HOST`:`PORT`.
 
 Smoke-test `/mcp` against the local stack with a customer access token (lists the tools, calls
-`list_my_orders`, and `get_order` when given an order id; `MCP_URL` overrides the default URL):
+`list_my_orders`, `list_products`, `get_product` for `SKU-001` and the missing `SKU-999`,
+`list_my_notifications`, and `get_order` when given an order id; `MCP_URL` overrides the default
+URL; the token is never printed):
 
 ```sh
 TOKEN=<access token> uv run python scripts/mcp_smoke.py [ORDER_ID]
