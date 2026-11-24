@@ -10,59 +10,32 @@ tools can forward the caller's own token (ADR 0001). ``mcp_route`` serves it at 
 When Orders rejects the forwarded token during a call, the tool flags the caller; the middleware
 then replaces the MCP response with the same 401 (research 8). The response is buffered for
 that: it is one JSON body (``json_response=True``) built from size-capped tool results.
+Token checks and response bodies are shared with ``/chat`` through ``api/auth.py``.
 """
 
 from dataclasses import dataclass
 from typing import Final
 
-import structlog
 from pydantic import SecretStr
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
-from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ecommerce_ai.api.middleware import REQUEST_ID_HEADER, accept_request_id
+from ecommerce_ai.api.auth import (
+    AuthRejected,
+    RejectReason,
+    authenticate,
+    log_rejection,
+    rejection_response,
+    request_id,
+)
 from ecommerce_ai.api.route_policy import PolicyRoute, roles
-from ecommerce_ai.infrastructure.auth import InvalidToken, TokenVerifier
+from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.caller import RequestCaller, bind_caller
-from ecommerce_ai.infrastructure.jwks import KeysUnavailable
 from ecommerce_ai.tools.server import MCP_PATH
 
 REQUIRED_ROLE: Final = "CUSTOMER"
 """Role a token must carry to use the MCP tools."""
-
-_logger = structlog.get_logger(__name__)
-
-
-def unauthenticated_response() -> JSONResponse:
-    """Return the one 401 every rejected token gets."""
-    return JSONResponse(
-        {"detail": "Not authenticated"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
-    )
-
-
-def _forbidden_response() -> JSONResponse:
-    return JSONResponse({"detail": "Forbidden"}, status_code=403)
-
-
-def _unavailable_response() -> JSONResponse:
-    return JSONResponse({"detail": "Service unavailable"}, status_code=503)
-
-
-def _bearer_token(headers: Headers) -> str | None:
-    """Return the token of an ``Authorization: Bearer <token>`` header, if well formed."""
-    scheme, _, token = headers.get("authorization", "").partition(" ")
-    token = token.strip()
-    if scheme.lower() != "bearer" or not token or " " in token:
-        return None
-    return token
-
-
-def _request_id(headers: Headers) -> str:
-    """Return the request id bound by ``RequestIdMiddleware`` (or a validated/new one)."""
-    bound = structlog.contextvars.get_contextvars().get("request_id")
-    return bound if isinstance(bound, str) else accept_request_id(headers.get(REQUEST_ID_HEADER))
 
 
 class BearerAuthMiddleware:
@@ -79,27 +52,16 @@ class BearerAuthMiddleware:
             await self._app(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        token = _bearer_token(headers)
-        if token is None:
-            _logger.info("mcp_auth_rejected", reason="missing_token")
-            await unauthenticated_response()(scope, receive, send)
-            return
         try:
-            identity = await self._verifier.verify(token)
-        except InvalidToken:
-            _logger.info("mcp_auth_rejected", reason="invalid_token")
-            await unauthenticated_response()(scope, receive, send)
-            return
-        except KeysUnavailable:
-            _logger.warning("mcp_auth_rejected", reason="keys_unavailable")
-            await _unavailable_response()(scope, receive, send)
-            return
-        if REQUIRED_ROLE not in identity.roles:
-            _logger.info("mcp_auth_rejected", reason="missing_role")
-            await _forbidden_response()(scope, receive, send)
+            token, identity = await authenticate(
+                headers, self._verifier, required_role=REQUIRED_ROLE
+            )
+        except AuthRejected as rejected:
+            log_rejection("mcp_auth_rejected", rejected.reason)
+            await rejection_response(rejected.reason)(scope, receive, send)
             return
         caller = RequestCaller(
-            identity=identity, token=SecretStr(token), request_id=_request_id(headers)
+            identity=identity, token=SecretStr(token), request_id=request_id(headers)
         )
         buffered: list[Message] = []
 
@@ -109,8 +71,8 @@ class BearerAuthMiddleware:
         with bind_caller(caller):
             await self._app(scope, receive, buffer)
         if caller.upstream_unauthenticated:
-            _logger.info("mcp_auth_rejected", reason="upstream_unauthenticated")
-            await unauthenticated_response()(scope, receive, send)
+            log_rejection("mcp_auth_rejected", RejectReason.UPSTREAM_UNAUTHENTICATED)
+            await rejection_response(RejectReason.UPSTREAM_UNAUTHENTICATED)(scope, receive, send)
             return
         for message in buffered:
             await send(message)
