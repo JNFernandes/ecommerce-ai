@@ -6,9 +6,10 @@ Notifications: Python, Identity). It reaches the platform only through the gatew
 ([ADR 0001](docs/adr/0001-token-passthrough.md)). The rules it follows are in
 [`.specify/memory/constitution.md`](.specify/memory/constitution.md).
 
-**Status: bootstrap.** The service runs, answers health and readiness checks and logs structured
-JSON. None of the capabilities below is implemented yet; each arrives with its own user story,
-together with its dependencies (LangGraph, FastMCP, aiokafka, the Anthropic SDK).
+**Status: in progress.** The service answers health and readiness checks, serves the read-only
+MCP tools (US-01, US-02) and records a triage case for every failed order it consumes from Kafka
+(US-03, [Triage intake](#triage-intake)). The LLM triage, publishing and the assistant arrive with
+their own user stories, together with their dependencies (LangGraph, the Anthropic SDK).
 
 ## Planned capabilities
 
@@ -31,7 +32,7 @@ Releases are gated by an eval suite ([ADR 0004](docs/adr/0004-evals-as-release-g
 | Route | Access | Behaviour |
 |---|---|---|
 | `GET /health` | public | Liveness: always `200 {"status": "UP"}` while the process answers; checks no dependency. |
-| `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. The LLM provider will be reported (never failing) once its client exists. |
+| `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}, "consumer"}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. `consumer` is `{"connected", "caughtUp", "lastError"}` (`lastError`: exception class name only) or `null` when the triage consumer is disabled; it never changes `status` or the code. The LLM provider will be reported (never failing) once its client exists. |
 | `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools, all read-only: `get_order(orderId)`, `list_my_orders(limit=20 (1–50), status?)`, `list_products(limit=20 (1–50), offset=0)`, `get_product(productId)`, `list_my_notifications(limit, offset, orderId?)`. |
 | `GET /docs`, `GET /openapi.json` | public | API documentation. |
 
@@ -57,8 +58,37 @@ included, and reads at most `TOOL_MAX_RESPONSE_BYTES`. Tool schemas are pinned i
 
 Every route must declare its access (public or required roles); building the app fails for a route
 that declares neither (default deny). Probes are TCP connects with a 1 s timeout, made only when
-`/ready` is called: nothing connects at startup, so the service starts without Kafka, PostgreSQL or
-an LLM key.
+`/ready` is called. Startup never waits for a dependency: the triage consumer connects in a
+background task and the database engine on first use, so the service starts without Kafka,
+PostgreSQL or an LLM key.
+
+### Triage intake
+
+A background task started with the app consumes `orders.order-cancelled`,
+`payments.payment-failed` and `inventory.stock-rejected` (group `KAFKA_CONSUMER_GROUP`, default
+`ai-triage`; disable with `TRIAGE_CONSUMER_ENABLED=false`). Each message is validated against its
+`events.md` contract (`version` 1 only, unknown fields ignored) and saved in one transaction:
+
+- `triage_cases`: one row per order (`PENDING_TRIAGE`). The cause follows FR-006: payment and
+  stock failures outrank `CANCELLATION_REQUESTED`, which outranks `UNKNOWN`; between two failures
+  the first received is kept.
+- `triage_evidence`: one row per event (topic, `eventId`, reason, `occurredAt`, `receivedAt`,
+  validated payload). `eventId` is unique, so a redelivered event changes nothing (`duplicate`).
+- `inbound_dead_letters`: invalid messages (raw bytes, key, a reason without payload values). They
+  are never retried and never block the next message.
+
+The Kafka offset is committed only after the save. Transient database errors are retried
+(`DB_RETRY_*`); when the retries run out, or Kafka fails, the consumer closes without committing
+and reconnects with bounded backoff (`KAFKA_RECONNECT_BACKOFF_*`), so the event is delivered again.
+On shutdown it gets `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS` to stop. Each message logs one
+`triage_message` line (topic, partition, offset, `event_id`, `order_id`, `outcome`), never the
+payload, `customerId` or reason. Failures log `error` (the root cause's class, e.g.
+`InvalidPasswordError` rather than SQLAlchemy's generic `DBAPIError`) and a sanitized
+`error_message` (no password, no query argument values); `/ready` shows only the class.
+
+The schema is created by Alembic migrations shipped in the package:
+`uv run python -m ecommerce_ai migrate` (`upgrade head` on `DATABASE_URL`). The image's entrypoint
+runs it before the app; a failure is logged and the service starts anyway.
 
 ### Logging
 
@@ -74,7 +104,7 @@ replaced with `[REDACTED]`, and bearer/basic credentials, JWTs, passwords in URL
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) 0.11 (it installs Python 3.12; never use the system Python).
-- Docker, for the image and, later, the integration tests.
+- Docker, for the image and the integration tests (Testcontainers PostgreSQL 16).
 - The `ecommerce-infra` stack for PostgreSQL (`localhost:5436`), Kafka (`localhost:9092`) and the
   gateway (`localhost:8090`). Not needed to start the service or run the tests.
 
@@ -83,12 +113,14 @@ replaced with `[REDACTED]`, and bearer/basic credentials, JWTs, passwords in URL
 ```sh
 uv sync
 cp .env.example .env              # optional; set DATABASE_URL credentials here, never in git
-uv run --env-file .env python -m ecommerce_ai      # or: uv run python -m ecommerce_ai
+uv run python -m ecommerce_ai migrate   # create/upgrade the triage tables (no-op at head)
+uv run python -m ecommerce_ai           # both read ./.env when it exists
 curl localhost:8002/health
 curl localhost:8002/ready
 ```
 
-`python -m ecommerce_ai` serves `ecommerce_ai.main:create_app` on `HOST`:`PORT`.
+`python -m ecommerce_ai` serves `ecommerce_ai.main:create_app` on `HOST`:`PORT`;
+`python -m ecommerce_ai migrate` applies the database migrations and exits (`1` on failure).
 
 Smoke-test `/mcp` against the local stack with a customer access token (lists the tools, calls
 `list_my_orders`, `list_products`, `get_product` for `SKU-001` and the missing `SKU-999`,
@@ -101,8 +133,10 @@ TOKEN=<access token> uv run python scripts/mcp_smoke.py [ORDER_ID]
 
 ### Configuration
 
-All settings come from environment variables (no `.env` file is read implicitly). An invalid value
-stops the service at startup with an error naming the variable.
+All settings come from environment variables and, when present, from a `.env` file in the working
+directory (git-ignored; real environment variables win over it). An invalid value stops the
+service at startup with an error naming the variable, never echoing its value. `DATABASE_URL` may
+use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL sees your OS user.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -127,6 +161,13 @@ stops the service at startup with an error naming the variable.
 | `UPSTREAM_BACKOFF_BASE_SECONDS` | `0.2` | First retry delay; doubles per retry, full jitter |
 | `DATABASE_URL` | `postgresql://localhost:5436/ecommerce_ai` | PostgreSQL 16 URL; put credentials in the environment only. Treated as a secret (never logged) |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated `host:port` (`kafka:29092` in the compose network) |
+| `TRIAGE_CONSUMER_ENABLED` | `true` | Run the Kafka triage consumer |
+| `KAFKA_CONSUMER_GROUP` | `ai-triage` | Consumer group of the triage consumer |
+| `KAFKA_RECONNECT_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | `1` / `30` | Reconnect delay `min(base·2ⁿ, max)`, jittered |
+| `DB_RETRY_MAX_ATTEMPTS` | `5` | Attempts of one save on transient database errors |
+| `DB_RETRY_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | `0.5` / `10` | Delay between those attempts, full jitter |
+| `DATABASE_TIMEOUT_SECONDS` | `5` | Connect and statement timeout |
+| `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS` | `10` | Time the consumer gets to stop before it is cancelled |
 | `ANTHROPIC_MODEL` | unset | LLM model id; unset = every LLM step uses its fallback |
 | `LLM_TIMEOUT_SECONDS` | `30` | Timeout of one LLM call (`> 0`, `≤ 300`) |
 | `DAILY_TOKEN_BUDGET` | `50000` | Hard cap on LLM tokens per UTC day (`0` = no LLM calls) |
@@ -144,8 +185,8 @@ docker run --rm -p 8002:8002 --network ecommerce_default \
 ```
 
 Multi-stage build: uv installs the locked dependencies in a build stage; the runtime stage is
-`python:3.12-slim` with only the virtual environment, running as non-root user `10001`. Its health
-check calls `/health`. In `ecommerce-infra` it is the `ai` service (`apps` profile, no host port; `docker-compose.dev.yml` publishes 8002, `gateway-debug` serves its docs on 127.0.0.1:9002), with `postgres-ai` (`ai_user` / `ai_pass`, local only) and the `ai.order-triage-completed` topic.
+`python:3.12-slim` with only the virtual environment, running as non-root user `10001`. Its
+entrypoint (`docker-entrypoint.sh`) runs `migrate`, then the app; its health check calls `/health`. In `ecommerce-infra` it is the `ai` service (`apps` profile, no host port; `docker-compose.dev.yml` publishes 8002, `gateway-debug` serves its docs on 127.0.0.1:9002), with `postgres-ai` (`ai_user` / `ai_pass`, local only) and the `ai.order-triage-completed` topic.
 
 ## Quality gate
 
@@ -167,8 +208,12 @@ uv run pytest --cov
   something, so you review, `git add` and commit again (it never stages for you). Disable with
   `git config --unset core.hooksPath`.
 - `mypy` runs in strict mode over `src` and `tests`.
-- `pytest --cov` fails below 80% line and branch coverage. Tests never touch the network; the
+- `pytest --cov` fails below 80% line and branch coverage. Unit tests never touch the network; the
   `live_llm` marker is excluded by default (`-m live_llm` to run those).
+- `tests/integration/` (marker `integration`, run by default) uses a real PostgreSQL 16:
+  `TEST_DATABASE_URL` if set (its triage tables are truncated per test), else a Testcontainers
+  `postgres:16-alpine`, else the tests are skipped (CI sets `INTEGRATION_REQUIRED=true`, which
+  fails instead). `-m "not integration"` runs the unit tests only.
 
 ## CI/CD and security
 
@@ -193,16 +238,18 @@ Actions are pinned by commit SHA and every job has least-privilege permissions.
 
 ```text
 src/ecommerce_ai/
-  main.py            Composition root: settings, logging, readiness probes, the app factory
-  __main__.py        `python -m ecommerce_ai`
+  main.py            Composition root: settings, logging, probes, engine, consumer task, app factory
+  __main__.py        `python -m ecommerce_ai [migrate]`
   api/               FastAPI app, routers, request-id middleware, route access policy, /mcp auth
-  agents/            LangGraph graphs, nodes and versioned prompts (empty)
+  agents/            triage_intake: cause rules, intake service, storage ports (no Kafka/SQL)
   tools/             MCP server, tool registry/allowlist, Orders/Inventory/Notifications tools
-  messaging/         Kafka consumers, producers, dead letters (empty)
-  infrastructure/    Settings, logging/redaction, probes, JWKS cache, token verifier, Orders client
+  messaging/         Event contracts, decoding, Kafka port/adapter, triage consumer, consumer state
+  infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, db/
+                     (async engine, tables, repositories, packaged Alembic migrations)
 tests/unit/          Unit tests (no network)
-tests/contract/      Tool schema snapshot (five tools) and Orders queries checked against its vendored schema
-tests/support/       Test tokens/JWKS, Orders stub, MCP JSON-RPC helpers, fake probes
+tests/integration/   PostgreSQL tests: migrations, repositories, consumer flow, connection loss
+tests/contract/      Tool schema snapshot, Orders queries vs its schema, event models vs events.md
+tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka consumer, stores
 scripts/             Manual tools: mcp_smoke.py (smoke test of /mcp against the local stack)
 docs/adr/            Architecture Decision Records
 ```

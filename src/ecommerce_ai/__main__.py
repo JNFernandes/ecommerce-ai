@@ -1,6 +1,8 @@
-"""``python -m ecommerce_ai``: serve the application on ``HOST``:``PORT``."""
+"""``python -m ecommerce_ai [serve|migrate]``: serve the app, or apply the database migrations."""
 
-from ecommerce_ai.main import run
+import sys
+
+from ecommerce_ai.main import cli
 
 if __name__ == "__main__":
-    run()
+    sys.exit(cli())

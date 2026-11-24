@@ -1,9 +1,12 @@
 """Settings come from the environment, with safe local defaults and validation."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from ecommerce_ai.infrastructure.settings import LogLevel, Settings
+from ecommerce_ai.infrastructure.db.engine import async_database_url
+from ecommerce_ai.infrastructure.settings import ENV_FILE, LogLevel, Settings
 
 
 def test_should_use_local_defaults_when_the_environment_is_empty() -> None:
@@ -131,3 +134,135 @@ def test_should_reject_an_invalid_mcp_tool_setting(
 
     with pytest.raises(ValidationError, match=variable.lower()):
         Settings()
+
+
+def test_should_use_triage_consumer_defaults_when_the_environment_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRIAGE_CONSUMER_ENABLED")  # set by tests/conftest.py
+    settings = Settings()
+
+    assert settings.triage_consumer_enabled is True
+    assert settings.kafka_consumer_group == "ai-triage"
+    assert settings.kafka_reconnect_backoff_base_seconds == 1.0
+    assert settings.kafka_reconnect_backoff_max_seconds == 30.0
+    assert settings.db_retry_max_attempts == 5
+    assert settings.db_retry_backoff_base_seconds == 0.5
+    assert settings.db_retry_backoff_max_seconds == 10.0
+    assert settings.database_timeout_seconds == 5.0
+    assert settings.consumer_shutdown_timeout_seconds == 10.0
+
+
+def test_should_read_triage_consumer_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_CONSUMER_ENABLED", "false")
+    monkeypatch.setenv("KAFKA_CONSUMER_GROUP", "ai-triage-test")
+    monkeypatch.setenv("DB_RETRY_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("DB_RETRY_BACKOFF_BASE_SECONDS", "2")
+    monkeypatch.setenv("DB_RETRY_BACKOFF_MAX_SECONDS", "2")
+
+    settings = Settings()
+
+    assert settings.triage_consumer_enabled is False
+    assert settings.kafka_consumer_group == "ai-triage-test"
+    assert settings.db_retry_max_attempts == 1
+    assert settings.db_retry_backoff_base_seconds == 2.0
+    assert settings.db_retry_backoff_max_seconds == 2.0
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("KAFKA_CONSUMER_GROUP", ""),
+        ("KAFKA_RECONNECT_BACKOFF_BASE_SECONDS", "0"),
+        ("KAFKA_RECONNECT_BACKOFF_MAX_SECONDS", "0"),
+        ("DB_RETRY_MAX_ATTEMPTS", "0"),
+        ("DB_RETRY_BACKOFF_BASE_SECONDS", "0"),
+        ("DB_RETRY_BACKOFF_MAX_SECONDS", "-1"),
+        ("DATABASE_TIMEOUT_SECONDS", "0"),
+        ("CONSUMER_SHUTDOWN_TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_should_reject_an_invalid_triage_consumer_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()
+
+
+@pytest.mark.parametrize("prefix", ["KAFKA_RECONNECT_BACKOFF", "DB_RETRY_BACKOFF"])
+def test_should_reject_a_backoff_base_above_its_maximum_when_both_are_set(
+    monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    monkeypatch.setenv(f"{prefix}_BASE_SECONDS", "5")
+    monkeypatch.setenv(f"{prefix}_MAX_SECONDS", "4")
+
+    with pytest.raises(ValidationError, match=f"{prefix.lower()}_base_seconds must not exceed"):
+        Settings()
+
+
+def test_should_accept_an_asyncpg_database_url_when_it_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ai_user:ai_pass@db:5436/ecommerce_ai")
+
+    url = async_database_url(Settings())
+
+    assert (url.drivername, url.username, url.password) == (
+        "postgresql+asyncpg",
+        "ai_user",
+        "ai_pass",
+    )
+    assert (url.host, url.port, url.database) == ("db", 5436, "ecommerce_ai")
+
+
+def test_should_not_echo_a_rejected_database_url_when_it_holds_a_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "mysql://ai:s3cret@db/ecommerce_ai")
+
+    with pytest.raises(ValidationError) as error:
+        Settings()
+
+    assert "database_url" in str(error.value)
+    assert "s3cret" not in str(error.value)
+
+
+def test_should_read_the_env_file_of_the_working_directory_when_it_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", ENV_FILE)  # conftest turns it off
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ENV_FILE).write_text(
+        "DATABASE_URL=postgresql+asyncpg://ai_user:ai_pass@localhost:5436/ecommerce_ai\n"
+        "PORT=8123\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings()
+
+    assert async_database_url(settings).username == "ai_user"
+    assert settings.port == 8123
+
+
+def test_should_prefer_the_environment_over_the_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", ENV_FILE)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ENV_FILE).write_text("PORT=8123\n", encoding="utf-8")
+    monkeypatch.setenv("PORT", "9001")
+
+    assert Settings().port == 9001
+
+
+def test_should_use_defaults_when_there_is_no_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", ENV_FILE)
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings().port == 8002

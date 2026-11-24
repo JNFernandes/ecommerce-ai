@@ -3,14 +3,15 @@
 Every field maps to the upper-case environment variable of the same name (``PORT``,
 ``DATABASE_URL``...). Defaults point at the shared ``ecommerce-infra`` stack on localhost and the
 platform APIs behind the gateway. No default holds a secret: credentials come from the
-environment only (constitution II).
+environment only (constitution II), or from a git-ignored ``.env`` file in the working directory,
+which is read when present; real environment variables always win over it.
 """
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Final, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -38,10 +39,24 @@ def _require_http_url(value: str) -> str:
     return value.rstrip("/")
 
 
+ENV_FILE: Final = ".env"
+"""Optional file of ``NAME=value`` lines, relative to the working directory."""
+
+DATABASE_SCHEMES: Final = frozenset({"postgresql", "postgres", "postgresql+asyncpg"})
+"""Accepted ``DATABASE_URL`` schemes; the engine always connects with asyncpg."""
+
+
 class Settings(BaseSettings):
     """Settings for the ecommerce-ai service."""
 
-    model_config = SettingsConfigDict(frozen=True, extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="ignore",
+        case_sensitive=False,
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True,  # a rejected DATABASE_URL must not echo its password
+    )
 
     host: str = Field(
         default="127.0.0.1",
@@ -121,6 +136,34 @@ class Settings(BaseSettings):
         description="Comma-separated Kafka brokers (`host:port`).",
     )
 
+    triage_consumer_enabled: bool = Field(
+        default=True, description="Run the Kafka triage consumer as a background task."
+    )
+    kafka_consumer_group: str = Field(
+        default="ai-triage", min_length=1, description="Consumer group of the triage consumer."
+    )
+    kafka_reconnect_backoff_base_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="First Kafka reconnect delay; doubles per attempt."
+    )
+    kafka_reconnect_backoff_max_seconds: float = Field(
+        default=30.0, gt=0, le=600, description="Upper bound of one Kafka reconnect delay."
+    )
+    db_retry_max_attempts: int = Field(
+        default=5, ge=1, le=20, description="Attempts of one database save, the first included."
+    )
+    db_retry_backoff_base_seconds: float = Field(
+        default=0.5, gt=0, le=60, description="First database retry delay; doubles per retry."
+    )
+    db_retry_backoff_max_seconds: float = Field(
+        default=10.0, gt=0, le=600, description="Upper bound of one database retry delay."
+    )
+    database_timeout_seconds: float = Field(
+        default=5.0, gt=0, le=60, description="Connect and statement timeout of PostgreSQL."
+    )
+    consumer_shutdown_timeout_seconds: float = Field(
+        default=10.0, gt=0, le=120, description="Time the consumer gets to stop on shutdown."
+    )
+
     anthropic_model: str | None = Field(
         default=None,
         description="LLM model id. Unset means every LLM-backed step uses its fallback.",
@@ -152,8 +195,9 @@ class Settings(BaseSettings):
     @classmethod
     def _check_database_url(cls, value: SecretStr) -> SecretStr:
         parts = urlsplit(value.get_secret_value())
-        if parts.scheme not in {"postgresql", "postgres"} or not parts.hostname:
-            raise ValueError("must be a postgresql:// URL with a host")
+        if parts.scheme not in DATABASE_SCHEMES or not parts.hostname:
+            # Never echo the value: it may hold a password.
+            raise ValueError("must be a postgresql:// (or postgresql+asyncpg://) URL with a host")
         return value
 
     @field_validator("kafka_brokers")
@@ -171,3 +215,23 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _check_backoff_bounds(self) -> Self:
+        """Each backoff base must not exceed its maximum."""
+        pairs = (
+            (
+                "kafka_reconnect_backoff",
+                self.kafka_reconnect_backoff_base_seconds,
+                self.kafka_reconnect_backoff_max_seconds,
+            ),
+            (
+                "db_retry_backoff",
+                self.db_retry_backoff_base_seconds,
+                self.db_retry_backoff_max_seconds,
+            ),
+        )
+        for prefix, base, maximum in pairs:
+            if base > maximum:
+                raise ValueError(f"{prefix}_base_seconds must not exceed {prefix}_max_seconds")
+        return self

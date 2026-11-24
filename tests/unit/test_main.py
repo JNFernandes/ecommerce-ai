@@ -1,5 +1,8 @@
 """The composition root starts without its dependencies and serves the configured port."""
 
+import asyncio
+import io
+import json
 import time
 from collections.abc import Sequence
 
@@ -10,12 +13,16 @@ import uvicorn
 
 from ecommerce_ai import main
 from ecommerce_ai.infrastructure.health import DependencyStatus
+from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app, run
+from ecommerce_ai.messaging.kafka import AIOKafkaConsumerAdapter, ConsumedRecord, TopicPartition
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolDefinition, ToolRegistryError
+from tests.support.kafka import FakeConsumer
 from tests.support.mcp import serve_app
+from tests.support.polling import wait_until
 from tests.support.probes import FakeProbe
 
 DATABASE_DOWN = FakeProbe("database", critical=True, status=DependencyStatus.DOWN)
@@ -120,3 +127,140 @@ def test_should_pass_each_upstream_its_own_client_when_building_tools(
     ((_orders, inventory, notifications),) = seen
     assert inventory.url_for(["products"]) == "http://localhost:8090/api/inventory/products"
     assert notifications.url_for(["notifications"]) == "http://gateway:8090/api/notifications"
+
+
+def test_should_serve_the_app_when_no_command_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(main, "run", lambda: calls.append("run"))
+
+    assert main.cli([]) == 0
+    assert main.cli(["serve"]) == 0
+    assert calls == ["run", "run"]
+
+
+def test_should_run_the_migrations_when_the_migrate_command_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[Settings] = []
+
+    async def fake_run_migrations(settings: Settings) -> None:
+        received.append(settings)
+
+    monkeypatch.setattr(main, "run_migrations", fake_run_migrations)
+    monkeypatch.setattr(main, "run", lambda: pytest.fail("migrate must not serve the app"))
+
+    assert main.cli(["migrate"]) == 0
+    assert len(received) == 1
+
+
+def test_should_log_the_sanitized_cause_when_migrations_fail(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def failing_run_migrations(settings: Settings) -> None:
+        raise ConnectionRefusedError("postgresql://ai:s3cret@db:5436 refused")
+
+    monkeypatch.setattr(main, "run_migrations", failing_run_migrations)
+
+    assert main.cli(["migrate"]) == 1
+    output = capsys.readouterr().out
+    (line,) = [json.loads(text) for text in output.splitlines()]
+    assert line["error"] == "ConnectionRefusedError"
+    assert line["error_message"] == "postgresql://ai:[REDACTED]@db:5436 refused"
+    assert "s3cret" not in output
+
+
+def test_should_reject_an_unknown_command() -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main.cli(["drop-database"])
+
+    assert exit_info.value.code == 2
+
+
+class StuckConsumer(FakeConsumer):
+    """A consumer whose poll never returns, so only cancellation can stop it."""
+
+    async def getmany(self, timeout_ms: int) -> dict[TopicPartition, list[ConsumedRecord]]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _enabled(shutdown_timeout: float = 10.0) -> Settings:
+    return Settings(
+        triage_consumer_enabled=True, consumer_shutdown_timeout_seconds=shutdown_timeout
+    )
+
+
+def _log_lines(stream: io.StringIO) -> list[dict[str, object]]:
+    return [json.loads(line) for line in stream.getvalue().splitlines()]
+
+
+async def test_should_not_build_a_consumer_when_the_consumer_is_disabled() -> None:
+    built: list[FakeConsumer] = []
+
+    def factory() -> FakeConsumer:
+        built.append(FakeConsumer())
+        return built[-1]
+
+    async with serve_app(create_app(probes=[], consumer_factory=factory)) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    assert built == []
+
+
+async def test_should_start_the_consumer_with_the_app_and_stop_it_on_shutdown() -> None:
+    fake = FakeConsumer()
+
+    async with serve_app(create_app(_enabled(), probes=[], consumer_factory=lambda: fake)):
+        await wait_until(lambda: fake.started)
+        assert not fake.stopped
+
+    assert fake.stopped
+
+
+async def test_should_cancel_the_consumer_when_it_does_not_stop_within_the_timeout() -> None:
+    fake = StuckConsumer()
+    app = create_app(_enabled(shutdown_timeout=0.05), probes=[], consumer_factory=lambda: fake)
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    async with serve_app(app):
+        await wait_until(lambda: fake.started)
+
+    assert fake.stopped
+    assert "triage_consumer_cancelled" in [line["event"] for line in _log_lines(stream)]
+
+
+async def test_should_log_the_error_class_only_when_the_consumer_cannot_connect() -> None:
+    fake = FakeConsumer(start_error=ConnectionRefusedError("kafka://ai:s3cret@broker refused"))
+    app = create_app(_enabled(), probes=[], consumer_factory=lambda: fake)
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    async with serve_app(app):
+        await wait_until(lambda: fake.stopped)
+
+    failure, *_ = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_error"]
+    assert failure["error"] == "ConnectionRefusedError"
+    assert "s3cret" not in stream.getvalue()
+
+
+async def test_should_build_aiokafka_consumers_of_the_three_failure_topics() -> None:
+    consumer = main.kafka_consumer_factory(Settings())()
+
+    assert isinstance(consumer, AIOKafkaConsumerAdapter)
+
+
+async def test_should_log_the_error_class_only_when_the_consumer_task_crashed() -> None:
+    async def crash() -> None:
+        raise RuntimeError("postgresql://ai:s3cret@db refused")
+
+    task = asyncio.create_task(crash())
+    await asyncio.wait({task})
+    stream = io.StringIO()
+    configure_logging("INFO", stream)
+
+    await main.stop_consumer(task, asyncio.Event(), timeout=1)
+
+    (failure,) = [line for line in _log_lines(stream) if line["event"] == "triage_consumer_failed"]
+    assert failure["error"] == "RuntimeError"
+    assert "s3cret" not in stream.getvalue()

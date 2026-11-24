@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ecommerce_ai.api import health
+from ecommerce_ai.api.health import ConsumerStateSource
 from ecommerce_ai.api.mcp import McpEndpoint
 from ecommerce_ai.api.middleware import REQUEST_ID_HEADER, RequestIdMiddleware
 from ecommerce_ai.api.route_policy import assert_route_policies
@@ -35,11 +36,13 @@ def build_api(
     *,
     mcp: McpEndpoint,
     resources: Resources,
+    consumer_state: ConsumerStateSource | None = None,
 ) -> FastAPI:
     """Create the FastAPI application.
 
     CORS is enabled only for the configured origins. ``mcp`` adds the secured MCP route and
     chains the MCP app's lifespan; ``resources`` is opened around it for the app's lifetime.
+    ``consumer_state`` (``None`` when the consumer is disabled) is reported by ``/ready``.
     Every route must declare its access, or this raises ``RoutePolicyError`` (default deny). The
     request-id middleware is outermost, so every log line of a request carries its
     ``request_id``.
@@ -51,6 +54,7 @@ def build_api(
         version="0.1.0",
     )
     app.state.readiness_checker = readiness_checker
+    app.state.consumer_state = consumer_state
     if cors_allowed_origins:
         app.add_middleware(
             CORSMiddleware,

@@ -10,10 +10,13 @@ wins.
 - Python 3.12 **through uv only**: always `uv run ...`. The machine's global Python must not be
   used. Add dependencies with `uv add` / `uv add --dev`, and commit `uv.lock`.
 - Runtime now: FastAPI + uvicorn, Pydantic v2 + pydantic-settings, httpx, structlog,
-  PyJWT[crypto]. Dev: Ruff, mypy strict (pydantic plugin), pytest, pytest-asyncio
-  (`asyncio_mode = "auto"`), pytest-cov, respx.
-- LangGraph, FastMCP, aiokafka and the Anthropic SDK are added only by the story that needs them.
-- HTTP port `8002`. Run: `uv run python -m ecommerce_ai`. Local infra comes from
+  PyJWT[crypto], FastMCP, aiokafka, SQLAlchemy 2 async + asyncpg, Alembic. Dev: Ruff, mypy strict
+  (pydantic plugin), pytest, pytest-asyncio (`asyncio_mode = "auto"`), pytest-cov, respx,
+  testcontainers[postgres]. aiokafka is untyped: only `messaging/kafka.py` imports it.
+- LangGraph and the Anthropic SDK are added only by the story that needs them.
+- HTTP port `8002`. Run: `uv run python -m ecommerce_ai`; schema: `uv run python -m ecommerce_ai
+  migrate` (Alembic `upgrade head`, migrations packaged in `infrastructure/db/migrations`,
+  hand-written revisions, schema only via migrations). Local infra comes from
   `ecommerce-infra`: PostgreSQL `localhost:5436`, Kafka `localhost:9092`, gateway
   `http://localhost:8090/api`.
 
@@ -58,18 +61,36 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - `api`: routers and schemas, I/O only (auth, validation, SSE). One agent entry point per route.
 - `agents`: graphs, nodes, state, prompts. No HTTP/Kafka/SQL; outside world only via tools or
   `typing.Protocol` ports. Domain decisions (triage cause, suggested action, gatekeeper) live here.
+  `agents/triage_intake`: `derive_cause`/`merge_cause` (FR-006), `TriageIntakeService.record`
+  (one transaction per event, `processed`/`duplicate`), ports `TriageCaseStore`/`DeadLetterStore`.
+  Agents never import messaging (topic names are repeated in `cause.py`, a test keeps them equal).
 - `tools`: MCP server and tools, one documented endpoint each. No prompts, LLM calls or decisions.
 - `messaging`: consumers/producers, dead letters, retry worker. No business logic.
+  `contracts/` (frozen event models, `TOPIC_MODELS`), `decoding.py` (bytes → `TriageEventInput` or
+  `DecodeFailure` with a reason free of payload values), `kafka.py` (`ConsumerPort` + aiokafka
+  adapter), `triage_consumer.py` (decode → intake or dead letter → commit offset+1 → one
+  `triage_message` log line; DB retries, reconnect backoff), `consumer_state.py` (for `/ready`).
+- `infrastructure/db`: lazy async engine (`DATABASE_URL` → `postgresql+asyncpg`),
+  `is_transient_db_error`, Core tables, `TriageRepository` (`ON CONFLICT` + `FOR UPDATE`),
+  `DeadLetterRepository`, `migrate.py`.
 - `infrastructure`: settings, logging, probes, HTTP/DB/LLM clients. No business decisions.
-- `main.py` is the composition root (`create_app(settings=None, probes=None)`).
+- `main.py` is the composition root (`create_app(settings=None, probes=None,
+  consumer_factory=None)`): builds the engine and repositories, starts the consumer task in the
+  lifespan when `TRIAGE_CONSUMER_ENABLED`, stops it (cancel after
+  `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before disposing the engine.
 - Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`), immutable once
   released; never inline prompt strings in Python.
 
 ## HTTP and security
 
 - Now: `GET /health` (liveness, no dependencies, always 200) and `GET /ready` (TCP probes:
-  `database` critical → 503 when down; `kafka` reported only). Probes live in
-  `infrastructure/health.py`; nothing connects at startup.
+  `database` critical → 503 when down; `kafka` reported only; `consumer`
+  `{connected, caughtUp, lastError}` or `null` when disabled, never affecting status; `lastError`
+  is a class name only). Probes live in `infrastructure/health.py`; startup never waits for a
+  dependency (the consumer connects in its own task, the engine on first use).
+- Triage consumer settings: `TRIAGE_CONSUMER_ENABLED`, `KAFKA_CONSUMER_GROUP` (`ai-triage`),
+  `KAFKA_RECONNECT_BACKOFF_*`, `DB_RETRY_*`, `DATABASE_TIMEOUT_SECONDS`,
+  `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`. Consumer logs never carry payload, `customerId` or reason.
 - `POST /mcp` (exact path, `x-roles: [CUSTOMER]`): stateless FastMCP, plain JSON, five read-only
   tools: `get_order`, `list_my_orders` (Orders GraphQL via `ORDERS_GRAPHQL_URL`), `list_products`,
   `get_product` (`INVENTORY_BASE_URL`), `list_my_notifications` (`NOTIFICATIONS_BASE_URL`,
@@ -88,7 +109,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   keys. Tools forward the caller's JWT; never a service account (ADR 0001).
 - Mutating tools pause for approval of the exact call (ADR 0002). Every LLM step has a timeout,
   bounded retries, a deterministic fallback and a token budget (ADR 0003).
-- Secrets only from the environment; `DATABASE_URL` is a `SecretStr`. Never log tokens,
+- Secrets only from the environment (or the git-ignored `.env`); `DATABASE_URL` is a `SecretStr`
+  (`postgresql://` or `postgresql+asyncpg://`). Describe failures with
+  `infrastructure/errors.py::error_fields` (root cause of a `DBAPIError`, sanitized message). Never log tokens,
   passwords or personal data. `infrastructure/logging.py::redact_sensitive_data` scrubs every
   record; keep it last before rendering.
 - Logs: structlog JSON with `request_id` bound by `api/middleware.py::RequestIdMiddleware`
@@ -108,23 +131,30 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 
 ## Tests
 
-- `tests/unit/`: no network, no containers. Integration tests (PostgreSQL, Kafka via
-  Testcontainers) get the `integration` marker; live-model tests the `live_llm` marker (excluded
-  by default).
+- `tests/unit/`: no network, no containers; Kafka via `tests/support/kafka.py::FakeConsumer`
+  and payload builders, storage via `tests/support/stores.py` (in-memory, injectable failures).
+- `tests/integration/` (all marked `integration`, run by default and in CI): real PostgreSQL from
+  `TEST_DATABASE_URL`, else Testcontainers `postgres:16-alpine`, else skipped
+  (`INTEGRATION_REQUIRED=true`, set in CI, fails instead); schema by the real migrations, tables
+  truncated per test. Live-model tests get the `live_llm` marker (excluded by default).
 - Drive the app with an httpx `AsyncClient` over `ASGITransport`, building it with
   `create_app(probes=[...])`. `create_app` reconfigures logging, so tests capturing logs call
   `configure_logging("INFO", stream)` after building the app.
-- `tests/conftest.py` clears every settings variable from the environment for each test.
-- No `time.sleep` or bare `asyncio.sleep`; use a polling helper with a timeout.
+- `tests/conftest.py` clears every settings variable from the environment for each test, turns
+  off the `.env` file (`Settings` reads `./.env` when present; env vars win) and
+  sets `TRIAGE_CONSUMER_ENABLED=false`; consumer tests enable it with a fake `consumer_factory`.
+- No `time.sleep` or bare `asyncio.sleep`; use `tests/support/polling.py` (`wait_until`,
+  `poll_until`) with a timeout. Inject `wait`/`sleep`/`rng` into `TriageConsumer` instead of waiting.
 - Names describe behaviour: `test_should_..._when_...`.
 
 ## CI/CD
 
-`ci.yml` (the gate above + actionlint), `security.yml` (gitleaks, pip-audit, CodeQL, Trivy),
+`ci.yml` (the gate above, unit + integration tests, + actionlint), `security.yml` (gitleaks, pip-audit, CodeQL, Trivy),
 `cd.yml` (reuses `ci.yml`, Trivy gate, then pushes to `ghcr.io/<owner>/ecommerce-ai`: `main` and
 `sha-*` on `main`, semver tags on `vX.Y.Z`, which must equal `pyproject.toml`'s version). Actions
 pinned by SHA, least-privilege permissions; check every workflow change with actionlint. New test
-layers (integration, evals) extend `ci.yml` in the story that adds them.
+layers (evals) extend `ci.yml` in the story that adds them. The image's entrypoint
+(`docker-entrypoint.sh`) runs `migrate` (failure logged, not fatal), then `exec`s the app.
 
 ## Branches and commits
 
