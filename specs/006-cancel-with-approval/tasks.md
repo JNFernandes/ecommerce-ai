@@ -223,7 +223,7 @@ finishReason `completed`.
 - [X] T032 [P] [US6] Merge `contracts/chat-approvals.md` into `docs/chat-contract.md` (events,
   finish reason, endpoint, codes, `pendingApproval`, JSON examples); extend
   `tests/contract/test_chat_contract.py` to check them against the models
-- [ ] T033 [P] [US6] `scripts/chat_smoke.py`: on `approval.required` print action, order id,
+- [X] T033 [P] [US6] `scripts/chat_smoke.py`: on `approval.required` print action, order id,
   summary, expiry; ask `y/n`; post the decision; print the continuation; tests in
   `tests/unit/test_chat_smoke.py`
 
