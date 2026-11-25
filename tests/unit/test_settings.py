@@ -447,6 +447,42 @@ def test_should_reject_an_invalid_chat_setting(
         Settings()
 
 
+def test_should_use_approval_defaults_when_the_environment_is_empty() -> None:
+    settings = Settings()
+
+    assert settings.approval_ttl_seconds == 600
+    assert settings.cancel_proposals_per_hour == 5
+
+
+def test_should_read_approval_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APPROVAL_TTL_SECONDS", "120")
+    monkeypatch.setenv("CANCEL_PROPOSALS_PER_HOUR", "2")
+
+    settings = Settings()
+
+    assert settings.approval_ttl_seconds == 120
+    assert settings.cancel_proposals_per_hour == 2
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("APPROVAL_TTL_SECONDS", "0"),
+        ("APPROVAL_TTL_SECONDS", "86401"),
+        ("CANCEL_PROPOSALS_PER_HOUR", "0"),
+    ],
+)
+def test_should_reject_an_invalid_approval_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()
+
+
 def test_should_reject_an_output_limit_above_the_chat_request_cap_when_both_are_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
