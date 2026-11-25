@@ -262,7 +262,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 
 ## Phase 10: Polish & cross-cutting
 
-- [ ] T045 [P] Write `docs/chat-contract.md` from `contracts/chat-api.md` (every route, event,
+- [X] T045 [P] Write `docs/chat-contract.md` from `contracts/chat-api.md` (every route, event,
   code and HTTP error with a JSON example); `tests/contract/test_chat_contract.py` checks event
   names, error codes and payload fields against the `StreamEvent`/schema models
 - [ ] T046 [P] Update `README.md`, `CLAUDE.md` (layering: `agents/assistant`, `agents/safety`,
