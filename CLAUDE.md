@@ -59,6 +59,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 **api → agents → tools → infrastructure**, and **messaging → agents**.
 
 - `api`: routers and schemas, I/O only (auth, validation, SSE). One agent entry point per route.
+  `auth.py` (`require_caller`, shared 401/403/503 bodies with `/mcp`), `chat.py` (`/chat` routes,
+  `{code, message}` errors, `ChatHttpCode`), `sse.py` (framer: ids from 1, keep-alive,
+  `CancelledError` → disconnect), `rate_limit.py` (`SlidingWindowLimiter`, before DB work).
 - `agents`: graphs, nodes, state, prompts. No HTTP/Kafka/SQL; outside world only via tools or
   `typing.Protocol` ports. Domain decisions (triage cause, suggested action, gatekeeper) live here.
   `agents/triage_intake`: `derive_cause`/`merge_cause` (FR-006), `TriageIntakeService.record`
@@ -70,7 +73,16 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `gatekeeper.py` (pure), `templates.py`, `policy.py`, `service.py` (`triage_one`, one
   `triage_case` log line, `order_id` bound for the run), `worker.py` (`WorkerState`, DB backoff via
   injected `is_transient`), ports `TriageModel`/`TokenBudget`/`TriageCaseQueue`/`Clock`.
-- `tools`: MCP server and tools, one documented endpoint each. No prompts, LLM calls or decisions.
+- `agents/assistant` (US-05): `graph.py` (`ChatGraph`: guard_input → agent ⇄ tools → gatekeeper →
+  finalize, ≤ `CHAT_MAX_TOOL_ROUNDS`, custom events via `get_stream_writer`), `gatekeeper.py`
+  (`check_segment`/`check_answer`, `SAFE_MESSAGE`), `segmenter.py`, `summaries.py` (fixed
+  `tool.result` phrases), `tool_results.py` (delimited `<tool_result>` blocks), `tool_runner.py`
+  (`ToolRunner` over `ToolInvoker`), `limits.py` (`RunAllowance`, `ActiveStreams`), `service.py`
+  (`ChatService`: checks → stream → store; one `chat_run` log line, `user_hash` only), ports
+  `ChatModel`/`ToolRunner`/`ConversationStore`/`Checkpointer`. `agents/safety/rules.py`: pure rules
+  shared by both gatekeepers. `agents/ports.py`: shared `TokenBudget`/`Clock`.
+- `tools`: MCP server and tools, one documented endpoint each. `invoker.py::ToolInvoker` runs a
+  tool in process (allowlist, input validation, timeout, error mapping) for `/mcp` and the chat. No prompts, LLM calls or decisions.
 - `messaging`: consumers/producers, dead letters, retry worker. No business logic.
   `contracts/` (frozen event models, `TOPIC_MODELS`), `decoding.py` (bytes → `TriageEventInput` or
   `DecodeFailure` with a reason free of payload values), `kafka.py` (`ConsumerPort`/`ProducerPort`
@@ -80,21 +92,28 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `triage_message` log line; DB retries, reconnect backoff), `consumer_state.py` (for `/ready`).
 - `infrastructure/db`: lazy async engine (`DATABASE_URL` → `postgresql+asyncpg`),
   `is_transient_db_error`, Core tables, `TriageRepository` (`ON CONFLICT` + `FOR UPDATE`),
-  `DeadLetterRepository`, `TriageQueueRepository` (`SKIP LOCKED` pick; result + outbox +
+  `DeadLetterRepository`, `ConversationRepository` (every query filters `user_id`; delete removes the
+  thread's checkpoints), `PostgresCheckpointSaver` (LangGraph saver, newest checkpoint only),
+  `TriageQueueRepository` (`SKIP LOCKED` pick; result + outbox +
   COMPLETED in one transaction), `OutboxRepository`, `TokenBudgetRepository` (conditional upsert
   on `llm_token_usage`), `migrate.py`. Tables: `triage_cases`, `triage_evidence`,
-  `inbound_dead_letters`, `triage_results`, `outbox_events`, `llm_token_usage`.
+  `inbound_dead_letters`, `triage_results`, `outbox_events`, `llm_token_usage`, `chat_conversations`,
+  `chat_messages`, `chat_checkpoints`, `chat_checkpoint_writes` (migration 0003).
 - `infrastructure/llm/anthropic_model.py`: `AnthropicTriageModel` (`messages.parse`,
   `output_format=DraftOutput`, `max_retries=0`, per-call timeout, effort; refusal/truncation/schema
   → `ModelOutputInvalid`, API errors → `ModelUnavailable`); `build_anthropic_model(settings)`.
+  `anthropic_chat_model.py`: `AnthropicChatModel` (`messages.stream` → `TextDelta`/`ToolUseRequest`/
+  `ModelTurnEnd`), `build_anthropic_chat_model(settings, client)` shares the triage client.
 - `infrastructure`: settings, logging, probes, HTTP/DB/LLM clients. No business decisions.
 - `main.py` is the composition root (`create_app(settings=None, probes=None,
-  consumer_factory=None, producer_factory=None, triage_queue=None, outbox_store=None)`): builds
+  consumer_factory=None, producer_factory=None, triage_queue=None, outbox_store=None,
+  conversation_store=None, chat_model=None, checkpointer=None, tool_runner=None,
+  token_budget=None)`): builds
   the engine, repositories and (only when `model_configured`) the Anthropic client; starts the
   consumer (`TRIAGE_CONSUMER_ENABLED`) and the worker + relay (`TRIAGE_WORKER_ENABLED`) tasks in
   the lifespan and stops them (cancel after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before closing
   the LLM client and disposing the engine.
-- Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, loaded by
+- Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, `assistant.v1.md`, loaded by
   `loader.py::load_prompt`, SHA-256 pinned by a test), immutable once released; never inline
   prompt strings in Python.
 
@@ -115,6 +134,12 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `LLM_MAX_RETRIES`, `LLM_MAX_OUTPUT_TOKENS`, `LLM_EFFORT`, `CASE_TOKEN_CAP`,
   `DAILY_TOKEN_BUDGET`, `OUTBOX_*`. Triage, relay and model logs never carry evidence, reasons,
   explanations or prompt text (FR-020).
+- `/chat` (US-05, any role via `AUTHENTICATED`): conversations CRUD and
+  `POST /chat/conversations/{id}/messages` → SSE. Frozen contract `docs/chat-contract.md`, checked
+  by `tests/contract/test_chat_contract.py`; change both together. Chat settings: `CHAT_*`
+  (keep-alive, per-message token cap, rate limit, tool rounds, max messages); tools reuse
+  `TOOL_TIMEOUT_SECONDS`; the budget is the shared `DAILY_TOKEN_BUDGET`. Chat logs never carry
+  message text, tool arguments/results or the raw subject (FR-026).
 - `POST /mcp` (exact path, `x-roles: [CUSTOMER]`): stateless FastMCP, plain JSON, five read-only
   tools: `get_order`, `list_my_orders` (Orders GraphQL via `ORDERS_GRAPHQL_URL`), `list_products`,
   `get_product` (`INVENTORY_BASE_URL`), `list_my_notifications` (`NOTIFICATIONS_BASE_URL`,
@@ -126,9 +151,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `main.py::build_tool_definitions`, are checked against `tools/registry.py::ALLOWLIST` at
   startup, and their schemas are pinned in `tests/contract/snapshots/tools.json`
   (`UPDATE_SNAPSHOTS=1` regenerates it). Settings: `JWKS_*`, `TOOL_*`, `UPSTREAM_*`.
-- Every route declares access through `openapi_extra`: `PUBLIC` (`api/route_policy.py`) or
-  `x-roles`. `assert_route_policies` fails `build_api` for an undeclared route (default deny).
-- Protected routes (`/mcp` now): RS256 bearer from ecommerce-identity, verified locally against
+- Every route declares access through `openapi_extra`: `PUBLIC` (`api/route_policy.py`),
+  `AUTHENTICATED` (any role) or `x-roles`. `assert_route_policies` fails `build_api` for an undeclared route (default deny).
+- Protected routes (`/mcp`, `/chat`): RS256 bearer from ecommerce-identity, verified locally against
   `IDENTITY_JWKS_URL` (lazy, cached), same 401 for every bad token, 403 without a role, 503 without
   keys. Tools forward the caller's JWT; never a service account (ADR 0001).
 - Mutating tools pause for approval of the exact call (ADR 0002). Every LLM step has a timeout,
@@ -156,13 +181,17 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 ## Tests
 
 - `tests/unit/`: no network, no containers; Kafka via `tests/support/kafka.py::FakeConsumer`/
-  `FakeProducer` and payload builders, the LLM via `tests/support/llm.py::ScriptedModel`, storage
-  via `tests/support/stores.py` (in-memory queue, outbox, token budget; injectable failures).
+  `FakeProducer` and payload builders, the LLM via `tests/support/llm.py::ScriptedModel` /
+  `ScriptedChatModel`, the chat via `tests/support/chat.py` (`FakeToolRunner`, `chat_app`,
+  `chat_graph`) and `tests/support/sse.py`, storage
+  via `tests/support/stores.py` (in-memory queue, outbox, token budget, conversations; injectable failures).
+  `scripts/chat_smoke.py` / `mcp_smoke.py` are manual smoke clients (`TOKEN` env).
 - `tests/integration/` (all marked `integration`, run by default and in CI): real PostgreSQL from
   `TEST_DATABASE_URL`, else Testcontainers `postgres:16-alpine`, else skipped
   (`INTEGRATION_REQUIRED=true`, set in CI, fails instead); schema by the real migrations, tables
   truncated per test. Live-model tests get the `live_llm` marker (excluded by default;
-  `tests/integration/test_live_llm.py`, needs `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` in the env).
+  `tests/integration/test_live_llm.py`: triage per cause + one assistant answer, needs
+  `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` in the env). Assistant evals: US-09 (TODO(EVAL_SUITE)).
 - Drive the app with an httpx `AsyncClient` over `ASGITransport`, building it with
   `create_app(probes=[...])`. `create_app` reconfigures logging, so tests capturing logs call
   `configure_logging("INFO", stream)` after building the app.
@@ -203,6 +232,6 @@ layers (evals) extend `ci.yml` in the story that adds them. The image's entrypoi
 - ecommerce-infra has the `ai.order-triage-completed` contract (`docs/events.md`: `cause` and
   `suggestedAction` enums, consumer group `ai-triage`, the HTTP exception for calls with the
   caller's token), the topic in `kafka-init`, `postgres-ai` on `5436` and the `ai` compose service.
-  No gateway route yet: `/api/mcp` is a follow-up in ecommerce-infra (plain JSON, default
-  timeout), which also adds `ORDERS_GRAPHQL_URL`, `INVENTORY_BASE_URL` and
-  `NOTIFICATIONS_BASE_URL` to the `ai` service.
+  No gateway route yet: `/api/mcp` (plain JSON, default timeout) and `/api/chat` (SSE: no
+  buffering, long read timeout) are follow-ups in ecommerce-infra, which also adds
+  `ORDERS_GRAPHQL_URL`, `INVENTORY_BASE_URL` and `NOTIFICATIONS_BASE_URL` to the `ai` service.

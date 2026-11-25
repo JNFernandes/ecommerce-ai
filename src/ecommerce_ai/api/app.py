@@ -3,10 +3,11 @@
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ecommerce_ai.api import health
+from ecommerce_ai.api.chat import install_chat_error_handlers
 from ecommerce_ai.api.health import ConsumerStateSource, RelayStateSource, WorkerStateSource
 from ecommerce_ai.api.mcp import McpEndpoint
 from ecommerce_ai.api.middleware import REQUEST_ID_HEADER, RequestIdMiddleware
@@ -36,6 +37,7 @@ def build_api(
     *,
     mcp: McpEndpoint,
     resources: Resources,
+    chat: APIRouter,
     consumer_state: ConsumerStateSource | None = None,
     worker_state: WorkerStateSource | None = None,
     relay_state: RelayStateSource | None = None,
@@ -44,6 +46,7 @@ def build_api(
 
     CORS is enabled only for the configured origins. ``mcp`` adds the secured MCP route and
     chains the MCP app's lifespan; ``resources`` is opened around it for the app's lifetime.
+    ``chat`` is the ``/chat`` router; its validation and outage errors get ``{code, message}``.
     ``consumer_state``, ``worker_state`` and ``relay_state`` (``None`` when disabled) are
     reported by ``/ready``.
     Every route must declare its access, or this raises ``RoutePolicyError`` (default deny). The
@@ -64,12 +67,14 @@ def build_api(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(cors_allowed_origins),
-            allow_methods=["GET", "POST"],
+            allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["Authorization", "Content-Type", REQUEST_ID_HEADER],
             expose_headers=[REQUEST_ID_HEADER],
         )
     app.add_middleware(RequestIdMiddleware)
     app.include_router(health.router)
+    app.include_router(chat)
+    install_chat_error_handlers(app)
     app.router.routes.append(mcp.route)
     assert_route_policies(app)
     return app

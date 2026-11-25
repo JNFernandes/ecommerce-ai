@@ -1,20 +1,42 @@
 """Ports the triage graph and worker need, implemented in ``infrastructure`` (constitution I).
 
 - ``TriageModel``: one structured draft from the LLM (``infrastructure/llm``).
-- ``TokenBudget``: the daily token budget shared by every worker (``llm_token_usage``).
 - ``TriageCaseQueue``: one unit of work per case: lock the oldest settled case, then save its
   result, outbox event and COMPLETED status together, or roll everything back (FR-001, FR-015).
-- ``Clock``: wall time for stored timestamps and a monotonic clock for latency.
+
+``TokenBudget``, ``Clock``, ``SystemClock`` and the model errors live in ``agents/ports.py`` (shared
+with the assistant) and are re-exported here.
 """
 
-import time
 from contextlib import AbstractAsyncContextManager
-from datetime import UTC, date, datetime
+from datetime import datetime
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ecommerce_ai.agents.ports import (
+    Clock,
+    ModelError,
+    ModelOutputInvalid,
+    ModelUnavailable,
+    SystemClock,
+    TokenBudget,
+)
 from ecommerce_ai.agents.triage.model import CaseForTriage, DraftOutput, TriageResult
+
+__all__ = [
+    "CaseClaim",
+    "Clock",
+    "ModelError",
+    "ModelOutputInvalid",
+    "ModelReply",
+    "ModelUnavailable",
+    "PromptInput",
+    "SystemClock",
+    "TokenBudget",
+    "TriageCaseQueue",
+    "TriageModel",
+]
 
 
 class PromptInput(BaseModel):
@@ -37,43 +59,11 @@ class ModelReply(BaseModel):
     model_id: str = Field(min_length=1, description="Model id reported for the call.")
 
 
-class ModelError(Exception):
-    """A failed draft attempt; carries the tokens it spent (0 when unknown).
-
-    The message is a short fixed description: never prompt text, evidence or model output.
-    """
-
-    def __init__(self, message: str, *, input_tokens: int = 0, output_tokens: int = 0) -> None:
-        super().__init__(message)
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-
-
-class ModelUnavailable(ModelError):
-    """The model could not answer (timeout, connection or API error); worth retrying."""
-
-
-class ModelOutputInvalid(ModelError):
-    """The model answered, but not with a valid draft (refusal, truncation, schema error)."""
-
-
 class TriageModel(Protocol):
     """The LLM behind the draft node."""
 
     async def draft(self, prompt_input: PromptInput) -> ModelReply:
         """Ask for one draft; raise ``ModelUnavailable`` or ``ModelOutputInvalid`` on failure."""
-        ...
-
-
-class TokenBudget(Protocol):
-    """Daily token budget kept in the database, so it holds across restarts and workers."""
-
-    async def reserve(self, day: date, cap: int) -> bool:
-        """Reserve ``cap`` tokens on ``day``; ``False`` (nothing reserved) when it would not fit."""
-        ...
-
-    async def settle(self, day: date, reserved: int, actual: int) -> None:
-        """Replace a reservation of ``reserved`` tokens on ``day`` with the ``actual`` spend."""
         ...
 
 
@@ -100,27 +90,3 @@ class TriageCaseQueue(Protocol):
         block exits normally and rolls back when it raises.
         """
         ...
-
-
-class Clock(Protocol):
-    """Time source of the triage graph and worker."""
-
-    def now(self) -> datetime:
-        """Current UTC time, timezone-aware."""
-        ...
-
-    def monotonic(self) -> float:
-        """Seconds of a monotonic clock, for durations only."""
-        ...
-
-
-class SystemClock:
-    """The real clock."""
-
-    def now(self) -> datetime:
-        """Current UTC time, timezone-aware."""
-        return datetime.now(UTC)
-
-    def monotonic(self) -> float:
-        """Seconds of ``time.monotonic``."""
-        return time.monotonic()

@@ -394,3 +394,65 @@ def test_should_reject_an_output_limit_above_the_case_cap_when_both_are_set(
 
     with pytest.raises(ValidationError, match="llm_max_output_tokens must not exceed"):
         Settings()
+
+
+def test_should_use_chat_defaults_when_the_environment_is_empty() -> None:
+    settings = Settings()
+
+    assert settings.chat_keepalive_seconds == 15.0
+    assert settings.chat_request_token_cap == 20_000
+    assert settings.chat_rate_limit_messages == 10
+    assert settings.chat_rate_limit_window_seconds == 60.0
+    assert settings.chat_max_tool_rounds == 5
+    assert settings.chat_max_messages == 100
+
+
+def test_should_read_chat_settings_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_KEEPALIVE_SECONDS", "2.5")
+    monkeypatch.setenv("CHAT_REQUEST_TOKEN_CAP", "5000")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_MESSAGES", "3")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "30")
+    monkeypatch.setenv("CHAT_MAX_TOOL_ROUNDS", "2")
+    monkeypatch.setenv("CHAT_MAX_MESSAGES", "10")
+
+    settings = Settings()
+
+    assert settings.chat_keepalive_seconds == 2.5
+    assert settings.chat_request_token_cap == 5000
+    assert settings.chat_rate_limit_messages == 3
+    assert settings.chat_rate_limit_window_seconds == 30.0
+    assert settings.chat_max_tool_rounds == 2
+    assert settings.chat_max_messages == 10
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("CHAT_KEEPALIVE_SECONDS", "0"),
+        ("CHAT_KEEPALIVE_SECONDS", "301"),
+        ("CHAT_REQUEST_TOKEN_CAP", "0"),
+        ("CHAT_RATE_LIMIT_MESSAGES", "0"),
+        ("CHAT_RATE_LIMIT_WINDOW_SECONDS", "0"),
+        ("CHAT_MAX_TOOL_ROUNDS", "0"),
+        ("CHAT_MAX_TOOL_ROUNDS", "21"),
+        ("CHAT_MAX_MESSAGES", "1"),
+    ],
+)
+def test_should_reject_an_invalid_chat_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()
+
+
+def test_should_reject_an_output_limit_above_the_chat_request_cap_when_both_are_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "2000")
+    monkeypatch.setenv("CASE_TOKEN_CAP", "8000")
+    monkeypatch.setenv("CHAT_REQUEST_TOKEN_CAP", "1000")
+
+    with pytest.raises(ValidationError, match="must not exceed chat_request_token_cap"):
+        Settings()

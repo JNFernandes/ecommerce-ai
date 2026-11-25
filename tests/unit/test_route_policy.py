@@ -7,6 +7,7 @@ from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
 
 from ecommerce_ai.api.route_policy import (
+    AUTHENTICATED,
     PUBLIC,
     PolicyMount,
     PolicyRoute,
@@ -40,7 +41,9 @@ def test_should_raise_when_mount_has_no_policy() -> None:
         assert_route_policies(app)
 
 
-@pytest.mark.parametrize("extra", [{}, {"x-roles": []}, {"x-public": False}])
+@pytest.mark.parametrize(
+    "extra", [{}, {"x-roles": []}, {"x-public": False}, {"x-authenticated": False}]
+)
 def test_should_raise_when_policy_route_declares_nothing(extra: dict[str, object]) -> None:
     app = FastAPI()
     app.router.routes.append(PolicyRoute("/raw", _asgi, openapi_extra=extra))
@@ -101,3 +104,14 @@ def test_should_raise_when_included_router_has_an_undeclared_route() -> None:
     with pytest.raises(RoutePolicyError, match="GET /v1/hidden") as caught:
         assert_route_policies(app)
     assert "/v1/shown" not in str(caught.value)
+
+
+def test_should_pass_when_api_route_declares_authenticated_access() -> None:
+    app = FastAPI()
+
+    @app.get("/mine", openapi_extra=AUTHENTICATED)
+    async def mine() -> str:
+        return "x"
+
+    assert_route_policies(app)
+    assert AUTHENTICATED == {"x-authenticated": True}

@@ -1,4 +1,4 @@
-"""The packaged migrations create the triage schema and can be re-applied safely."""
+"""The packaged migrations create the triage and chat schema and can be re-applied safely."""
 
 import json
 from datetime import UTC, datetime
@@ -23,6 +23,10 @@ TABLES = {
     "triage_results",
     "outbox_events",
     "llm_token_usage",
+    "chat_conversations",
+    "chat_messages",
+    "chat_checkpoints",
+    "chat_checkpoint_writes",
 }
 
 
@@ -74,7 +78,7 @@ async def test_should_change_nothing_when_the_migrations_run_again(
 
     async with db_engine.connect() as connection:
         version = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert version == "0002"
+    assert version == "0003"
 
 
 @pytest.mark.parametrize(("cause", "status"), [("BOGUS", "PENDING_TRIAGE"), ("UNKNOWN", "DONE")])

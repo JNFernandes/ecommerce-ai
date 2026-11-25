@@ -1,6 +1,7 @@
 """Default deny: every route must declare whether it is public or which roles it requires.
 
-A route declares its access through ``openapi_extra`` (``x-public`` or ``x-roles``). FastAPI
+A route declares its access through ``openapi_extra`` (``x-public``, ``x-authenticated`` for
+any valid token, or ``x-roles``). FastAPI
 routes take it as an argument; plain ASGI routes and mounts (the MCP endpoint) use
 ``PolicyRoute`` / ``PolicyMount``, which carry the same attribute. Building the application
 fails for any route that declares neither (constitution II). FastAPI's own documentation routes
@@ -17,6 +18,9 @@ from starlette.types import ASGIApp
 
 PUBLIC: Final[dict[str, object]] = {"x-public": True}
 """``openapi_extra`` of a route that needs no access token (health, readiness)."""
+
+AUTHENTICATED: Final[dict[str, object]] = {"x-authenticated": True}
+"""``openapi_extra`` of a route that needs a valid access token with any role (``/chat``)."""
 
 
 def roles(*names: str) -> dict[str, object]:
@@ -63,7 +67,9 @@ class PolicyMount(Mount):
 
 def _is_declared(route: BaseRoute) -> bool:
     extra = getattr(route, "openapi_extra", None)
-    return isinstance(extra, dict) and bool(extra.get("x-public") or extra.get("x-roles"))
+    return isinstance(extra, dict) and bool(
+        extra.get("x-public") or extra.get("x-authenticated") or extra.get("x-roles")
+    )
 
 
 def _describe(context: RouteContext) -> str:

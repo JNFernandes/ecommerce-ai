@@ -7,9 +7,10 @@ Notifications: Python, Identity). It reaches the platform only through the gatew
 [`.specify/memory/constitution.md`](.specify/memory/constitution.md).
 
 **Status: in progress.** The service answers health and readiness checks, serves the read-only
-MCP tools (US-01, US-02) and records a triage case for every failed order it consumes from Kafka
-(US-03, [Triage intake](#triage-intake)). The LLM triage, publishing and the assistant arrive with
-their own user stories, together with their dependencies (LangGraph, the Anthropic SDK).
+MCP tools (US-01, US-02), records a triage case for every failed order it consumes from Kafka
+(US-03), triages and publishes it (US-04) and streams grounded answers of the customer chat
+assistant over SSE (US-05, [Chat assistant](#chat-assistant)). Mutating tools with approval and
+the eval suite arrive with their own user stories.
 
 ## Planned capabilities
 
@@ -34,6 +35,8 @@ Releases are gated by an eval suite ([ADR 0004](docs/adr/0004-evals-as-release-g
 | `GET /health` | public | Liveness: always `200 {"status": "UP"}` while the process answers; checks no dependency. |
 | `GET /ready` | public | Readiness: `{"status", "dependencies": {"database", "kafka"}, "consumer"}` with `UP`/`DOWN` each. `503` when PostgreSQL is unreachable; Kafka is reported but never makes the service unready. `consumer` is `{"connected", "caughtUp", "lastError"}` (`lastError`: exception class name only) or `null` when the triage consumer is disabled; `triageWorker` is `{"running", "lastError", "modelConfigured"}` and `outboxRelay` `{"running", "lastError"}`, or `null` when the worker is disabled. None of them ever changes `status` or the code. |
 | `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools, all read-only: `get_order(orderId)`, `list_my_orders(limit=20 (1–50), status?)`, `list_products(limit=20 (1–50), offset=0)`, `get_product(productId)`, `list_my_notifications(limit, offset, orderId?)`. |
+| `POST /chat/conversations`, `GET /chat/conversations`, `GET`/`DELETE /chat/conversations/{id}` | any role | The caller's chat conversations: create (`title?`), list (`limit`, `offset`, newest activity first), read with history, delete (state included). Another user's id is the same `404` as an unknown one. |
+| `POST /chat/conversations/{id}/messages` | any role | `{content}` (1–2000 characters) → `text/event-stream` of the grounded answer ([contract](docs/chat-contract.md)). |
 | `GET /docs`, `GET /openapi.json` | public | API documentation. |
 
 ### MCP endpoint
@@ -122,6 +125,31 @@ Both stop (cancelled after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before the engin
 case in flight is rolled back and stays pending. The live-model test is opt-in:
 `ANTHROPIC_API_KEY=... ANTHROPIC_MODEL=... uv run pytest -m live_llm`.
 
+### Chat assistant
+
+The frozen frontend contract (routes, SSE events, codes, fixed messages, examples) is
+[`docs/chat-contract.md`](docs/chat-contract.md). Posting a message stores it, then runs a
+LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v1.md`) whose state is
+checkpointed per conversation in PostgreSQL (`chat_checkpoints`, `chat_checkpoint_writes`), so a
+follow-up remembers earlier turns across restarts. The model (Anthropic, streamed) may call only
+the five read-only MCP tools, in process through `tools/invoker.py` with the caller's own token
+and `TOOL_TIMEOUT_SECONDS`; tool results reach it as delimited untrusted data, and the customer
+sees each call as `tool.call` / `tool.result` with a fixed summary, never upstream data.
+
+Every sentence is checked by a deterministic gatekeeper before it is sent (no promises, URLs,
+contacts or internal names, no ids, amounts or dates absent from tool results or the customer's
+own words, no HTML); a violating sentence and the rest of the answer are replaced by a fixed safe
+message (`finishReason: replaced`). More than `CHAT_MAX_TOOL_ROUNDS` tool rounds ends with
+`tool_limit`. Limits: one stream per conversation (`409 STREAM_ACTIVE`), `CHAT_MAX_MESSAGES` per
+conversation (`409 CONVERSATION_FULL`), `CHAT_RATE_LIMIT_MESSAGES` per `CHAT_RATE_LIMIT_WINDOW_SECONDS`
+per user (`429` + `Retry-After`), `CHAT_REQUEST_TOKEN_CAP` per message out of the shared
+`DAILY_TOKEN_BUDGET` (`error BUDGET_EXCEEDED`). Without a model every answer ends
+`error LLM_UNAVAILABLE` (the user message is kept). A client that disconnects cancels the run;
+the text already sent is stored with `finishReason: client_disconnected`. One `chat_run` log line
+per answer (ids, latency, tokens, tool names/outcomes/durations, finish reason, prompt version,
+model id, hashed user), never message text, tool arguments or results. Assistant evals arrive
+with US-09 (TODO(EVAL_SUITE)).
+
 ### Logging
 
 Every line is one JSON object (`event`, `level`, `logger`, `timestamp` in UTC) and, inside a
@@ -145,7 +173,7 @@ replaced with `[REDACTED]`, and bearer/basic credentials, JWTs, passwords in URL
 ```sh
 uv sync
 cp .env.example .env              # optional; set DATABASE_URL credentials here, never in git
-uv run python -m ecommerce_ai migrate   # create/upgrade the triage tables (no-op at head)
+uv run python -m ecommerce_ai migrate   # create/upgrade the tables (no-op at head)
 uv run python -m ecommerce_ai           # both read ./.env when it exists
 curl localhost:8002/health
 curl localhost:8002/ready
@@ -161,6 +189,15 @@ URL; the token is never printed):
 
 ```sh
 TOKEN=<access token> uv run python scripts/mcp_smoke.py [ORDER_ID]
+```
+
+Smoke-test the chat assistant: creates a conversation (or continues `CONVERSATION_ID`, printed on
+the first line), posts the question and prints tool events, streamed tokens and the finish
+reason or error code (`CHAT_URL` overrides `http://localhost:8002/chat`; exit `0` only after
+`message.end`):
+
+```sh
+TOKEN=<access token> uv run python scripts/chat_smoke.py "Where is my last order?"
 ```
 
 ### Configuration
@@ -215,6 +252,11 @@ use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL
 | `OUTBOX_MAX_ATTEMPTS` | `10` | Publish attempts of one event before `EXHAUSTED` |
 | `OUTBOX_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | `1` / `60` | Publish retry delay `min(base·2ⁿ, max)`, jittered |
 | `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Relay wait when nothing is due |
+| `CHAT_KEEPALIVE_SECONDS` | `15` | Stream silence before a `: keep-alive` comment |
+| `CHAT_REQUEST_TOKEN_CAP` | `20000` | Most tokens one chat message may spend (`≥ LLM_MAX_OUTPUT_TOKENS`) |
+| `CHAT_RATE_LIMIT_MESSAGES` / `_WINDOW_SECONDS` | `10` / `60` | Posts per user per sliding window |
+| `CHAT_MAX_TOOL_ROUNDS` | `5` | Model → tool rounds per answer |
+| `CHAT_MAX_MESSAGES` | `100` | Messages (user + assistant) per conversation |
 
 ### Docker
 
@@ -284,17 +326,21 @@ Actions are pinned by commit SHA and every job has least-privilege permissions.
 src/ecommerce_ai/
   main.py            Composition root: settings, logging, probes, engine, consumer, worker and relay tasks
   __main__.py        `python -m ecommerce_ai [migrate]`
-  api/               FastAPI app, routers, request-id middleware, route access policy, /mcp auth
+  api/               FastAPI app, routers, request-id middleware, route access policy, bearer auth,
+                     /mcp, /chat (conversations, SSE framer, rate limiter)
   agents/            triage_intake (cause rules, intake), triage (graph, gatekeeper, templates,
-                     worker, ports), prompts (versioned prompt files); no HTTP/Kafka/SQL
-  tools/             MCP server, tool registry/allowlist, Orders/Inventory/Notifications tools
+                     worker, ports), assistant (chat graph, gatekeeper, segmenter, summaries,
+                     limits, service), safety (shared gatekeeper rules), prompts (versioned
+                     prompt files); no HTTP/Kafka/SQL
+  tools/             MCP server, tool invoker, registry/allowlist, Orders/Inventory/Notifications tools
   messaging/         Event contracts, decoding, Kafka ports/adapters, triage consumer, outbox relay
   infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, llm/
                      (Anthropic adapter), db/ (engine, tables, repositories, Alembic migrations)
 tests/unit/          Unit tests (no network)
 tests/integration/   PostgreSQL tests: migrations, repositories, consumer and triage flows, live_llm
-tests/contract/      Tool schema snapshot, Orders queries vs its schema, event models vs events.md
+tests/contract/      Tool schema snapshot, Orders queries vs its schema, event models vs events.md,
+                     chat models vs docs/chat-contract.md
 tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka, ScriptedModel, stores
-scripts/             Manual tools: mcp_smoke.py (smoke test of /mcp against the local stack)
-docs/adr/            Architecture Decision Records
+scripts/             Manual tools: mcp_smoke.py (/mcp) and chat_smoke.py (/chat) against the local stack
+docs/                chat-contract.md (frozen chat API), adr/ (Architecture Decision Records)
 ```

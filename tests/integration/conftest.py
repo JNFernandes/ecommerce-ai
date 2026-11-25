@@ -1,11 +1,11 @@
 """Database fixtures shared by the integration tests.
 
 The database comes from ``TEST_DATABASE_URL`` when it is set (for example the compose
-``postgres-ai`` on port 5436; its triage tables are truncated before every test, so never point
-it at data you want to keep), otherwise from a Testcontainers ``postgres:16-alpine``. Without
-either, every integration test is skipped, unless ``INTEGRATION_REQUIRED=true`` (set in
-CI), which turns the skip into a failure so a broken Docker setup cannot pass silently. The
-schema is created once per session by the real migrations.
+``postgres-ai`` on port 5436; its triage and chat tables are truncated before every test, so
+never point it at data you want to keep), otherwise from a Testcontainers
+``postgres:16-alpine``. Without either, every integration test is skipped, unless
+``INTEGRATION_REQUIRED=true`` (set in CI), which turns the skip into a failure so a broken
+Docker setup cannot pass silently. The schema is created once per session by the real migrations.
 """
 
 import os
@@ -72,11 +72,12 @@ async def db_engine(db_settings: Settings) -> AsyncIterator[AsyncEngine]:
 
 @pytest.fixture(autouse=True)
 async def _empty_tables(db_engine: AsyncEngine) -> None:
-    """Start every integration test from empty triage tables."""
+    """Start every integration test from empty triage and chat tables."""
     async with db_engine.begin() as connection:
         await connection.execute(
             text(
                 "TRUNCATE triage_results, outbox_events, llm_token_usage, triage_evidence,"
-                " triage_cases, inbound_dead_letters"
+                " triage_cases, inbound_dead_letters, chat_messages, chat_conversations,"
+                " chat_checkpoints, chat_checkpoint_writes"
             )
         )
