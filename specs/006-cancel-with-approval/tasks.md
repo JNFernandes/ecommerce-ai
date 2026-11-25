@@ -35,7 +35,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
 
 ## Phase 2: Foundational (blocks every story)
 
-- [ ] T003 Write migration `src/ecommerce_ai/infrastructure/db/migrations/versions/0004_chat_approvals.py`
+- [X] T003 Write migration `src/ecommerce_ai/infrastructure/db/migrations/versions/0004_chat_approvals.py`
   and Core tables in `src/ecommerce_ai/infrastructure/db/tables.py`: `chat_approvals` (FK
   `ON DELETE CASCADE`, status check, partial unique index one `pending` per conversation),
   `chat_actions` (no FK, `approval_id` unique, index `(user_id, proposed_at)`, trigger

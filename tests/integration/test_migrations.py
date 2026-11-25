@@ -78,7 +78,7 @@ async def test_should_change_nothing_when_the_migrations_run_again(
 
     async with db_engine.connect() as connection:
         version = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert version == "0003"
+    assert version == "0004"
 
 
 @pytest.mark.parametrize(("cause", "status"), [("BOGUS", "PENDING_TRIAGE"), ("UNKNOWN", "DONE")])
