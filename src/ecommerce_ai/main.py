@@ -302,6 +302,7 @@ def create_app(
         tools=tool_runner or InvokerToolRunner(ToolInvoker(registry)),
         prompt=load_system_prompt("assistant", "v1"),
         checkpointer=checkpointer or PostgresCheckpointSaver(engine),
+        max_tool_rounds=settings.chat_max_tool_rounds,
     )
     chat = build_chat_router(
         store,

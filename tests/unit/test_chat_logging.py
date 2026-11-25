@@ -38,7 +38,9 @@ async def test_should_log_one_chat_run_line_with_counts_and_no_content() -> None
     model = ScriptedChatModel(
         [tool_turn(("toolu_01", "get_order", {"orderId": ARGUMENT})), text_turn(ANSWER)]
     )
-    tools = FakeToolRunner(results={"get_order": envelope({"id": ARGUMENT, "note": RESULT_VALUE})})
+    tools = FakeToolRunner(
+        results={"get_order": envelope({"id": ARGUMENT, "status": "SHIPPED", "note": RESULT_VALUE})}
+    )
     app = chat_app(model, tools, InMemoryConversationStore())
     stream = io.StringIO()
     configure_logging("INFO", stream)

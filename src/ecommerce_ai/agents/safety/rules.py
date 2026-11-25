@@ -194,6 +194,19 @@ def facts_grounded(text: str, evidence: Evidence) -> bool:
     )
 
 
+def uuids_in(text: str) -> list[str]:
+    """Every UUID of ``text``, lower-cased, in order."""
+    return [match.group().lower() for match in _UUID.finditer(text)]
+
+
+def promise_matches(text: str) -> list[str]:
+    """Every promise word of ``text`` (see ``has_promise``).
+
+    Returned so a gatekeeper can allow some of them (e.g. ``delivered`` as a grounded status).
+    """
+    return [match.group() for match in _PROMISE.finditer(text)]
+
+
 def has_promise(text: str) -> bool:
     """True when ``text`` promises or announces a refund, compensation or any future action."""
     return _PROMISE.search(text) is not None

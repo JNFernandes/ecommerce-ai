@@ -134,14 +134,14 @@ async def test_should_delete_every_row_of_the_thread(db_engine: AsyncEngine) -> 
 
 async def test_should_resume_a_graph_run_with_a_new_saver_instance(db_engine: AsyncEngine) -> None:
     conversation_id = uuid4()
-    first_model = ScriptedChatModel([text_turn("Order o-1 is SHIPPED.")])
+    first_model = ScriptedChatModel([text_turn("Let me check that for you.")])
     await collect_run(
         chat_graph(first_model, checkpointer=PostgresCheckpointSaver(db_engine)),
         conversation_id,
         "Where is my order?",
     )
 
-    second_model = ScriptedChatModel([text_turn("It was o-1.")])
+    second_model = ScriptedChatModel([text_turn("The one you asked about.")])
     _, outcome = await collect_run(
         chat_graph(second_model, checkpointer=PostgresCheckpointSaver(db_engine)),
         conversation_id,
@@ -152,7 +152,7 @@ async def test_should_resume_a_graph_run_with_a_new_saver_instance(db_engine: As
     (request,) = second_model.requests
     assert request.transcript == (
         UserTurn(text="Where is my order?"),
-        AssistantText(text="Order o-1 is SHIPPED."),
+        AssistantText(text="Let me check that for you."),
         UserTurn(text="Which one?"),
     )
     assert await _count(db_engine, chat_checkpoints, str(conversation_id)) == 1

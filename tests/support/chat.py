@@ -67,6 +67,7 @@ class FakeToolRunner:
     results: dict[str, dict[str, JsonValue] | FakeToolError] = field(default_factory=dict)
     names: tuple[str, ...] = TOOL_NAMES
     gate: asyncio.Event | None = None
+    invalid_arguments: frozenset[str] = frozenset()
     calls: list[ToolCallRecord] = field(default_factory=list)
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
@@ -77,12 +78,19 @@ class FakeToolRunner:
         )
 
     async def run(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
-        """Record the call and return its scripted outcome (refused when unknown)."""
-        if name not in self.names:
+        """Record the call and return its scripted outcome.
+
+        Unknown names and the tools listed in ``invalid_arguments`` are refused, never run.
+        """
+        if name not in self.names or name in self.invalid_arguments:
+            unknown = name not in self.names
             return ToolOutcome(
                 ok=False,
-                payload={"error": "not_allowed", "message": "not allowed"},
-                outcome="unknown_tool",
+                payload={
+                    "error": "not_allowed" if unknown else "invalid_arguments",
+                    "message": "not allowed" if unknown else "invalid arguments",
+                },
+                outcome="unknown_tool" if unknown else "invalid_arguments",
                 refused=True,
                 upstream_unauthenticated=False,
                 duration_ms=0.0,

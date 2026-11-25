@@ -9,13 +9,18 @@ re-validated on load (``guard_input`` and every model request). Each run resets 
 
 The nodes publish ``Token``, ``ToolCall`` and ``ToolResult`` events through LangGraph's custom
 stream writer; ``ChatGraph.run`` yields them in order and ends with one ``RunOutcome``. Answer
-text is released one segment at a time (``Segmenter``). The model is offered only the registry's
-tools (FR-011); tool results reach it as delimited data (``tool_result_text``, FR-013). The
-gatekeeper node is a pass-through until US4 adds the rules.
+text is released one segment at a time (``Segmenter``), each checked by ``check_segment`` before
+its ``Token`` (FR-016): a violating segment is never sent, the model stream stops being read, the
+safe message is sent instead and the run ends ``replaced``. The ``gatekeeper`` node checks the
+whole answer once more (``check_answer``) and replaces an empty one. A turn asking for tools after
+``max_tool_rounds`` rounds runs none and ends ``tool_limit`` (FR-011). Whenever the customer gets
+a fixed message, the transcript stores exactly what was sent, so unsafe text never reaches the
+model again. The model is offered only the registry's tools (FR-011); tool results reach it as
+delimited data (``tool_result_text``, FR-013).
 """
 
 import operator
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import Annotated, Final, Literal, TypedDict, cast
 from uuid import UUID
 
@@ -25,6 +30,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import JsonValue
 
+from ecommerce_ai.agents.assistant.gatekeeper import (
+    NO_ANSWER_MESSAGE,
+    SAFE_MESSAGE,
+    TOOL_LIMIT_MESSAGE,
+    ChatEvidence,
+    check_answer,
+    check_segment,
+)
 from ecommerce_ai.agents.assistant.model import (
     AssistantText,
     ChatErrorCode,
@@ -69,6 +82,8 @@ _TOOLS: Final = "tools"
 _GATEKEEPER: Final = "gatekeeper"
 _FINALIZE: Final = "finalize"
 _THINKING_BLOCKS: Final = frozenset({"thinking", "redacted_thinking"})
+DEFAULT_MAX_TOOL_ROUNDS: Final = 5
+"""Tool-call rounds a run may use (``CHAT_MAX_TOOL_ROUNDS``)."""
 
 
 class ChatState(TypedDict):
@@ -156,9 +171,11 @@ class ChatGraph:
         tools: ToolRunner,
         prompt: SystemPrompt,
         checkpointer: Checkpointer,
+        max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
     ) -> None:
         """Answer with ``model`` (``None``: every run ends ``LLM_UNAVAILABLE``) and ``tools``."""
         self._model = model
+        self._max_tool_rounds = max_tool_rounds
         self._tools = tools
         self._prompt = prompt
         self._checkpointer = checkpointer
@@ -228,10 +245,10 @@ class ChatGraph:
         if self._model is None:
             return {"outcome": ChatErrorCode.LLM_UNAVAILABLE.value}
         write = get_stream_writer()
+        transcript = tuple(load_transcript(state["transcript"]))
+        evidence = ChatEvidence.from_transcript(transcript)
         request = ChatModelRequest(
-            system=self._prompt.system,
-            transcript=tuple(load_transcript(state["transcript"])),
-            tools=self._tools.tool_specs(),
+            system=self._prompt.system, transcript=transcript, tools=self._tools.tool_specs()
         )
         segmenter = Segmenter()
         sent: list[str] = []
@@ -239,17 +256,24 @@ class ChatGraph:
         calls: list[ToolCallItem] = []
         end: ModelTurnEnd | None = None
 
-        def release(segment: str) -> None:
-            write(Token(text=segment))
-            sent.append(segment)
+        def release(segment: str) -> bool:
+            """Send ``segment`` if it is safe; else send the safe message and return False."""
+            safe = not check_segment(segment, evidence)
+            text = segment if safe else SAFE_MESSAGE
+            write(Token(text=text))
+            sent.append(text)
+            return safe
 
         usage = _usage(state)
+        stream = self._model.stream(request)
+        replaced = False
         try:
-            async for event in self._model.stream(request):
+            async for event in stream:
                 if isinstance(event, TextDelta):
                     text_parts.append(event.text)
-                    for segment in segmenter.feed(event.text):
-                        release(segment)
+                    if not all(release(segment) for segment in segmenter.feed(event.text)):
+                        replaced = True
+                        break
                 elif isinstance(event, ToolUseRequest):
                     calls.append(
                         ToolCallItem(call_id=event.id, name=event.name, arguments=event.input)
@@ -263,9 +287,12 @@ class ChatGraph:
                 "answer_segments": [*state["answer_segments"], *sent],
                 "usage": (usage + spent).model_dump(),
             }
-        rest = segmenter.finish()
-        if rest is not None:
-            release(rest)
+        finally:
+            if isinstance(stream, AsyncGenerator):  # stop reading the model (FR-016)
+                await stream.aclose()
+        rest = None if replaced else segmenter.finish()
+        if replaced or (rest is not None and not release(rest)):
+            return self._fixed_ending(state, sent, FinishReason.REPLACED, usage, end)
         if end is None:
             return {
                 "outcome": ChatErrorCode.LLM_UNAVAILABLE.value,
@@ -273,6 +300,10 @@ class ChatGraph:
             }
         items = _turn_items(text_parts, calls, end)
         pending = [item for item in items if isinstance(item, ToolCallItem)]
+        if pending and state["rounds"] >= self._max_tool_rounds:
+            write(Token(text=TOOL_LIMIT_MESSAGE))
+            sent.append(TOOL_LIMIT_MESSAGE)
+            return self._fixed_ending(state, sent, FinishReason.TOOL_LIMIT, usage, end)
         return {
             "transcript": dump_transcript(items),
             "pending_tool_calls": dump_transcript(pending),
@@ -319,9 +350,40 @@ class ChatGraph:
             update["outcome"] = ChatErrorCode.TOOL_FAILED.value
         return update
 
+    def _fixed_ending(
+        self,
+        state: ChatState,
+        sent: Sequence[str],
+        reason: FinishReason,
+        usage: Usage,
+        end: ModelTurnEnd | None,
+    ) -> StateUpdate:
+        """End the run with a fixed message already sent; the transcript keeps only ``sent``."""
+        return {
+            "outcome": reason.value,
+            "transcript": dump_transcript([AssistantText(text="".join(sent))]),
+            "pending_tool_calls": [],
+            "answer_segments": [*state["answer_segments"], *sent],
+            "usage": (usage if end is None else usage + end.usage).model_dump(),
+            "model_id": state["model_id"] if end is None else end.model_id,
+        }
+
     async def _gatekeeper(self, state: ChatState) -> StateUpdate:
-        """Check the whole answer; a pass-through until US4 adds the rules."""
-        return {}
+        """Check the whole answer; an unsafe or empty one ends ``replaced`` (FR-015, FR-016)."""
+        answer = "".join(state["answer_segments"])
+        if answer.strip():
+            evidence = ChatEvidence.from_transcript(load_transcript(state["transcript"]))
+            if not check_answer(answer, evidence):
+                return {}
+            message = SAFE_MESSAGE
+        else:
+            message = NO_ANSWER_MESSAGE
+        get_stream_writer()(Token(text=message))
+        return {
+            "outcome": FinishReason.REPLACED.value,
+            "transcript": dump_transcript([AssistantText(text=message)]),
+            "answer_segments": [*state["answer_segments"], message],
+        }
 
     async def _finalize(self, state: ChatState) -> StateUpdate:
         """Record how the run ended: ``completed`` unless an error or the gatekeeper decided."""

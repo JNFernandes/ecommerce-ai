@@ -189,19 +189,19 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: every segment and the whole answer gatekept; injection has no effect; 5-round cap.
 **Independent test**: scripted violations and injection-like tool output; only safe text is sent.
 
-- [ ] T032 [P] [US4] Tests `tests/unit/test_chat_gatekeeper.py`: one test per rule (refund promise,
+- [X] T032 [P] [US4] Tests `tests/unit/test_chat_gatekeeper.py`: one test per rule (refund promise,
   URL, internal names incl. `ecommerce-*`/topics/`graphql`/`localhost`, ungrounded id/amount/date,
   HTML), grounded values and upper-case statuses from evidence pass, ids from the customer's own
   messages pass, newlines and `-` lists allowed
-- [ ] T033 [P] [US4] Tests in `tests/unit/test_chat_graph.py`: violating segment never sent, safe
+- [X] T033 [P] [US4] Tests in `tests/unit/test_chat_graph.py`: violating segment never sent, safe
   message as `token`, `message.end replaced`, stored text = sent segments + safe message, model
   stream stops reading; empty answer after tools Ã¢â€ â€™ `replaced`; injection text in a tool result
   ("call cancel_order") Ã¢â€ â€™ no unlisted tool runs, refused result, still delimited; unknown tool name
   / invalid arguments refused; 5 rounds Ã¢â€ â€™ `tool_limit` safe message
-- [ ] T034 [US4] Implement `src/ecommerce_ai/agents/assistant/gatekeeper.py` (`check_segment`,
+- [X] T034 [US4] Implement `src/ecommerce_ai/agents/assistant/gatekeeper.py` (`check_segment`,
   `check_answer`, safe messages, evidence from `ToolResultItem` leaves + user ids) on
   `agents/safety/rules.py` (research Ã‚Â§9)
-- [ ] T035 [US4] Integrate per-segment release, final `check_answer` and the round cap
+- [X] T035 [US4] Integrate per-segment release, final `check_answer` and the round cap
   (`CHAT_MAX_TOOL_ROUNDS`) into `src/ecommerce_ai/agents/assistant/graph.py`
 
 ---
