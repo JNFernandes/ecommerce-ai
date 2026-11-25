@@ -50,7 +50,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   audit decision), `close(approval_id, status, outcome)`, `record_outcome(approval_id, outcome)`,
   `proposals_since(user_id, since)`; add `ToolRunner.run_approved(name, arguments)`; tests in
   `tests/unit/test_chat_ports.py`
-- [ ] T005 [P] Add `InMemoryApprovalStore` (same semantics incl. single-use decide and injectable
+- [X] T005 [P] Add `InMemoryApprovalStore` (same semantics incl. single-use decide and injectable
   failures) to `tests/support/stores.py` and a cancel endpoint + call counter to
   `tests/support/orders_stub.py` (200 / 404 / 409 / timeout modes); tests in
   `tests/unit/test_chat_support.py`

@@ -1,5 +1,5 @@
 """In-memory stores with injectable failures: triage cases, dead letters, the triage queue,
-the token budget, the outbox and the chat conversations.
+the token budget, the outbox, the chat conversations and the approvals (with their audit rows).
 
 Every store keeps unit-of-work semantics: changes made inside a transaction or claim become
 visible only when the block exits normally and are discarded when it raises. Queue exceptions
@@ -17,14 +17,21 @@ from uuid import UUID, uuid4
 from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.model import (
+    ApprovalOutcome,
     Conversation,
     ConversationHistory,
+    Decision,
     FinishReason,
     MessageRole,
     StoredMessage,
     Usage,
 )
-from ecommerce_ai.agents.assistant.ports import ConversationPage
+from ecommerce_ai.agents.assistant.ports import (
+    Approval,
+    ApprovalStatus,
+    ConversationPage,
+    ProposalMessage,
+)
 from ecommerce_ai.agents.triage.model import CaseForTriage, TriageResult
 from ecommerce_ai.agents.triage_intake.model import (
     LockedCase,
@@ -562,3 +569,175 @@ class InMemoryConversationStore:
         self.messages[conversation_id].append(message)
         self._touch(conversation_id, now)
         return message
+
+
+@dataclass
+class StoredAction:
+    """One audit row (``chat_actions``) of the in-memory approval store."""
+
+    approval_id: UUID
+    conversation_id: UUID
+    user_id: str
+    action: str
+    order_id: UUID
+    request_id: str | None
+    proposed_at: datetime
+    decision: Decision | None = None
+    outcome: ApprovalOutcome | None = None
+    decided_at: datetime | None = None
+
+
+_DECIDED: dict[Decision, ApprovalStatus] = {
+    Decision.APPROVE: ApprovalStatus.APPROVED,
+    Decision.REJECT: ApprovalStatus.REJECTED,
+}
+_CLOSING: frozenset[ApprovalStatus] = frozenset({ApprovalStatus.EXPIRED, ApprovalStatus.WITHDRAWN})
+
+
+class InMemoryApprovalStore:
+    """An ``ApprovalStore`` in memory, with the repository's semantics.
+
+    Approvals live and die with their conversation in ``conversations`` (cascade); audit rows in
+    ``actions`` are kept forever and their decision and outcome are set once. Transitions happen
+    only from ``pending``, so a second decision changes nothing. Queue exceptions in
+    ``failures[method]`` (e.g. ``"decide"``) to make the next calls of that method raise; nothing
+    is changed by a failing call.
+    """
+
+    def __init__(self, conversations: InMemoryConversationStore) -> None:
+        """Share ``conversations``: proposals store their assistant message there."""
+        self._conversations = conversations
+        self._approvals: dict[UUID, Approval] = {}
+        self.actions: dict[UUID, StoredAction] = {}
+        self.failures: dict[str, deque[BaseException]] = {}
+
+    def _fail(self, method: str) -> None:
+        queued = self.failures.get(method)
+        if queued:
+            raise queued.popleft()
+
+    @property
+    def approvals(self) -> list[Approval]:
+        """Every approval whose conversation still exists, in creation order."""
+        return [a for a in self._approvals.values() if self._alive(a)]
+
+    def _alive(self, approval: Approval) -> bool:
+        return approval.conversation_id in self._conversations.conversations
+
+    def _owned(self, user_id: str, conversation_id: UUID) -> list[Approval]:
+        return [
+            a
+            for a in self.approvals
+            if a.user_id == user_id and a.conversation_id == conversation_id
+        ]
+
+    async def create_proposal(
+        self, approval: Approval, message: ProposalMessage, request_id: str | None
+    ) -> None:
+        """Store the approval, its audit row and the ``awaiting_approval`` message together."""
+        self._fail("create_proposal")
+        if approval.status is not ApprovalStatus.PENDING:
+            raise ValueError("a proposal starts pending")
+        if any(a.status is ApprovalStatus.PENDING for a in self._owned_any(approval)):
+            raise ValueError("one pending approval per conversation")
+        await self._conversations.add_assistant_message(
+            approval.user_id,
+            approval.conversation_id,
+            message.message_id,
+            message.content,
+            FinishReason.AWAITING_APPROVAL,
+            message.prompt_version,
+            message.model_id,
+            message.usage,
+            approval.proposed_at,
+        )
+        self._approvals[approval.id] = approval
+        self.actions[approval.id] = StoredAction(
+            approval_id=approval.id,
+            conversation_id=approval.conversation_id,
+            user_id=approval.user_id,
+            action=approval.action,
+            order_id=approval.order_id,
+            request_id=request_id,
+            proposed_at=approval.proposed_at,
+        )
+
+    def _owned_any(self, approval: Approval) -> list[Approval]:
+        return [a for a in self.approvals if a.conversation_id == approval.conversation_id]
+
+    async def get(self, user_id: str, conversation_id: UUID, approval_id: UUID) -> Approval | None:
+        """The approval in any status, or ``None`` (also for another user's)."""
+        self._fail("get")
+        return next((a for a in self._owned(user_id, conversation_id) if a.id == approval_id), None)
+
+    async def pending_for(self, user_id: str, conversation_id: UUID) -> Approval | None:
+        """The conversation's pending approval, or ``None``."""
+        self._fail("pending_for")
+        owned = self._owned(user_id, conversation_id)
+        return next((a for a in owned if a.status is ApprovalStatus.PENDING), None)
+
+    async def awaiting_outcome(self, user_id: str, conversation_id: UUID) -> Approval | None:
+        """The conversation's decided approval without an audit outcome, or ``None``."""
+        self._fail("awaiting_outcome")
+        return next(
+            (
+                a
+                for a in self._owned(user_id, conversation_id)
+                if a.status in _DECIDED.values() and self.actions[a.id].outcome is None
+            ),
+            None,
+        )
+
+    async def decide(
+        self,
+        user_id: str,
+        conversation_id: UUID,
+        approval_id: UUID,
+        decision: Decision,
+        now: datetime,
+    ) -> Approval | None:
+        """Decide a pending, unexpired approval once; ``None`` when nothing changed."""
+        self._fail("decide")
+        approval = await self.get(user_id, conversation_id, approval_id)
+        if approval is None or approval.status is not ApprovalStatus.PENDING:
+            return None
+        if approval.is_expired(now):
+            return None
+        decided = approval.model_copy(update={"status": _DECIDED[decision], "decided_at": now})
+        self._approvals[approval_id] = decided
+        action = self.actions[approval_id]
+        action.decision = decision
+        action.decided_at = now
+        return decided
+
+    async def close(
+        self, approval_id: UUID, status: ApprovalStatus, outcome: ApprovalOutcome, now: datetime
+    ) -> bool:
+        """Expire or withdraw a pending approval; ``False`` when it was no longer pending."""
+        self._fail("close")
+        if status not in _CLOSING:
+            raise ValueError("close only expires or withdraws")
+        approval = self._approvals.get(approval_id)
+        if approval is None or approval.status is not ApprovalStatus.PENDING:
+            return False
+        self._approvals[approval_id] = approval.model_copy(
+            update={"status": status, "decided_at": now}
+        )
+        action = self.actions[approval_id]
+        action.outcome = outcome
+        action.decided_at = now
+        return True
+
+    async def record_outcome(self, approval_id: UUID, outcome: ApprovalOutcome) -> None:
+        """Set the audit outcome once; later calls change nothing."""
+        self._fail("record_outcome")
+        action = self.actions.get(approval_id)
+        if action is not None and action.outcome is None:
+            action.outcome = outcome
+
+    async def proposals_since(self, user_id: str, since: datetime) -> int:
+        """Audit rows of ``user_id`` proposed at or after ``since`` (kept after deletes)."""
+        self._fail("proposals_since")
+        return sum(
+            1 for a in self.actions.values() if a.user_id == user_id and a.proposed_at >= since
+        )
