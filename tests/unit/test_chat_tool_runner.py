@@ -13,7 +13,7 @@ from ecommerce_ai.infrastructure.caller import (
     current_caller,
 )
 from ecommerce_ai.tools.invoker import ToolInvoker
-from tests.unit.test_tool_invoker import REGISTRY, TOKEN, EchoInput
+from tests.unit.test_tool_invoker import MUTATING_REGISTRY, REGISTRY, TOKEN, EchoInput
 
 
 @pytest.fixture(autouse=True)
@@ -45,3 +45,16 @@ async def test_should_map_success_refusal_and_upstream_401_to_outcomes() -> None
     assert (rejected.ok, rejected.upstream_unauthenticated) == (False, True)
     assert TOKEN not in str(rejected.payload)
     assert current_caller().upstream_unauthenticated is True
+
+
+async def test_should_offer_a_mutating_tool_but_run_it_only_when_approved() -> None:
+    runner = InvokerToolRunner(ToolInvoker(MUTATING_REGISTRY))
+
+    direct = await runner.run("mutate", {"text": "x"})
+    approved = await runner.run_approved("mutate", {"text": "go"})
+    read_only = await runner.run_approved("echo", {"text": "x"})
+
+    assert "mutate" in {spec.name for spec in runner.tool_specs()}
+    assert (direct.outcome, direct.refused) == ("unknown_tool", True)
+    assert (approved.ok, approved.outcome, approved.payload) == (True, "ok", {"text": "go"})
+    assert (read_only.outcome, read_only.refused) == ("unknown_tool", True)

@@ -11,11 +11,11 @@ from collections.abc import Mapping
 from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.ports import ToolOutcome, ToolSpec
-from ecommerce_ai.tools.invoker import ToolInvoker
+from ecommerce_ai.tools.invoker import ToolInvocation, ToolInvoker
 
 
 class InvokerToolRunner:
-    """The read-only tools, run in-process."""
+    """The chat's tools, run in-process; a mutating one only once approved (US-06)."""
 
     def __init__(self, invoker: ToolInvoker) -> None:
         """Run the tools of ``invoker``'s registry."""
@@ -38,13 +38,24 @@ class InvokerToolRunner:
         return self._specs
 
     async def run(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
-        """Invoke ``name``; refused, failed and upstream-401 calls become the outcome."""
-        invocation = await self._invoker.invoke(name, arguments)
-        return ToolOutcome(
-            ok=invocation.ok,
-            payload=invocation.payload,
-            outcome=invocation.outcome,
-            refused=invocation.refused,
-            upstream_unauthenticated=invocation.upstream_unauthenticated,
-            duration_ms=invocation.duration_ms,
-        )
+        """Invoke ``name``; refused, failed and upstream-401 calls become the outcome.
+
+        A mutating tool is refused here (``unknown_tool``): it runs only via ``run_approved``.
+        """
+        return _outcome(await self._invoker.invoke(name, arguments))
+
+    async def run_approved(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
+        """Run mutating tool ``name`` once with the approved, stored ``arguments``."""
+        return _outcome(await self._invoker.invoke_approved(name, arguments))
+
+
+def _outcome(invocation: ToolInvocation) -> ToolOutcome:
+    """The port's view of one invocation."""
+    return ToolOutcome(
+        ok=invocation.ok,
+        payload=invocation.payload,
+        outcome=invocation.outcome,
+        refused=invocation.refused,
+        upstream_unauthenticated=invocation.upstream_unauthenticated,
+        duration_ms=invocation.duration_ms,
+    )

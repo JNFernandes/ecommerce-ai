@@ -140,14 +140,21 @@ class ToolOutcome(_Frozen):
 
 
 class ToolRunner(Protocol):
-    """The read-only tools, run with the caller bound to the current context."""
+    """The chat's tools, run with the caller bound to the current context."""
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
-        """Every tool the model may call."""
+        """Every tool the model may call (a mutating one is offered, then intercepted)."""
         ...
 
     async def run(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
-        """Run tool ``name``; never raises for a tool failure (it becomes the outcome)."""
+        """Run read-only tool ``name``; never raises for a tool failure (it becomes the outcome).
+
+        A mutating tool is refused (``unknown_tool``).
+        """
+        ...
+
+    async def run_approved(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
+        """Run mutating tool ``name`` once, with the approved arguments; never retried (US-06)."""
         ...
 
 

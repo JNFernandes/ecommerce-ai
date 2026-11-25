@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import io
 import json
+from dataclasses import replace
 
 import pytest
 from pydantic import BaseModel, Field, SecretStr
@@ -18,6 +19,7 @@ from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.tools import invoker as invoker_module
 from ecommerce_ai.tools.envelope import ToolErrorCode, ToolFailure
 from ecommerce_ai.tools.invoker import ToolInvoker, failure_result
+from ecommerce_ai.tools.mutating.policy import ApprovalPolicy, Exposure
 from ecommerce_ai.tools.registry import (
     AllowlistEntry,
     AnyToolDefinition,
@@ -209,3 +211,67 @@ async def test_should_not_flag_upstream_when_no_caller_is_bound() -> None:
 
     assert invocation.executed
     assert not invocation.upstream_unauthenticated
+
+
+# Mutating tools (US-06) -----------------------------------------------------------------------
+
+POLICY = ApprovalPolicy(target_argument="text", ttl_seconds=600, proposals_per_hour=5)
+
+
+def _mutating(name: str, handler: object, timeout: float = 5.0) -> AnyToolDefinition:
+    return replace(
+        _tool(name, handler, timeout),
+        mutating=True,
+        read_only=False,
+        approval=POLICY,
+        exposure=frozenset({Exposure.CHAT}),
+    )
+
+
+MUTATING_REGISTRY = ToolRegistry.build(
+    [
+        _tool("echo", _echo),
+        _mutating("mutate", _echo),
+        _mutating("mutate_not_found", _not_found),
+        _mutating("mutate_hang", _hang, timeout=0.01),
+    ]
+)
+
+
+async def test_should_refuse_a_mutating_tool_like_an_unknown_one_when_invoked_directly() -> None:
+    invocation = await ToolInvoker(MUTATING_REGISTRY).invoke("mutate", {"text": "x"})
+
+    assert (invocation.outcome, invocation.refused) == ("unknown_tool", True)
+    assert invocation.payload == {"error": "not_allowed", "message": "not allowed"}
+    assert calls == []
+
+
+async def test_should_run_a_mutating_tool_once_when_invoked_as_approved() -> None:
+    invocation = await ToolInvoker(MUTATING_REGISTRY).invoke_approved("mutate", {"text": "go"})
+
+    assert (invocation.ok, invocation.outcome, invocation.payload) == (True, "ok", {"text": "go"})
+    assert calls == ["go"]
+
+
+@pytest.mark.parametrize("name", ["echo", "missing"])
+async def test_should_refuse_an_approved_call_when_the_tool_is_not_mutating(name: str) -> None:
+    invocation = await ToolInvoker(MUTATING_REGISTRY).invoke_approved(name, {"text": "x"})
+
+    assert (invocation.outcome, invocation.refused) == ("unknown_tool", True)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "outcome", "executed"),
+    [
+        ("mutate_not_found", {"text": "x"}, "not_found", True),
+        ("mutate_hang", {"text": "x"}, "upstream_error", True),
+        ("mutate", {"text": "far too long text"}, "invalid_input", False),
+    ],
+)
+async def test_should_map_an_approved_call_failure_to_its_result(
+    name: str, arguments: dict[str, str], outcome: str, executed: bool
+) -> None:
+    invocation = await ToolInvoker(MUTATING_REGISTRY).invoke_approved(name, arguments)
+
+    assert (invocation.ok, invocation.outcome, invocation.executed) == (False, outcome, executed)

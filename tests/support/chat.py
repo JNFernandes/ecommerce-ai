@@ -73,6 +73,9 @@ class FakeToolRunner:
     gate: asyncio.Event | None = None
     invalid_arguments: frozenset[str] = frozenset()
     calls: list[ToolCallRecord] = field(default_factory=list)
+    mutating: frozenset[str] = frozenset()
+    """Names that run only through ``run_approved`` (and are refused by ``run``)."""
+    approved_calls: list[ToolCallRecord] = field(default_factory=list)
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """One spec per registered tool name."""
@@ -86,8 +89,8 @@ class FakeToolRunner:
 
         Unknown names and the tools listed in ``invalid_arguments`` are refused, never run.
         """
-        if name not in self.names or name in self.invalid_arguments:
-            unknown = name not in self.names
+        if name not in self.names or name in self.invalid_arguments or name in self.mutating:
+            unknown = name not in self.names or name in self.mutating
             return ToolOutcome(
                 ok=False,
                 payload={
@@ -103,6 +106,40 @@ class FakeToolRunner:
         if self.gate is not None:
             await self.gate.wait()
         result = self.results.get(name, envelope([]))
+        if isinstance(result, FakeToolError):
+            return ToolOutcome(
+                ok=False,
+                payload={"error": result.error, "message": result.message},
+                outcome=result.error,
+                refused=False,
+                upstream_unauthenticated=result.upstream_unauthenticated,
+                duration_ms=1.0,
+            )
+        return ToolOutcome(
+            ok=True,
+            payload=result,
+            outcome="ok",
+            refused=False,
+            upstream_unauthenticated=False,
+            duration_ms=1.0,
+        )
+
+    async def run_approved(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
+        """Record an approved mutating call and return its scripted outcome.
+
+        Only names in ``mutating`` run; every other name is refused like the real invoker.
+        """
+        if name not in self.mutating:
+            return ToolOutcome(
+                ok=False,
+                payload={"error": "not_allowed", "message": "not allowed"},
+                outcome="unknown_tool",
+                refused=True,
+                upstream_unauthenticated=False,
+                duration_ms=0.0,
+            )
+        self.approved_calls.append(ToolCallRecord(name, dict(arguments)))
+        result = self.results.get(name, envelope({}))
         if isinstance(result, FakeToolError):
             return ToolOutcome(
                 ok=False,

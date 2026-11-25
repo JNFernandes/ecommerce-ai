@@ -431,3 +431,22 @@ async def test_should_answer_a_configured_body_or_hang_in_the_cancel_stub(
     with pytest.raises(TimeoutError):
         async with asyncio.timeout(0.05):
             await _cancel("o-1")
+
+
+async def test_should_run_a_mutating_fake_tool_only_when_approved() -> None:
+    runner = FakeToolRunner(
+        names=(*FakeToolRunner().names, "cancel_order"),
+        mutating=frozenset({"cancel_order"}),
+        results={"cancel_order": envelope({"orderId": "o-1", "status": "CANCELLED"})},
+    )
+    port: ToolRunner = runner
+
+    direct = await port.run("cancel_order", {"orderId": "o-1"})
+    approved = await port.run_approved("cancel_order", {"orderId": "o-1"})
+    read_only = await port.run_approved("get_order", {"orderId": "o-1"})
+
+    assert (direct.outcome, direct.refused) == ("unknown_tool", True)
+    assert approved.ok
+    assert (read_only.outcome, read_only.refused) == ("unknown_tool", True)
+    assert runner.calls == []
+    assert [call.arguments for call in runner.approved_calls] == [{"orderId": "o-1"}]

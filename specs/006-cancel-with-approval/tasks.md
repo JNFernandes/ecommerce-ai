@@ -71,7 +71,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   (constitution II/IX) in `tests/contract/test_chat_tool_schemas.py`: input/output schema pinned
   in `tests/contract/snapshots/chat_tools.json` (`UPDATE_SNAPSHOTS=1`), method/path and 200
   `{orderId, status}` / 404 / 409 checked against ecommerce-orders `docs/us-02-cancel-order.md`
-- [ ] T009 Make `ToolInvoker.invoke` in `src/ecommerce_ai/tools/invoker.py` refuse mutating tools
+- [X] T009 Make `ToolInvoker.invoke` in `src/ecommerce_ai/tools/invoker.py` refuse mutating tools
   (unknown-tool result) and add `invoke_approved(name, arguments)` that runs only mutating tools,
   without retry; `agents/assistant/tool_runner.py` implements `run_approved`; tests in
   `tests/unit/test_tool_invoker.py` and `tests/unit/test_chat_tool_runner.py`
