@@ -70,7 +70,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   tools, `ck_chat_messages_finish_reason` + `blocked`/`tool_loop` (downgrade maps them to
   `replaced`); extend `tests/integration/test_migrations.py` (upgrade, downgrade, trigger refuses
   UPDATE and DELETE)
-- [ ] T006 [P] Implement `GuardrailEventRepository` in
+- [X] T006 [P] Implement `GuardrailEventRepository` in
   `src/ecommerce_ai/infrastructure/db/guardrail_event_repository.py` (`GuardrailEventStore`; one
   insert per event, UTC `created_at`, filters by `user_id`); integration tests in
   `tests/integration/test_guardrail_repository.py`
