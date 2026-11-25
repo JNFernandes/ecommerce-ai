@@ -45,7 +45,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
 
 ## Phase 2: Foundational (blocks every story)
 
-- [ ] T003 Create `src/ecommerce_ai/agents/guardrails/__init__.py` (package docstring) and
+- [X] T003 Create `src/ecommerce_ai/agents/guardrails/__init__.py` (package docstring) and
   `events.py`: `GuardStage` (`input`/`tool`/`output`), `GuardAction`
   (`blocked`/`replaced`/`sanitized`/`cooldown`), `GuardSeverity` (`low`/`medium`/`high`) as
   `StrEnum`; frozen `GuardEvent(stage, rule, action, severity)`; ports (`typing.Protocol`)
