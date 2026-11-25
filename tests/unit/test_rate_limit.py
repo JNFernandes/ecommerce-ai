@@ -1,6 +1,6 @@
-"""``SlidingWindowLimiter``: per-user sliding window with an injected clock (US5, research §13)."""
+"""``SlidingWindowLimiter``: per-user sliding window with an injected clock (US-07 research §9)."""
 
-from ecommerce_ai.api.rate_limit import SWEEP_EVERY, SlidingWindowLimiter
+from ecommerce_ai.infrastructure.rate_limit import SWEEP_EVERY, SlidingWindowLimiter
 
 
 class FakeClock:
@@ -17,8 +17,9 @@ def test_should_allow_up_to_the_limit_then_refuse_when_the_window_is_full() -> N
     clock = FakeClock()
     limiter = SlidingWindowLimiter(3, 60.0, clock)
 
-    assert [limiter.hit("u") for _ in range(3)] == [None, None, None]
-    assert limiter.hit("u") == 60
+    assert [limiter.hit("u") for _ in range(3)] == [True, True, True]
+    assert limiter.hit("u") is False
+    assert limiter.retry_after("u") == 60
 
 
 def test_should_give_retry_after_until_the_oldest_hit_leaves_when_refused() -> None:
@@ -29,9 +30,28 @@ def test_should_give_retry_after_until_the_oldest_hit_leaves_when_refused() -> N
     limiter.hit("u")
     clock.now += 20.0
 
-    assert limiter.hit("u") == 30  # ceil(60 - 30.5)
+    assert limiter.hit("u") is False
+    assert limiter.retry_after("u") == 30  # ceil(60 - 30.5)
     clock.now += 29.4
-    assert limiter.hit("u") == 1  # 0.1 s left, rounded up
+    assert limiter.retry_after("u") == 1  # 0.1 s left, rounded up
+
+
+def test_should_give_zero_retry_after_when_the_window_has_room() -> None:
+    clock = FakeClock()
+    limiter = SlidingWindowLimiter(2, 60.0, clock)
+
+    assert limiter.retry_after("unknown") == 0
+    limiter.hit("u")
+    assert limiter.retry_after("u") == 0
+
+
+def test_should_give_zero_retry_after_when_the_oldest_hit_left_the_window() -> None:
+    clock = FakeClock()
+    limiter = SlidingWindowLimiter(1, 60.0, clock)
+    limiter.hit("u")
+    clock.now += 60.0
+
+    assert limiter.retry_after("u") == 0
 
 
 def test_should_allow_again_when_the_oldest_hit_left_the_window() -> None:
@@ -40,8 +60,8 @@ def test_should_allow_again_when_the_oldest_hit_left_the_window() -> None:
     limiter.hit("u")
     clock.now += 60.0
 
-    assert limiter.hit("u") is None
-    assert limiter.hit("u") == 60
+    assert limiter.hit("u") is True
+    assert limiter.hit("u") is False
 
 
 def test_should_not_count_refused_hits_when_the_window_is_full() -> None:
@@ -52,7 +72,7 @@ def test_should_not_count_refused_hits_when_the_window_is_full() -> None:
         limiter.hit("u")
     clock.now += 60.0
 
-    assert limiter.hit("u") is None
+    assert limiter.hit("u") is True
 
 
 def test_should_isolate_subjects_when_one_is_limited() -> None:
@@ -60,8 +80,8 @@ def test_should_isolate_subjects_when_one_is_limited() -> None:
     limiter = SlidingWindowLimiter(1, 60.0, clock)
     limiter.hit("alice")
 
-    assert limiter.hit("alice") == 60
-    assert limiter.hit("bob") is None
+    assert limiter.hit("alice") is False
+    assert limiter.hit("bob") is True
 
 
 def test_should_forget_idle_subjects_when_sweeping() -> None:
@@ -73,4 +93,4 @@ def test_should_forget_idle_subjects_when_sweeping() -> None:
         limiter.hit(f"user-{index}")
 
     assert "idle" not in limiter._hits
-    assert limiter.hit("idle") is None
+    assert limiter.hit("idle") is True

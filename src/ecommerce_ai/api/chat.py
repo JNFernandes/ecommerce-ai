@@ -46,10 +46,10 @@ from ecommerce_ai.agents.assistant.model import (
 )
 from ecommerce_ai.agents.assistant.ports import Approval, ConversationStore
 from ecommerce_ai.agents.assistant.service import ChatService
-from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.api.route_policy import AUTHENTICATED
 from ecommerce_ai.api.sse import MEDIA_TYPE, sse_response
 from ecommerce_ai.infrastructure.caller import RequestCaller
+from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 
 PREFIX: Final = "/chat"
 TITLE_MAX_CHARS: Final = 200
@@ -354,9 +354,9 @@ def build_chat_router(
 
     async def rate_limited(caller: Caller) -> RequestCaller:
         """The caller, once its post fits in the rate limit (before the body is validated)."""
-        retry_after = limiter.hit(caller.identity.subject)
-        if retry_after is not None:
-            raise RateLimited(retry_after)
+        subject = caller.identity.subject
+        if not limiter.hit(subject):
+            raise RateLimited(limiter.retry_after(subject))
         return caller
 
     LimitedCaller = Annotated[RequestCaller, Depends(rate_limited)]  # a type alias

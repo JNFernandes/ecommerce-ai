@@ -55,7 +55,6 @@ from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
-from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.approval_repository import ApprovalRepository
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
@@ -74,6 +73,7 @@ from ecommerce_ai.infrastructure.llm.anthropic_chat_model import build_anthropic
 from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport

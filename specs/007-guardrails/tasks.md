@@ -35,7 +35,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   `src/ecommerce_ai/main.py` build the limiter from `USER_MESSAGES_PER_MINUTE` over 60 s; tests in
   `tests/unit/test_settings.py`; clear the new names (and drop the old) in `tests/conftest.py`;
   update `.env.example`
-- [ ] T002 [P] Move `SlidingWindowLimiter` from `src/ecommerce_ai/api/rate_limit.py` to
+- [X] T002 [P] Move `SlidingWindowLimiter` from `src/ecommerce_ai/api/rate_limit.py` to
   `src/ecommerce_ai/infrastructure/rate_limit.py` (research §9), add `retry_after(key) -> int`
   (whole seconds until the oldest hit leaves the window, ≥ 1 when full, 0 otherwise); delete the
   old module, update imports in `src/ecommerce_ai/api/chat.py`, `main.py` and tests; tests in

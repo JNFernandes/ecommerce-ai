@@ -61,7 +61,7 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - `api`: routers and schemas, I/O only (auth, validation, SSE). One agent entry point per route.
   `auth.py` (`require_caller`, shared 401/403/503 bodies with `/mcp`), `chat.py` (`/chat` routes,
   `{code, message}` errors, `ChatHttpCode`), `sse.py` (framer: ids from 1, keep-alive,
-  `CancelledError` → disconnect), `rate_limit.py` (`SlidingWindowLimiter`, before DB work), `body_limit.py` (16 KB on `/chat`, 413
+  `CancelledError` → disconnect), the per-user minute limit (`infrastructure/rate_limit.py::SlidingWindowLimiter`, before DB work), `body_limit.py` (16 KB on `/chat`, 413
   `PAYLOAD_TOO_LARGE`, replaces the gateway's buffering limit; later receives pass through).
 - `agents`: graphs, nodes, state, prompts. No HTTP/Kafka/SQL; outside world only via tools or
   `typing.Protocol` ports. Domain decisions (triage cause, suggested action, gatekeeper) live here.
