@@ -26,7 +26,7 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
-from ecommerce_ai.agents.assistant.graph import ChatGraph
+from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
 from ecommerce_ai.agents.assistant.limits import ChatLimits
 from ecommerce_ai.agents.assistant.ports import (
     ChatModel,
@@ -36,7 +36,7 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
-from ecommerce_ai.agents.prompts.loader import load_prompt, load_system_prompt
+from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
 from ecommerce_ai.agents.triage.ports import (
@@ -304,7 +304,7 @@ def create_app(
     chat_graph = ChatGraph(
         model=chat_model,
         tools=tool_runner or InvokerToolRunner(ToolInvoker(registry)),
-        prompt=load_system_prompt("assistant", "v1"),
+        prompt=load_assistant_prompt(),
         checkpointer=checkpointer or PostgresCheckpointSaver(engine),
         max_tool_rounds=settings.chat_max_tool_rounds,
         max_retries=settings.llm_max_retries,

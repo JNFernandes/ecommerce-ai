@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import JsonValue
 
-from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent
+from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent, load_assistant_prompt
 from ecommerce_ai.agents.assistant.model import RunOutcome
 from ecommerce_ai.agents.assistant.ports import (
     ChatModel,
@@ -25,7 +25,6 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolSpec,
 )
 from ecommerce_ai.agents.ports import TokenBudget
-from ecommerce_ai.agents.prompts.loader import load_system_prompt
 from ecommerce_ai.main import create_app
 from tests.support.stores import InMemoryConversationStore, InMemoryTokenBudget
 
@@ -183,7 +182,7 @@ def chat_graph(
     return ChatGraph(
         model=model,
         tools=tools or FakeToolRunner(),
-        prompt=load_system_prompt("assistant", "v1"),
+        prompt=load_assistant_prompt(),
         checkpointer=checkpointer or InMemorySaver(),
     )
 

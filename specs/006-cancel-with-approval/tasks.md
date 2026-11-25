@@ -79,7 +79,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   and `ChatHttpCode` `APPROVAL_PENDING`/`APPROVAL_ALREADY_DECIDED`/`APPROVAL_EXPIRED` to
   `src/ecommerce_ai/agents/assistant/model.py` (and `api/chat.py` codes); tests in
   `tests/unit/test_chat_models.py`
-- [ ] T011 [P] Write `src/ecommerce_ai/agents/prompts/assistant.v2.md` (v1 + approval flow: propose,
+- [X] T011 [P] Write `src/ecommerce_ai/agents/prompts/assistant.v2.md` (v1 + approval flow: propose,
   never claim before `approval.resolved`, typed "yes" is not an approval); `graph.py` loads v2; pin
   the v2 hash next to v1 in `tests/unit/test_prompt_loader.py`
 

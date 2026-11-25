@@ -79,7 +79,7 @@ from ecommerce_ai.agents.assistant.ports import (
 from ecommerce_ai.agents.assistant.segmenter import Segmenter
 from ecommerce_ai.agents.assistant.summaries import summarize
 from ecommerce_ai.agents.ports import ModelError, ModelUnavailable
-from ecommerce_ai.agents.prompts.loader import SystemPrompt
+from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
 from ecommerce_ai.infrastructure.retry import call_with_retry
 
 type GraphEvent = Token | ToolCall | ToolResult
@@ -95,6 +95,16 @@ _GATEKEEPER: Final = "gatekeeper"
 _FINALIZE: Final = "finalize"
 _THINKING_BLOCKS: Final = frozenset({"thinking", "redacted_thinking"})
 DEFAULT_MAX_TOOL_ROUNDS: Final = 5
+
+ASSISTANT_PROMPT_VERSION: Final = "v2"
+"""The active assistant prompt (US-06 adds the approval flow); ``assistant.v1`` stays unchanged."""
+
+
+def load_assistant_prompt() -> SystemPrompt:
+    """The active assistant system prompt, ``assistant.<ASSISTANT_PROMPT_VERSION>``."""
+    return load_system_prompt("assistant", ASSISTANT_PROMPT_VERSION)
+
+
 """Tool-call rounds a run may use (``CHAT_MAX_TOOL_ROUNDS``)."""
 DEFAULT_MAX_RETRIES: Final = 2
 """Retries of a model call that failed before sending anything (``LLM_MAX_RETRIES``)."""
