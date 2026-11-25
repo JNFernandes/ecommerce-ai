@@ -268,7 +268,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 - [X] T046 [P] Update `README.md`, `CLAUDE.md` (layering: `agents/assistant`, `agents/safety`,
   `tools/invoker.py`, `api/chat.py`/`sse.py`/`auth.py`/`rate_limit.py`, new tables, CHAT_*
   settings, `/chat` routes) and `.env.example`; mark US-09 `TODO(EVAL_SUITE)` for assistant evals
-- [ ] T047 Run quickstart.md steps 1Ã¢â‚¬â€œ2 locally and the full gate; mark tasks complete
+- [X] T047 Run quickstart.md steps 1Ã¢â‚¬â€œ2 locally and the full gate; mark tasks complete
 
 ---
 
