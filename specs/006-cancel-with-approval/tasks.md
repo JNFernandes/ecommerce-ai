@@ -54,7 +54,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   failures) to `tests/support/stores.py` and a cancel endpoint + call counter to
   `tests/support/orders_stub.py` (200 / 404 / 409 / timeout modes); tests in
   `tests/unit/test_chat_support.py`
-- [ ] T006 Implement `src/ecommerce_ai/infrastructure/db/approval_repository.py::ApprovalRepository`
+- [X] T006 Implement `src/ecommerce_ai/infrastructure/db/approval_repository.py::ApprovalRepository`
   (after T003, T004) covering both tables; every query filters `user_id`; integration tests in
   `tests/integration/test_approval_repository.py` (concurrent decide → one row, partial unique
   index, rate-limit count, audit kept after conversation delete)
