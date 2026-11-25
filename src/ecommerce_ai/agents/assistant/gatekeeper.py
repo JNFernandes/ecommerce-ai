@@ -56,6 +56,11 @@ NO_ANSWER_MESSAGE: Final = (
 )
 """Sent when the model gave no text at all (finishReason ``replaced``)."""
 
+BLOCKED_REFUSAL: Final = (
+    "I can't help with that request. I can help with your orders, products and notifications."
+)
+"""Sent instead of an answer when the input guard blocks the message (finishReason ``blocked``)."""
+
 TOOL_LIMIT_MESSAGE: Final = (
     "Sorry, I could not finish looking that up. Please ask a simpler question."
 )

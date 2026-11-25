@@ -71,6 +71,7 @@ from ecommerce_ai.agents.assistant.approvals import (
     summary_of,
 )
 from ecommerce_ai.agents.assistant.gatekeeper import (
+    BLOCKED_REFUSAL,
     NO_ANSWER_MESSAGE,
     SAFE_MESSAGE,
     TOOL_LIMIT_MESSAGE,
@@ -360,6 +361,33 @@ def _turn_items(
     return items
 
 
+def model_view(transcript: Sequence[TranscriptItem]) -> tuple[TranscriptItem, ...]:
+    """The transcript the model sees: without blocked messages and their refusals (FR-004).
+
+    A blocked turn is a ``UserTurn`` answered only by ``BLOCKED_REFUSAL``; the model never sees
+    the hostile text, also in later turns.
+    """
+    kept: list[TranscriptItem] = []
+    index = 0
+    while index < len(transcript):
+        item = transcript[index]
+        following = transcript[index + 1] if index + 1 < len(transcript) else None
+        if (
+            isinstance(item, UserTurn)
+            and isinstance(following, AssistantText)
+            and following.text == BLOCKED_REFUSAL
+        ):
+            index += 2
+            continue
+        kept.append(item)
+        index += 1
+    return tuple(kept)
+
+
+def _after_guard(state: ChatState) -> Literal["agent", "finalize"]:
+    return _FINALIZE if state["outcome"] is not None else _AGENT
+
+
 def _after_agent(state: ChatState) -> Literal["tools", "gatekeeper", "finalize"]:
     if state["outcome"] is not None:
         return _FINALIZE
@@ -465,7 +493,7 @@ class ChatGraph:
         graph.add_node(_GATEKEEPER, self._gatekeeper)
         graph.add_node(_FINALIZE, self._finalize)
         graph.add_edge(START, _GUARD)
-        graph.add_edge(_GUARD, _AGENT)
+        graph.add_conditional_edges(_GUARD, _after_guard)
         graph.add_conditional_edges(_AGENT, _after_agent)
         graph.add_conditional_edges(_TOOLS, _after_tools)
         graph.add_conditional_edges(_APPROVAL, _after_approval)
@@ -645,11 +673,22 @@ class ChatGraph:
     # Nodes ------------------------------------------------------------------------------------
 
     async def _guard_input(self, state: ChatState) -> StateUpdate:
-        """Re-validate the stored transcript; it must end with the customer's new message."""
+        """Re-validate the transcript, then run the input guard on the new message (FR-004).
+
+        A blocked message gets ``BLOCKED_REFUSAL`` and ends ``blocked``: no model call, no tool
+        call, no token reserved.
+        """
         transcript = load_transcript(state["transcript"])
         if not transcript or not isinstance(transcript[-1], UserTurn):
             raise ValueError("the chat transcript must end with the customer's message")
-        return {}
+        event = self.guardrails.input_guard.check(transcript[-1].text)
+        if event is None:
+            return {}
+        get_stream_writer()(Token(text=BLOCKED_REFUSAL))
+        ending = self._fixed_ending(
+            state, [BLOCKED_REFUSAL], FinishReason.BLOCKED, _usage(state), None
+        )
+        return ending | record_guard_events(state, [event])
 
     async def _agent(self, state: ChatState, runtime: Runtime[RunContext]) -> StateUpdate:
         """One model turn: stream gatekept segments, collect tool calls, add usage."""
@@ -673,7 +712,7 @@ class ChatGraph:
         model = self._model
         allowance = runtime.context.allowance
         write = get_stream_writer()
-        transcript = tuple(load_transcript(state["transcript"]))
+        transcript = model_view(load_transcript(state["transcript"]))
         evidence = ChatEvidence.from_transcript(
             transcript, approval_resolved=state.get("execution") is not None
         )

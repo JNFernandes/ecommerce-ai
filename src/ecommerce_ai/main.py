@@ -40,6 +40,7 @@ from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
 from ecommerce_ai.agents.guardrails import Guardrails
 from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
+from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_input_rules
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -237,6 +238,12 @@ def build_triage_worker(
     )
 
 
+def build_guardrails(settings: Settings) -> Guardrails:
+    """The chat's US-07 guards; an invalid input rules file raises, so the build fails."""
+    _ = settings
+    return Guardrails(input_guard=RuleInputGuard(load_input_rules()))
+
+
 def create_app(
     settings: Settings | None = None,
     probes: Sequence[DependencyProbe] | None = None,
@@ -349,7 +356,7 @@ def create_app(
         max_retries=settings.llm_max_retries,
         clock=chat_clock,
         approval_ttl_seconds=settings.approval_ttl_seconds,
-        guardrails=guardrails or Guardrails.noop(),  # the US-07 stories fill the bundle
+        guardrails=guardrails or build_guardrails(settings),
     )
     chat_service = ChatService(
         store,

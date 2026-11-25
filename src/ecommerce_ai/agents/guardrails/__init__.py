@@ -24,12 +24,22 @@ from ecommerce_ai.agents.guardrails.events import GuardEvent
 class InputGuard(Protocol):
     """Decides whether a customer's (normalised) message may reach the model."""
 
+    @property
+    def version(self) -> str | None:
+        """Version of the rules it applies (``rules_version`` on ``chat_run``), if any."""
+        ...
+
     def check(self, text: str) -> GuardEvent | None:
         """The ``blocked`` event of the first rule ``text`` breaks, ``None`` when it passes."""
         ...
 
 
 class _NoInputGuard:
+    @property
+    def version(self) -> str | None:
+        """No rules."""
+        return None
+
     def check(self, text: str) -> GuardEvent | None:
         """Let every message through."""
         return None

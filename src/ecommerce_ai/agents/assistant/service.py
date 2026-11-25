@@ -85,6 +85,7 @@ from ecommerce_ai.agents.assistant.ports import (
     ProposalMessage,
 )
 from ecommerce_ai.agents.guardrails.events import GuardEvent, GuardrailEventStore
+from ecommerce_ai.agents.guardrails.normalizer import normalize
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.errors import error_fields
 
@@ -459,6 +460,7 @@ class ChatRun:
             finish_reason=None if outcome.finish_reason is None else outcome.finish_reason.value,
             error_code=None if outcome.error is None else outcome.error.value,
             prompt_version=self._graph.prompt_version,
+            rules_version=self._graph.guardrails.input_guard.version,
             model_id=outcome.model_id,
             # Rule names only, never the text that broke them.
             violations=list(outcome.violations),
@@ -515,9 +517,11 @@ class ChatService:
     ) -> ChatRun | None:
         """Store the user message and return its run; ``None`` when the conversation is unknown.
 
-        ``content`` is already trimmed and within limits (validated by the API). Raises
+        ``content`` is already trimmed, within limits and not empty once normalised (validated by
+        the API); it is stored and answered in its normalised form (FR-001). Raises
         ``ConversationFull``, ``StreamActive`` or ``ApprovalPending`` (nothing stored).
         """
+        content = normalize(content).strip()
         count = await self._store.count_messages(user_id, conversation_id)
         if count is None:
             return None

@@ -520,6 +520,8 @@ async def test_should_start_a_resumed_run_without_the_paused_runs_guard_events()
 
 
 class _BlockEverything:
+    version = "probe"
+
     def check(self, text: str) -> GuardEvent | None:
         return PROBE
 

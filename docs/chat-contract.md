@@ -160,6 +160,13 @@ for an approval, US-06), `blocked` (an input guard refused the message; no model
 `client_disconnected` (stored only, when the client went away mid-answer; never sent in
 `message.end`).
 
+Every message is normalised before any check (Unicode NFKC, zero-width, bidi and control
+characters removed except newline and tab); the 2000-character limit applies to the raw text, and
+the normalised text is what is stored and answered. A message an input rule blocks gets one
+`token` with the fixed refusal "I can't help with that request. I can help with your orders,
+products and notifications." and `finishReason` `blocked` (`modelId` `null`, no tokens spent); it
+is stored, but neither it nor the refusal is shown to the model in later turns.
+
 ## Errors before the stream
 
 Every error answered before the stream opens has the body `{"code", "message"}` with a fixed
@@ -176,7 +183,7 @@ message:
 | 409 | `STREAM_ACTIVE` | An answer is already in progress in this conversation. | a second post while one streams |
 | 409 | `CONVERSATION_FULL` | This conversation is full. Please start a new one. | the conversation holds 100 messages (`CHAT_MAX_MESSAGES`) |
 | 413 | `PAYLOAD_TOO_LARGE` | The request is too large. | a `/chat` request body over 16 KB |
-| 422 | `VALIDATION_FAILED` | The request is not valid. | bad body, `limit` or `offset` |
+| 422 | `VALIDATION_FAILED` | The request is not valid. | bad body, `limit` or `offset`; a message empty once normalised |
 | 429 | `RATE_LIMITED` | You are sending messages too fast. Please wait a moment. | more than 10 posts in 60 s per user; `Retry-After: <seconds>` |
 | 503 | `UNAVAILABLE` | The assistant is unavailable right now. Please try again later. | the database is down |
 | 409 | `APPROVAL_PENDING` | Please approve or reject the pending action first. | a message posted while an approval is pending |

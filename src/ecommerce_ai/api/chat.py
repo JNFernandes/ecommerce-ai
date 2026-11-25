@@ -46,6 +46,7 @@ from ecommerce_ai.agents.assistant.model import (
 )
 from ecommerce_ai.agents.assistant.ports import Approval, ConversationStore
 from ecommerce_ai.agents.assistant.service import ChatService
+from ecommerce_ai.agents.guardrails.normalizer import normalize
 from ecommerce_ai.api.route_policy import AUTHENTICATED
 from ecommerce_ai.api.sse import MEDIA_TYPE, sse_response
 from ecommerce_ai.infrastructure.caller import RequestCaller
@@ -64,17 +65,24 @@ class PostMessageRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     content: str = Field(
-        description="The customer's message, trimmed: 1 to 2000 characters.",
+        description=(
+            "The customer's message, trimmed: 1 to 2000 characters, and not empty once normalised "
+            "(Unicode NFKC, without zero-width, bidi and control characters)."
+        ),
         examples=["Where is my last order?"],
     )
 
     @field_validator("content", mode="after")
     @classmethod
     def _trimmed(cls, value: str) -> str:
+        # The length is checked on the raw text, so normalising never admits a longer message.
         text = value.strip()
         if not 1 <= len(text) <= CONTENT_MAX_CHARS:
             raise ValueError("content must hold 1 to 2000 characters")
-        return text
+        normalized = normalize(text).strip()
+        if not normalized:
+            raise ValueError("content is empty once normalised")
+        return normalized
 
 
 class DecisionRequest(BaseModel):
