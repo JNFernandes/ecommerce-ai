@@ -24,10 +24,10 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
 
 ## Phase 1: Setup
 
-- [ ] T001 [P] Add `APPROVAL_TTL_SECONDS` (600, > 0) and `CANCEL_PROPOSALS_PER_HOUR` (5, ≥ 1) to
+- [X] T001 [P] Add `APPROVAL_TTL_SECONDS` (600, > 0) and `CANCEL_PROPOSALS_PER_HOUR` (5, ≥ 1) to
   `src/ecommerce_ai/infrastructure/settings.py`; tests in `tests/unit/test_settings.py`; clear
   both in `tests/conftest.py`; document in `.env.example`
-- [ ] T002 [P] Add `RestClient.post_json(segments, body=None)` to
+- [X] T002 [P] Add `RestClient.post_json(segments, body=None)` to
   `src/ecommerce_ai/infrastructure/rest_client.py` (same error mapping, caller token, size limit as
   `get_json`); tests in `tests/unit/test_rest_client.py`
 

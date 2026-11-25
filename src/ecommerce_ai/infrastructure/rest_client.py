@@ -1,13 +1,13 @@
-"""REST ``GET`` client for one platform API, on the shared ``UpstreamTransport``.
+"""REST client for one platform API, on the shared ``UpstreamTransport``.
 
-``RestClient.get_json`` joins fixed path segments to the API's base URL (each segment
-percent-encoded, so a value can never add a path level or a query), sends the request with the
-caller's token through the transport and returns the decoded JSON object. A body that is not
-JSON or not an object is an ``UpstreamError``: a tool never sees partial or foreign data.
+``RestClient.get_json`` and ``post_json`` join fixed path segments to the API's base URL (each
+segment percent-encoded, so a value can never add a path level or a query), send the request
+with the caller's token through the transport and return the decoded JSON object. A body that is
+not JSON or not an object is an ``UpstreamError``: a tool never sees partial or foreign data.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from urllib.parse import quote
 
 from ecommerce_ai.infrastructure.upstream import QueryParams, UpstreamError, UpstreamTransport
@@ -38,10 +38,32 @@ class RestClient:
 
         Raises ``Unauthenticated``, ``Forbidden``, ``NotFound`` or ``UpstreamError``.
         """
-        service = self._transport.service
         body = await self._transport.request(
             "GET", self.url_for(segments), params=params, timeout=timeout, max_bytes=max_bytes
         )
+        return self._decode(body)
+
+    async def post_json(
+        self,
+        segments: Sequence[str],
+        body: Mapping[str, object] | None = None,
+        *,
+        timeout: float,
+        max_bytes: int,
+    ) -> dict[str, object]:
+        """``POST`` ``body`` (JSON, or nothing) to ``segments`` and return the JSON object answered.
+
+        Same caller token, error mapping and size limit as ``get_json``. Raises
+        ``Unauthenticated``, ``Forbidden``, ``NotFound`` or ``UpstreamError``.
+        """
+        answer = await self._transport.request(
+            "POST", self.url_for(segments), json=body, timeout=timeout, max_bytes=max_bytes
+        )
+        return self._decode(answer)
+
+    def _decode(self, body: bytes) -> dict[str, object]:
+        """Return ``body`` as a JSON object, or raise a non-retryable ``UpstreamError``."""
+        service = self._transport.service
         try:
             decoded: object = json.loads(body)
         except ValueError as error:
