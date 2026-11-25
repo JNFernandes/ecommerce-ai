@@ -91,7 +91,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   `action`, `severity`, `user_hash`), `guards` counts per stage/action on `chat_run`; an append
   failure logs `error_fields` and never changes the response; tests in
   `tests/unit/test_chat_logging.py` and `tests/unit/test_chat_graph.py`
-- [ ] T010 Add the `Guardrails` frozen dataclass to `src/ecommerce_ai/agents/guardrails/__init__.py`
+- [X] T010 Add the `Guardrails` frozen dataclass to `src/ecommerce_ai/agents/guardrails/__init__.py`
   (fields `input_guard`, `tool_result_guard`, `output_checks`, `tool_guard`, `canary_factory`,
   each a `Protocol` with a pass-through `NOOP` implementation, `Guardrails.noop()`; research §1);
   `ChatGraph`, `ChatService` and `create_app` in `src/ecommerce_ai/main.py` take it (default

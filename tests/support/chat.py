@@ -25,6 +25,7 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolRunner,
     ToolSpec,
 )
+from ecommerce_ai.agents.guardrails import Guardrails
 from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
@@ -190,13 +191,18 @@ def chat_graph(
     model: ChatModel | None,
     tools: ToolRunner | None = None,
     checkpointer: Checkpointer | None = None,
+    guardrails: Guardrails | None = None,
 ) -> ChatGraph:
-    """The chat graph with the real prompt, fake tools and an in-memory saver by default."""
+    """The chat graph with the real prompt, fake tools and an in-memory saver by default.
+
+    ``guardrails`` default to ``Guardrails.noop()``.
+    """
     return ChatGraph(
         model=model,
         tools=tools or FakeToolRunner(),
         prompt=load_assistant_prompt(),
         checkpointer=checkpointer or InMemorySaver(),
+        guardrails=guardrails,
     )
 
 
@@ -210,6 +216,7 @@ def chat_app(
     clock: Clock | None = None,
     settings: Settings | None = None,
     guard_store: GuardrailEventStore | None = None,
+    guardrails: Guardrails | None = None,
 ) -> FastAPI:
     """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
 
@@ -228,4 +235,5 @@ def chat_app(
         approval_store=approvals or InMemoryApprovalStore(conversations),
         clock=clock,
         guard_store=guard_store or InMemoryGuardrailEventStore(),
+        guardrails=guardrails,
     )

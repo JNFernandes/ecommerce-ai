@@ -38,6 +38,7 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
+from ecommerce_ai.agents.guardrails import Guardrails
 from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
@@ -251,10 +252,11 @@ def create_app(
     approval_store: ApprovalStore | None = None,
     clock: Clock | None = None,
     guard_store: GuardrailEventStore | None = None,
+    guardrails: Guardrails | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
     checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
-    clock and the guard audit store replace the real ones in tests.
+    clock, the guard audit store and the chat's guardrails replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
@@ -347,6 +349,7 @@ def create_app(
         max_retries=settings.llm_max_retries,
         clock=chat_clock,
         approval_ttl_seconds=settings.approval_ttl_seconds,
+        guardrails=guardrails or Guardrails.noop(),  # the US-07 stories fill the bundle
     )
     chat_service = ChatService(
         store,

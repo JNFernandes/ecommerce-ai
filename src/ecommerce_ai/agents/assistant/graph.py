@@ -115,6 +115,7 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.segmenter import Segmenter
 from ecommerce_ai.agents.assistant.summaries import summarize
+from ecommerce_ai.agents.guardrails import Guardrails
 from ecommerce_ai.agents.guardrails.events import GuardEvent
 from ecommerce_ai.agents.ports import Clock, ModelError, ModelUnavailable, SystemClock
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
@@ -431,11 +432,14 @@ class ChatGraph:
         sleep: Sleep = asyncio.sleep,
         clock: Clock | None = None,
         approval_ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
+        guardrails: Guardrails | None = None,
     ) -> None:
         """Answer with ``model`` (``None``: every run ends ``LLM_UNAVAILABLE``) and ``tools``.
 
         ``clock`` stamps proposals, which stay approvable for ``approval_ttl_seconds``.
+        ``guardrails`` are the US-07 guards (``None``: ``Guardrails.noop()``).
         """
+        self.guardrails = guardrails or Guardrails.noop()
         self._model = model
         self._max_tool_rounds = max_tool_rounds
         self._max_retries = max_retries
