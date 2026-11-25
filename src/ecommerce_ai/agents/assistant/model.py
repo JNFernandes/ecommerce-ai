@@ -28,6 +28,8 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from ecommerce_ai.agents.guardrails.events import GuardEvent
+
 
 class FinishReason(StrEnum):
     """How an answer ended; ``client_disconnected`` is stored, never sent."""
@@ -431,6 +433,8 @@ class RunOutcome(_Frozen):
     execution: ApprovalExecution | None = None
     violations: tuple[str, ...] = ()
     """Names of the gatekeeper rules the answer broke, once each, in order."""
+    guard_events: tuple[GuardEvent, ...] = ()
+    """What the guards did during the run (US-07), in order; content-free."""
 
     @model_validator(mode="after")
     def _one_ending(self) -> Self:

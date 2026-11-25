@@ -38,6 +38,7 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
+from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -61,6 +62,7 @@ from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSa
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
+from ecommerce_ai.infrastructure.db.guardrail_event_repository import GuardrailEventRepository
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
@@ -248,10 +250,11 @@ def create_app(
     token_budget: TokenBudget | None = None,
     approval_store: ApprovalStore | None = None,
     clock: Clock | None = None,
+    guard_store: GuardrailEventStore | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
-    checkpointer, the chat's tool runner, the token budget, the approval store and the chat's
-    clock replace the real ones in tests.
+    checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
+    clock and the guard audit store replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
@@ -351,6 +354,7 @@ def create_app(
         chat_clock,
         approvals=approval_store or ApprovalRepository(engine),
         proposals_per_hour=settings.cancel_proposals_per_hour,
+        guard_store=guard_store or GuardrailEventRepository(engine),
         budget=budget,
         limits=ChatLimits(
             max_messages=settings.chat_max_messages,

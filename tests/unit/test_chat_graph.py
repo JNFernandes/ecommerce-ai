@@ -14,12 +14,20 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
     SAFE_MESSAGE,
     TOOL_LIMIT_MESSAGE,
 )
-from ecommerce_ai.agents.assistant.graph import ChatGraph
+from ecommerce_ai.agents.assistant.graph import (
+    ChatGraph,
+    ChatState,
+    StateUpdate,
+    load_assistant_prompt,
+    record_guard_events,
+)
 from ecommerce_ai.agents.assistant.model import (
     AnswerReplaced,
     AssistantText,
     ChatErrorCode,
+    Decision,
     FinishReason,
+    RunOutcome,
     ThinkingItem,
     Token,
     ToolCall,
@@ -32,7 +40,14 @@ from ecommerce_ai.agents.assistant.model import (
 )
 from ecommerce_ai.agents.assistant.ports import ModelUnavailable, TextDelta, ToolUseRequest
 from ecommerce_ai.agents.assistant.tool_results import tool_result_text
+from ecommerce_ai.agents.guardrails.events import (
+    GuardAction,
+    GuardEvent,
+    GuardSeverity,
+    GuardStage,
+)
 from ecommerce_ai.agents.prompts.loader import load_system_prompt
+from tests.support.approvals import ApprovalHarness, cancel_turn
 from tests.support.chat import (
     TOOL_NAMES,
     FakeToolError,
@@ -409,3 +424,81 @@ async def test_should_honour_a_configured_round_cap_and_keep_the_transcript_repl
     results = {item.call_id for item in replay if isinstance(item, ToolResultItem)}
     assert calls == results == {"toolu_1"}
     assert replay[-2:] == (AssistantText(text=TOOL_LIMIT_MESSAGE), UserTurn(text="Hi"))
+
+
+# Guard events (US-07) -------------------------------------------------------------------------
+
+PROBE = GuardEvent(
+    stage=GuardStage.INPUT,
+    rule="probe",
+    action=GuardAction.SANITIZED,
+    severity=GuardSeverity.LOW,
+)
+
+
+class _ProbingGraph(ChatGraph):
+    """A chat graph whose input node records ``PROBE`` on every message."""
+
+    async def _guard_input(self, state: ChatState) -> StateUpdate:
+        await super()._guard_input(state)
+        return record_guard_events(state, [PROBE])
+
+
+def _probing_graph(model: ScriptedChatModel, tools: FakeToolRunner | None = None) -> ChatGraph:
+    return _ProbingGraph(
+        model=model,
+        tools=tools or FakeToolRunner(),
+        prompt=load_assistant_prompt(),
+        checkpointer=InMemorySaver(),
+    )
+
+
+async def test_should_end_with_no_guard_events_when_no_guard_acted() -> None:
+    graph = chat_graph(ScriptedChatModel([text_turn("Hello.")]))
+
+    events, outcome = await collect_run(graph, _conversation(), "Hi")
+
+    assert outcome.guard_events == ()
+    assert not any(isinstance(event, GuardEvent) for event in events)
+
+
+async def test_should_publish_and_keep_a_guard_event_when_a_node_records_it() -> None:
+    graph = _probing_graph(ScriptedChatModel([text_turn("Hello.")]))
+
+    events, outcome = await collect_run(graph, _conversation(), "Hi")
+
+    assert [event for event in events if isinstance(event, GuardEvent)] == [PROBE]
+    assert outcome.guard_events == (PROBE,)
+    assert outcome.finish_reason is FinishReason.COMPLETED
+
+
+async def test_should_start_each_run_without_the_previous_guard_events() -> None:
+    graph = _probing_graph(ScriptedChatModel([text_turn("One."), text_turn("Two.")]))
+    conversation_id = _conversation()
+
+    await collect_run(graph, conversation_id, "Hi")
+    _, second = await collect_run(graph, conversation_id, "Again")
+
+    assert second.guard_events == (PROBE,)
+
+
+async def test_should_start_a_resumed_run_without_the_paused_runs_guard_events() -> None:
+    harness = ApprovalHarness()
+    model = ScriptedChatModel([cancel_turn(), text_turn("Your order is cancelled.")])
+    graph = _probing_graph(model, harness.tools)
+    conversation_id = _conversation()
+    _, paused = await collect_run(graph, conversation_id, "Cancel my order")
+    assert paused.proposal is not None
+    assert paused.guard_events == (PROBE,)
+
+    resumed = [
+        item
+        async for item in graph.resume(
+            conversation_id, paused.proposal.approval_id, Decision.APPROVE
+        )
+    ]
+
+    outcome = resumed[-1]
+    assert isinstance(outcome, RunOutcome)
+    assert outcome.guard_events == ()
+    assert not any(isinstance(item, GuardEvent) for item in resumed)

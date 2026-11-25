@@ -25,6 +25,7 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolRunner,
     ToolSpec,
 )
+from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
 from ecommerce_ai.infrastructure.settings import Settings
@@ -32,6 +33,7 @@ from ecommerce_ai.main import create_app
 from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
+    InMemoryGuardrailEventStore,
     InMemoryTokenBudget,
 )
 
@@ -207,10 +209,12 @@ def chat_app(
     approvals: ApprovalStore | None = None,
     clock: Clock | None = None,
     settings: Settings | None = None,
+    guard_store: GuardrailEventStore | None = None,
 ) -> FastAPI:
     """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
 
-    Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used.
+    Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used; without
+    ``guard_store`` a fresh ``InMemoryGuardrailEventStore``.
     """
     conversations = store or InMemoryConversationStore()
     return create_app(
@@ -223,4 +227,5 @@ def chat_app(
         token_budget=budget or InMemoryTokenBudget(UNLIMITED_BUDGET),
         approval_store=approvals or InMemoryApprovalStore(conversations),
         clock=clock,
+        guard_store=guard_store or InMemoryGuardrailEventStore(),
     )

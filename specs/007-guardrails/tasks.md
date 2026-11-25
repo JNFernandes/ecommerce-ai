@@ -84,7 +84,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   `tests/support/llm.py` (a `ChatModel` that obeys a `compromise` spec: calls the named tool with
   the given arguments, repeats injected tool text, extracts `cnry-[0-9a-f]{24}` from the system
   prompt it receives and echoes it); tests in `tests/unit/test_chat_ports.py`
-- [ ] T009 Add `FinishReason.BLOCKED`/`TOOL_LOOP` in
+- [X] T009 Add `FinishReason.BLOCKED`/`TOOL_LOOP` in
   `src/ecommerce_ai/agents/assistant/model.py`, a `guard_events` list on the chat graph state in
   `graph.py`, and in `service.py` append the run's events through `GuardrailEventStore` after the
   run (also on the disconnect path), one `guardrail_event` log line per event (`rule`, `stage`,

@@ -115,14 +115,25 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.segmenter import Segmenter
 from ecommerce_ai.agents.assistant.summaries import summarize
+from ecommerce_ai.agents.guardrails.events import GuardEvent
 from ecommerce_ai.agents.ports import Clock, ModelError, ModelUnavailable, SystemClock
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
 from ecommerce_ai.infrastructure.retry import call_with_retry
 
 type GraphEvent = (
-    Token | ToolCall | ToolResult | ApprovalResolved | ApprovalExecution | AnswerReplaced
+    Token
+    | ToolCall
+    | ToolResult
+    | ApprovalResolved
+    | ApprovalExecution
+    | AnswerReplaced
+    | GuardEvent
 )
-"""An event a node publishes while the graph runs (``ApprovalExecution`` is never streamed)."""
+"""An event a node publishes while the graph runs.
+
+``ApprovalExecution`` and ``GuardEvent`` are never streamed to the client: the service records
+them (a guard event as soon as it comes, so it is audited even when the client goes away).
+"""
 
 _GRAPH_EVENTS: Final = (
     Token,
@@ -131,6 +142,7 @@ _GRAPH_EVENTS: Final = (
     ApprovalResolved,
     ApprovalExecution,
     AnswerReplaced,
+    GuardEvent,
 )
 
 type StateUpdate = dict[str, object]
@@ -282,6 +294,21 @@ class ChatState(TypedDict):
     """The ``ApprovalExecution`` of the decision this run resumed from."""
     violations: list[str]
     """Names of the gatekeeper rules this run's answer broke (never its text)."""
+    guard_events: list[dict[str, JsonValue]]
+    """The ``GuardEvent``s of this run (US-07), content-free."""
+
+
+def record_guard_events(state: ChatState, events: Sequence[GuardEvent]) -> StateUpdate:
+    """Publish ``events`` to the service and return the state update that keeps them.
+
+    Call from a node; merge the result into the node's own update.
+    """
+    writer = get_stream_writer()
+    for event in events:
+        writer(event)
+    kept = list(state.get("guard_events") or [])
+    kept.extend(event.model_dump(mode="json") for event in events)
+    return {"guard_events": kept}
 
 
 def _initial(text: str) -> ChatState:
@@ -297,6 +324,7 @@ def _initial(text: str) -> ChatState:
         "pending_approval": None,
         "execution": None,
         "violations": [],
+        "guard_events": [],
     }
 
 
@@ -479,7 +507,10 @@ class ChatGraph:
             or PendingApproval.model_validate(pending).approval_id != approval_id
         ):
             raise ApprovalNotPaused(str(approval_id))
-        command: Command[str] = Command(resume=_resume_value(approval_id, decision))
+        # The paused run's guard events were recorded with it; this run starts with none.
+        command: Command[str] = Command(
+            resume=_resume_value(approval_id, decision), update={"guard_events": []}
+        )
         context = RunContext(allowance=allowance, quota=quota)
         async for item in self._stream(command, conversation_id, context):
             yield item
@@ -585,6 +616,9 @@ class ChatGraph:
             "tools": tuple(ToolStat.model_validate(stat) for stat in state["tool_stats"]),
             "execution": execution,
             "violations": tuple(dict.fromkeys(state.get("violations") or [])),
+            "guard_events": tuple(
+                GuardEvent.model_validate(raw) for raw in state.get("guard_events") or []
+            ),
         }
         pending = state.get("pending_approval")
         if pending is not None and state["outcome"] is None:

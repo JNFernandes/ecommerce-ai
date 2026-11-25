@@ -29,11 +29,16 @@ When the run stops early (the client went away, or a delete cancelled it), a shi
 the graph's transcript (US6). On every ending the allowance is settled and the conversation's
 slot released. One ``chat_run`` log line per run carries counts, timings, outcomes and a hash of
 the user, never content, arguments, results or the token (FR-026).
+
+Guard events (US-07, research §10): the graph publishes each ``GuardEvent`` as the guard acts;
+the run collects them, and the shielded close logs one ``guardrail_event`` line per event and
+appends them to the ``GuardrailEventStore``, also after a disconnect. ``chat_run`` carries their
+counts per stage and action (``guards``). A failing append is logged and changes nothing else.
 """
 
 import asyncio
 import hashlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -79,7 +84,9 @@ from ecommerce_ai.agents.assistant.ports import (
     ConversationStore,
     ProposalMessage,
 )
+from ecommerce_ai.agents.guardrails.events import GuardEvent, GuardrailEventStore
 from ecommerce_ai.agents.ports import Clock, TokenBudget
+from ecommerce_ai.infrastructure.errors import error_fields
 
 USER_HASH_CHARS: Final = 16
 
@@ -104,6 +111,15 @@ def _log_approval(
         outcome=None if outcome is None else outcome.value,
         user_hash=user_hash(user_id),
     )
+
+
+def _guard_counts(events: Iterable[GuardEvent]) -> dict[str, dict[str, int]]:
+    """How often each guard action happened per stage, e.g. ``{"input": {"blocked": 1}}``."""
+    counts: dict[str, dict[str, int]] = {}
+    for event in events:
+        per_stage = counts.setdefault(event.stage.value, {})
+        per_stage[event.action.value] = per_stage.get(event.action.value, 0) + 1
+    return counts
 
 
 def _internal(outcome: RunOutcome | None) -> RunOutcome:
@@ -158,8 +174,12 @@ class ChatRun:
         request_id: str | None = None,
         decided: _Decided | None = None,
         quota: ProposalQuota | None = None,
+        guard_store: GuardrailEventStore | None = None,
     ) -> None:
-        """Answer ``content``, or resume from ``decided``; the caller has taken the slot."""
+        """Answer ``content``, or resume from ``decided``; the caller has taken the slot.
+
+        The run's guard events go to ``guard_store`` (``None``: logged only).
+        """
         self.user_id = user_id
         self.conversation_id = conversation_id
         self.message_id = uuid4()
@@ -173,6 +193,8 @@ class ChatRun:
         self._request_id = request_id
         self._decided = decided
         self._quota = quota
+        self._guard_store = guard_store
+        self._guard_events: list[GuardEvent] = []
         self._execution: ApprovalExecution | None = None
         self._started = False
 
@@ -194,6 +216,9 @@ class ChatRun:
                         continue
                     if isinstance(item, ApprovalExecution):
                         await self._executed(item)
+                        continue
+                    if isinstance(item, GuardEvent):
+                        self._guard_events.append(item)
                         continue
                     if isinstance(item, AnswerReplaced):
                         sent = [item.text]  # what the customer now sees
@@ -289,6 +314,8 @@ class ChatRun:
     async def _drain_until_executed(self, queue: asyncio.Queue[_Queued]) -> None:
         while True:
             item = await queue.get()
+            if isinstance(item, GuardEvent):
+                self._guard_events.append(item)
             if isinstance(item, ApprovalExecution):
                 await self._executed(item)
                 return
@@ -322,8 +349,33 @@ class ChatRun:
                     await self._allowance.settle()
                 except Exception as error:
                     _logger.error("chat_settle_failed", error_type=type(error).__name__)
+            await self._audit()
         finally:
             self._streams.release(self.conversation_id)
+
+    async def _audit(self) -> None:
+        """Log and store the run's guard events (FR-019, FR-021); a failure changes nothing else.
+
+        The guards have already acted: an audit that cannot be written is logged, never undone.
+        """
+        events = tuple(self._guard_events)
+        for event in events:
+            _logger.info(
+                "guardrail_event",
+                rule=event.rule,
+                stage=event.stage.value,
+                action=event.action.value,
+                severity=event.severity.value,
+                user_hash=user_hash(self.user_id),
+            )
+        if not events or self._guard_store is None:
+            return
+        try:
+            await self._guard_store.append(
+                self.user_id, self.conversation_id, self._request_id, events
+            )
+        except Exception as error:
+            _logger.error("guardrail_audit_failed", **error_fields(error))
 
     async def finish_disconnected(self, sent: str, started: float) -> None:
         """Keep the text already sent as a ``client_disconnected`` answer (US6)."""
@@ -410,6 +462,7 @@ class ChatRun:
             model_id=outcome.model_id,
             # Rule names only, never the text that broke them.
             violations=list(outcome.violations),
+            guards=_guard_counts(self._guard_events),
         )
 
 
@@ -427,13 +480,15 @@ class ChatService:
         streams: ActiveStreams | None = None,
         approvals: ApprovalStore | None = None,
         proposals_per_hour: int = DEFAULT_PROPOSALS_PER_HOUR,
+        guard_store: GuardrailEventStore | None = None,
     ) -> None:
         """Store in ``store``, answer with ``graph``, stamp with ``clock``.
 
         ``budget`` is the daily token budget (``None``: no token limit), ``limits`` the
         per-conversation and per-message limits, ``streams`` the answers in progress,
         ``approvals`` the proposed actions (``None``: a proposal cannot be stored), of which one
-        user gets at most ``proposals_per_hour`` (FR-015).
+        user gets at most ``proposals_per_hour`` (FR-015). ``guard_store`` keeps the guard audit
+        (``None``: guard events are only logged).
         """
         self._store = store
         self._graph = graph
@@ -443,6 +498,7 @@ class ChatService:
         self.streams = streams or ActiveStreams()
         self._approvals = approvals
         self._proposals_per_hour = proposals_per_hour
+        self._guard_store = guard_store
 
     def _quota(self, user_id: str) -> ProposalQuota | None:
         if self._approvals is None:
@@ -489,6 +545,7 @@ class ChatService:
             approvals=self._approvals,
             request_id=request_id,
             quota=self._quota(user_id),
+            guard_store=self._guard_store,
         )
 
     async def decide(
@@ -534,6 +591,7 @@ class ChatService:
             request_id=request_id,
             decided=_Decided(decided, decision),
             quota=self._quota(user_id),
+            guard_store=self._guard_store,
         )
 
     async def pending_approval(self, user_id: str, conversation_id: UUID) -> Approval | None:
