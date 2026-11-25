@@ -168,10 +168,10 @@ answer replaced, events recorded.
 **Goal**: allowlist, seen-id rule for `cancel_order`, no loops. **Independent test**: script an
 unlisted tool, an unseen id and repeats → refused, no proposal, tool events.
 
-- [ ] T021 [P] [US4] Tests in `tests/unit/test_tool_guard.py`: `not_allowed`, `unseen_argument`
+- [X] T021 [P] [US4] Tests in `tests/unit/test_tool_guard.py`: `not_allowed`, `unseen_argument`
   (id typed by the user counts as seen; other conversations do not), `duplicate_call` (canonical
   JSON args), second duplicate → loop verdict
-- [ ] T022 [US4] Implement `src/ecommerce_ai/agents/guardrails/tool_guard.py`
+- [X] T022 [US4] Implement `src/ecommerce_ai/agents/guardrails/tool_guard.py`
   (`ToolGuard.check(call, allowlist, seen_ids, calls_so_far)`, fixed refusal results)
 - [ ] T023 [US4] Store `tool_allowlist` on create from `registry.exposed(Exposure.CHAT)` and
   return it with the conversation in `src/ecommerce_ai/infrastructure/db/conversation_repository.py`
