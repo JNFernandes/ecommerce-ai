@@ -249,13 +249,13 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: starts without model/Kafka/DB; terminal smoke client.
 **Independent test**: app with no model key and failing probes; smoke client against a fake server.
 
-- [ ] T042 [P] [US7] Tests in `tests/unit/test_main.py`: no model, Kafka or DB Ã¢â€ â€™ `/health` 200,
+- [X] T042 [P] [US7] Tests in `tests/unit/test_main.py`: no model, Kafka or DB Ã¢â€ â€™ `/health` 200,
   `/ready` unchanged rules, chat post Ã¢â€ â€™ `error LLM_UNAVAILABLE`; tests
   `tests/unit/test_chat_smoke.py` for `scripts/chat_smoke.py` over an httpx `MockTransport`
-- [ ] T043 [US7] Implement `scripts/chat_smoke.py` (`TOKEN`, `CHAT_URL` default
+- [X] T043 [US7] Implement `scripts/chat_smoke.py` (`TOKEN`, `CHAT_URL` default
   `http://localhost:8002/chat`, creates a conversation, prints tokens and tool events, stdlib SSE
   parsing; research Ã‚Â§18)
-- [ ] T044 [US7] Add the assistant case to `tests/integration/test_live_llm.py` (`live_llm`
+- [X] T044 [US7] Add the assistant case to `tests/integration/test_live_llm.py` (`live_llm`
   marker, one real streamed answer passes the gatekeeper)
 
 ---

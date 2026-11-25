@@ -6,16 +6,19 @@ import json
 import time
 from collections.abc import Sequence
 from datetime import timedelta
+from uuid import UUID
 
 import httpx
 import pytest
 import respx
 import uvicorn
 from anthropic import AsyncAnthropic
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ecommerce_ai import main
+from ecommerce_ai.agents.assistant.model import MessageRole
 from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.health import DependencyStatus
@@ -41,7 +44,13 @@ from tests.support.kafka import FakeConsumer, FakeProducer
 from tests.support.mcp import serve_app
 from tests.support.polling import wait_until
 from tests.support.probes import FakeProbe
-from tests.support.stores import InMemoryOutboxStore, InMemoryTriageCaseQueue
+from tests.support.sse import events_of, parse_sse
+from tests.support.stores import (
+    InMemoryConversationStore,
+    InMemoryOutboxStore,
+    InMemoryTriageCaseQueue,
+)
+from tests.support.tokens import jwks, make_token
 from tests.support.triage import NOW, make_case
 
 DATABASE_DOWN = FakeProbe("database", critical=True, status=DependencyStatus.DOWN)
@@ -412,3 +421,41 @@ def test_should_serve_the_chat_routes_on_the_database_repository_when_no_store_i
     assert len(built) == 1
     paths = set(app.openapi()["paths"])
     assert {"/chat/conversations", "/chat/conversations/{conversation_id}"} <= paths
+
+
+async def test_should_end_chat_llm_unavailable_without_model_kafka_or_database() -> None:
+    kafka_down = FakeProbe("kafka", critical=False, status=DependencyStatus.DOWN)
+    store = InMemoryConversationStore()
+    app = create_app(
+        probes=[DATABASE_DOWN, kafka_down],
+        conversation_store=store,
+        checkpointer=InMemorySaver(),
+    )
+    headers = {"Authorization": f"Bearer {make_token(sub='user-1')}"}
+    with respx.mock(assert_all_called=False) as router:
+        router.get(Settings.model_fields["identity_jwks_url"].default).respond(json=jwks())
+        router.route(host="localhost").pass_through()
+        async with serve_app(app) as client:
+            health = await client.get("/health")
+            ready = await client.get("/ready")
+            created = await client.post("/chat/conversations", json={}, headers=headers)
+            conversation_id = created.json()["id"]
+            posted = await client.post(
+                f"/chat/conversations/{conversation_id}/messages",
+                json={"content": "Where is my order?"},
+                headers=headers,
+            )
+
+    assert health.status_code == 200
+    assert ready.status_code == 503
+    assert ready.json()["dependencies"] == {"database": "DOWN", "kafka": "DOWN"}
+    assert posted.status_code == 200
+    events = events_of(parse_sse(posted.text))
+    assert [event.event for event in events] == ["message.start", "error"]
+    assert events[-1].data == {
+        "code": "LLM_UNAVAILABLE",
+        "message": "The assistant is unavailable right now. Please try again later.",
+    }
+    stored = await store.get("user-1", UUID(conversation_id))
+    assert stored is not None
+    assert [message.role for message in stored.messages] == [MessageRole.USER]
