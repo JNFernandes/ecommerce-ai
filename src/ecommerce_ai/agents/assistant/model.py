@@ -37,6 +37,8 @@ class FinishReason(StrEnum):
     TOOL_LIMIT = "tool_limit"
     CLIENT_DISCONNECTED = "client_disconnected"
     AWAITING_APPROVAL = "awaiting_approval"
+    BLOCKED = "blocked"
+    TOOL_LOOP = "tool_loop"
 
 
 SENT_FINISH_REASONS: Final = frozenset(
@@ -45,6 +47,8 @@ SENT_FINISH_REASONS: Final = frozenset(
         FinishReason.REPLACED,
         FinishReason.TOOL_LIMIT,
         FinishReason.AWAITING_APPROVAL,
+        FinishReason.BLOCKED,
+        FinishReason.TOOL_LOOP,
     }
 )
 """Finish reasons a ``message.end`` event may carry."""

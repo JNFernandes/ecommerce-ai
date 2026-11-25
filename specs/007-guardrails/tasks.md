@@ -61,7 +61,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   as text); tests in `tests/unit/test_normalizer.py` (zero-width, bidi, BOM, full-width,
   `i.g.n.o.r.e`, leet, base64, hex, invalid base64, newline/tab kept, output never longer than
   the decode limit)
-- [ ] T005 Write hand-written migration
+- [X] T005 Write hand-written migration
   `src/ecommerce_ai/infrastructure/db/migrations/versions/0005_guardrails.py` and Core tables in
   `src/ecommerce_ai/infrastructure/db/tables.py` per data-model.md: `guardrail_events` (enum
   `CHECK`s, index `(user_id, created_at)`, no FK, trigger `guardrail_events_append_only` raising

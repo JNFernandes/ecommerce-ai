@@ -155,8 +155,10 @@ decision stream below:
 ```
 
 `finishReason` values: `completed`, `replaced`, `tool_limit`, `awaiting_approval` (the run paused
-for an approval, US-06), and `client_disconnected` (stored only, when the client went away
-mid-answer; never sent in `message.end`).
+for an approval, US-06), `blocked` (an input guard refused the message; no model call, US-07),
+`tool_loop` (a repeated identical tool call ended the answer with the safe message, US-07), and
+`client_disconnected` (stored only, when the client went away mid-answer; never sent in
+`message.end`).
 
 ## Errors before the stream
 
