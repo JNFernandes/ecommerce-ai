@@ -42,7 +42,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   `chat_actions_append_only`), `ck_chat_messages_finish_reason` + `awaiting_approval`; downgrade
   reverses all (data-model.md); test in `tests/integration/test_migrations.py` (0004 up/down,
   trigger rejects DELETE and UPDATE after outcome)
-- [ ] T004 [P] Add the `ApprovalStore` port and `Approval`/`ApprovalStatus`/`ApprovalOutcome`/
+- [X] T004 [P] Add the `ApprovalStore` port and `Approval`/`ApprovalStatus`/`ApprovalOutcome`/
   `Decision` models (`StrEnum`, frozen Pydantic) to `src/ecommerce_ai/agents/assistant/ports.py`:
   `create_proposal(approval, request_id)` (approval + audit row + assistant message, one
   transaction), `get(user_id, conversation_id, approval_id)`, `pending_for(conversation_id)`,
