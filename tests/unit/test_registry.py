@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 from pydantic import BaseModel
 
+from ecommerce_ai.tools.mutating.policy import ApprovalPolicy, Exposure
 from ecommerce_ai.tools.registry import (
     ALLOWLIST,
     AllowlistEntry,
@@ -96,6 +97,69 @@ def test_should_raise_when_definition_has_a_gap(change: dict[str, object], probl
 def test_should_raise_when_tool_name_is_duplicated() -> None:
     with pytest.raises(ToolRegistryError, match="more than once"):
         ToolRegistry.build([_definition(), _definition()])
+
+
+POLICY = ApprovalPolicy(target_argument="text", ttl_seconds=600, proposals_per_hour=5)
+
+
+def _mutating(**changes: object) -> AnyToolDefinition:
+    fields: dict[str, object] = {
+        "mutating": True,
+        "read_only": False,
+        "approval": POLICY,
+        "exposure": frozenset({Exposure.CHAT}),
+    }
+    return replace(_definition("mutate"), **(fields | changes))  # type: ignore[arg-type]  # fields
+
+
+def test_should_default_a_tool_to_read_only_and_exposed_everywhere() -> None:
+    tool = _definition()
+
+    assert (tool.mutating, tool.approval) == (False, None)
+    assert tool.exposure == frozenset({Exposure.MCP, Exposure.CHAT})
+
+
+def test_should_build_a_mutating_tool_with_a_policy_and_chat_exposure() -> None:
+    registry = ToolRegistry.build([_definition("read"), _mutating()])
+
+    assert [tool.name for tool in registry.exposed(Exposure.MCP)] == ["read"]
+    assert [tool.name for tool in registry.exposed(Exposure.CHAT)] == ["read", "mutate"]
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        pytest.param({"approval": None}, "without an approval policy", id="no-policy"),
+        pytest.param(
+            {"exposure": frozenset({Exposure.MCP, Exposure.CHAT})},
+            "must not be exposed on MCP",
+            id="on-mcp",
+        ),
+        pytest.param({"read_only": True}, "declared read-only", id="read-only"),
+        pytest.param(
+            {"approval": replace(POLICY, target_argument="orderId")},
+            "'orderId' is not an input field",
+            id="unknown-target",
+        ),
+        pytest.param({"approval": replace(POLICY, ttl_seconds=0)}, "TTL", id="zero-ttl"),
+        pytest.param(
+            {"approval": replace(POLICY, proposals_per_hour=0)},
+            "one proposal per hour",
+            id="zero-proposals",
+        ),
+        pytest.param({"exposure": frozenset()}, "exposed nowhere", id="no-exposure"),
+    ],
+)
+def test_should_refuse_a_mutating_tool_when_its_declaration_has_a_gap(
+    change: dict[str, object], problem: str
+) -> None:
+    with pytest.raises(ToolRegistryError, match=problem):
+        ToolRegistry.build([_mutating(**change)])
+
+
+def test_should_refuse_an_approval_policy_on_a_read_only_tool() -> None:
+    with pytest.raises(ToolRegistryError, match="not mutating"):
+        ToolRegistry.build([replace(_definition(), approval=POLICY)])
 
 
 def test_should_report_every_gap_when_several_definitions_are_invalid() -> None:

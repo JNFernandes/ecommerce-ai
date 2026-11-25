@@ -58,7 +58,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   (after T003, T004) covering both tables; every query filters `user_id`; integration tests in
   `tests/integration/test_approval_repository.py` (concurrent decide → one row, partial unique
   index, rate-limit count, audit kept after conversation delete)
-- [ ] T007 [P] Create `src/ecommerce_ai/tools/mutating/__init__.py` + `policy.py` (`Exposure`
+- [X] T007 [P] Create `src/ecommerce_ai/tools/mutating/__init__.py` + `policy.py` (`Exposure`
   `MCP`/`CHAT`, frozen `ApprovalPolicy(target_argument, ttl_seconds, proposals_per_hour)`); extend
   `ToolDefinition` in `src/ecommerce_ai/tools/registry.py` with `mutating` (False), `approval`
   (None), `exposure` (`{MCP, CHAT}`); `ToolRegistry.build` fails on mutating without policy or
