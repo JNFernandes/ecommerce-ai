@@ -245,7 +245,9 @@ _CANCELLATION_CLAIM: Final = re.compile(
     r"|\bcancelamento\s+(?:foi|est[aá])\s+(?:feito|conclu[ií]do|efetuado|confirmado|realizado)",
     re.I,
 )
-_NEGATED: Final = re.compile(r"(?:\bnot|n't|\bnever|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$", re.I)
+_NEGATED: Final = re.compile(
+    r"(?:\bnot|\bcannot|n't|\bnever|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$", re.I
+)
 _SENTENCE: Final = re.compile(r"[^.!?\n]+[.!?]*")
 
 
@@ -265,6 +267,23 @@ def cancellation_claims(text: str) -> Iterator[tuple[str, ...]]:
         )
         if claimed:
             yield tuple(uuids_in(part))
+
+
+_AWAITING_APPROVAL: Final = re.compile(
+    r"\b(?:approve|reject|confirm)\s+(?:or\s+(?:approve|reject)\s+)?(?:the|this|that)\s+"
+    r"(?:request|action|cancell?ation)"
+    r"|\b(?:awaiting|pending|waiting\s+for)\s+(?:your\s+)?(?:approval|confirmation|decision)"
+    r"|\bsent\s+(?:a|the)\s+cancell?ation\s+request"
+    r"|\bplease\s+(?:approve|confirm|reject)\b"
+    r"|\baguard\w*\s+(?:a\s+sua\s+)?(?:aprova|confirma)\w*"
+    r"|\b(?:aprove|aprovar|rejeite|rejeitar|confirme)\s+(?:o|a|este|esta)\s+(?:pedido|a[cç][aã]o|cancelamento)",
+    re.I,
+)
+
+
+def has_awaiting_approval_language(text: str) -> bool:
+    """True when ``text`` asks for, or waits on, an approval (EN/PT), e.g. "please approve"."""
+    return _AWAITING_APPROVAL.search(text) is not None
 
 
 def cancellation_claims_grounded(

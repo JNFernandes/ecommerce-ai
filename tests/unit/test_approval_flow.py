@@ -10,7 +10,6 @@ import respx
 from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.approvals import APPROVAL_OUTCOME_MESSAGES
-from ecommerce_ai.agents.assistant.gatekeeper import SAFE_MESSAGE
 from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
 from ecommerce_ai.agents.assistant.model import (
     ApprovalOutcome,
@@ -210,7 +209,7 @@ async def test_should_answer_the_fixed_confirmation_when_the_model_is_down_after
         "token",
         "message.end",
     ]
-    message = APPROVAL_OUTCOME_MESSAGES[ApprovalOutcome.CANCELLED]
+    message = f"Your order {ORDER_ID} has been cancelled."
     assert data(events, "token") == {"text": message}
     assert data(events, "message.end")["finishReason"] == "completed"
     assert harness.store.messages[UUID(conversation_id)][-1].content == message
@@ -470,7 +469,8 @@ async def test_should_end_failed_and_never_claim_success_when_orders_times_out(
 
     events = sse(response)
     assert data(events, "approval.resolved")["outcome"] == "failed"
-    assert data(events, "token") == {"text": SAFE_MESSAGE}
+    failed = APPROVAL_OUTCOME_MESSAGES[ApprovalOutcome.FAILED]
+    assert data(events, "token") == {"text": failed}
     assert data(events, "message.end")["finishReason"] == "replaced"
     assert harness.action(approval_id).outcome is ApprovalOutcome.FAILED
 
@@ -593,3 +593,92 @@ async def test_should_show_no_pending_approval_once_it_expired(harness: Approval
 
     assert detail.json()["pendingApproval"] is None
     assert harness.action(approval_id).outcome is ApprovalOutcome.EXPIRED
+
+
+# Regressions found in manual testing (fix(US-06)) -----------------------------------------------
+
+STALE_ANSWER = (
+    f"I've sent a cancellation request for order {ORDER_ID}. Please approve or reject the request"
+    " shown in the app to complete it."
+)
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected"),
+    [
+        ("approve", f"Your order {ORDER_ID} has been cancelled."),
+        ("reject", APPROVAL_OUTCOME_MESSAGES[ApprovalOutcome.REJECTED]),
+    ],
+)
+async def test_should_answer_the_outcome_when_the_model_still_asks_for_approval_after_deciding(
+    harness: ApprovalHarness, decision: str, expected: str
+) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        harness.script(text_turn(STALE_ANSWER))
+        response = await harness.decide(client, conversation_id, approval_id, decision)
+
+    events = sse(response)
+    assert data(events, "token") == {"text": expected}
+    assert data(events, "message.end")["finishReason"] == "replaced"
+    assert harness.store.messages[UUID(conversation_id)][-1].content == expected
+    last = harness.model.requests[-1].transcript[-1]
+    assert last.kind == "tool_result"
+    assert last.payload["approval"] == {
+        "resolved": True,
+        "decision": decision,
+        "outcome": "cancelled" if decision == "approve" else "rejected",
+    }
+
+
+async def test_should_keep_a_grounded_answer_about_the_outcome_after_approving(
+    harness: ApprovalHarness,
+) -> None:
+    answer = f"Your order {ORDER_ID} has been cancelled."
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        harness.script(text_turn(answer))
+        response = await harness.decide(client, conversation_id, approval_id)
+
+    assert data(sse(response), "token") == {"text": answer}
+    assert data(sse(response), "message.end")["finishReason"] == "completed"
+
+
+async def test_should_explain_an_already_cancelled_order_with_its_own_id_and_status(
+    harness: ApprovalHarness,
+) -> None:
+    harness.tools.results["get_order"] = envelope(order(status="CANCELLED"))
+    answer = f"Order {ORDER_ID} is already CANCELLED, so it cannot be cancelled again."
+    harness.script(cancel_turn(), text_turn(answer))
+    async with harness.client() as client:
+        conversation_id = await harness.conversation(client)
+        response = await harness.post(client, conversation_id, f"Cancel order {ORDER_ID}")
+
+    events = sse(response)
+    assert data(events, "tool.result")["summary"] == "Order cannot be cancelled"
+    assert data(events, "token") == {"text": answer}
+    assert data(events, "message.end")["finishReason"] == "completed"
+    refusal = harness.model.requests[-1].transcript[-1]
+    assert refusal.kind == "tool_result"
+    assert refusal.payload["reason"] == "order_not_pending"
+    assert refusal.payload["data"] == {"orderId": ORDER_ID, "status": "CANCELLED"}
+    assert harness.approvals.approvals == []
+    assert harness.tools.approved_calls == []
+
+
+async def test_should_explain_a_missing_order_by_the_id_the_customer_wrote(
+    harness: ApprovalHarness,
+) -> None:
+    harness.tools.results["get_order"] = FakeToolError("not_found", "no such order")
+    answer = f"I could not find order {OTHER_ORDER_ID}."
+    harness.script(cancel_turn(OTHER_ORDER_ID), text_turn(answer))
+    async with harness.client() as client:
+        conversation_id = await harness.conversation(client)
+        response = await harness.post(client, conversation_id, f"Cancel order {OTHER_ORDER_ID}")
+
+    events = sse(response)
+    assert data(events, "token") == {"text": answer}
+    refusal = harness.model.requests[-1].transcript[-1]
+    assert refusal.kind == "tool_result"
+    assert refusal.payload["reason"] == "order_not_found"
+    assert "data" not in refusal.payload

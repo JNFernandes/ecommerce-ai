@@ -12,7 +12,11 @@ Evidence (``ChatEvidence.from_transcript``) = the leaf values of the ``data`` of
 tool result in the conversation state, plus the UUIDs the customer wrote. Envelope metadata and
 error bodies are never evidence. A cancellation claim (US-06, FR-012) is allowed only for orders a
 successful ``cancel_order``, ``get_order`` or ``list_my_orders`` result holds as ``CANCELLED`` (a
-claim naming no order: any such order); text inside other data never grounds it.
+claim naming no order: any such order); text inside other data never grounds it. Every
+``cancel_order`` result is built by the service (fixed refusals carry the fresh read's
+``{orderId, status}``), so its ``data`` is evidence even when the call was refused. Once an approval
+was resolved in the run (``approval_resolved``), asking for or waiting on an approval breaks
+``APPROVAL_LANGUAGE``: the answer must be about the outcome.
 """
 
 import re
@@ -28,6 +32,7 @@ from ecommerce_ai.agents.safety.rules import (
     Evidence,
     cancellation_claims_grounded,
     facts_grounded,
+    has_awaiting_approval_language,
     has_contact_or_url,
     has_html,
     internal_name_matches,
@@ -63,6 +68,7 @@ class ChatRule(StrEnum):
     INTERNAL_NAME = "internal_name"
     HTML = "html"
     CANCELLATION_CLAIM = "cancellation_claim"
+    APPROVAL_LANGUAGE = "approval_language"
 
 
 _ALWAYS_INTERNAL: Final = re.compile(
@@ -84,11 +90,13 @@ class ChatEvidence:
         data: Iterable[str],
         customer_ids: Iterable[str],
         cancelled: Iterable[str | None] = (),
+        *,
+        approval_resolved: bool = False,
     ) -> None:
         """Index the tool ``data`` leaves and the UUIDs the customer wrote.
 
         ``cancelled`` holds the id of each order the order tools showed ``CANCELLED`` (``None``
-        when the order had no id).
+        when the order had no id); ``approval_resolved`` marks a run resumed from a decision.
         """
         strings = list(data)
         self.facts = Evidence.from_strings([*strings, *customer_ids])
@@ -97,31 +105,39 @@ class ChatEvidence:
         orders = list(cancelled)
         self.any_cancelled = bool(orders)
         self.cancelled_ids = frozenset(order for order in orders if order is not None)
+        self.approval_resolved = approval_resolved
 
     @classmethod
-    def from_transcript(cls, transcript: Iterable[TranscriptItem]) -> Self:
-        """Evidence of every successful tool result and every customer message of the state."""
+    def from_transcript(
+        cls, transcript: Iterable[TranscriptItem], *, approval_resolved: bool = False
+    ) -> Self:
+        """Evidence of every trusted tool result and every customer message of the state."""
         items = list(transcript)
         return cls(
             (leaf for item in items for leaf in _data_leaves(item)),
             (uuid for item in items if isinstance(item, UserTurn) for uuid in uuids_in(item.text)),
             (order for item in items for order in _cancelled_orders(item)),
+            approval_resolved=approval_resolved,
         )
 
 
 def _data_leaves(item: TranscriptItem) -> Iterator[str]:
-    if isinstance(item, ToolResultItem) and item.ok and "data" in item.payload:
+    if isinstance(item, ToolResultItem) and _trusted(item):
         yield from json_leaves(item.payload["data"])
 
 
-def _cancelled_orders(item: TranscriptItem) -> Iterator[str | None]:
-    """The ids of the orders a successful order tool result shows ``CANCELLED``."""
-    if (
+def _trusted(item: TranscriptItem) -> bool:
+    """A result whose ``data`` is evidence: a successful call, or any ``cancel_order`` result."""
+    return (
         isinstance(item, ToolResultItem)
-        and item.ok
-        and item.name in _ORDER_TOOLS
+        and (item.ok or item.name == CANCEL_ACTION)
         and "data" in item.payload
-    ):
+    )
+
+
+def _cancelled_orders(item: TranscriptItem) -> Iterator[str | None]:
+    """The ids of the orders a trusted order tool result shows ``CANCELLED``."""
+    if isinstance(item, ToolResultItem) and item.name in _ORDER_TOOLS and _trusted(item):
         yield from _cancelled_in(item.payload["data"])
 
 
@@ -165,6 +181,8 @@ def _broken_rules(text: str, evidence: ChatEvidence) -> Iterator[ChatRule]:
         text, evidence.cancelled_ids, any_cancelled=evidence.any_cancelled
     ):
         yield ChatRule.CANCELLATION_CLAIM
+    if evidence.approval_resolved and has_awaiting_approval_language(text):
+        yield ChatRule.APPROVAL_LANGUAGE
 
 
 def check_segment(text: str, evidence: ChatEvidence) -> tuple[ChatRule, ...]:

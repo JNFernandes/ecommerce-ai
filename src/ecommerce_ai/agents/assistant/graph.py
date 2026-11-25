@@ -55,11 +55,12 @@ from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.approvals import (
     APPROVAL_ACTIONS,
-    APPROVAL_OUTCOME_MESSAGES,
     READ_TOOL,
     TARGET_ARGUMENT,
     Refusal,
+    approval_status,
     outcome_after_reread,
+    outcome_message,
     outcome_of_cancel,
     outcome_payload,
     outcome_summary,
@@ -197,6 +198,7 @@ class _Checked:
     status: str | None = None
     stats: Sequence[dict[str, JsonValue]] = ()
     unauthenticated: bool = False
+    order_id: UUID | None = None
 
     @classmethod
     def refused(
@@ -206,9 +208,16 @@ class _Checked:
         stats: Sequence[dict[str, JsonValue]] = (),
         *,
         unauthenticated: bool = False,
+        order_id: UUID | None = None,
     ) -> "_Checked":
         """A refused call (FR-003, FR-005): no approval."""
-        return cls(refusal=refusal, status=status, stats=stats, unauthenticated=unauthenticated)
+        return cls(
+            refusal=refusal,
+            status=status,
+            stats=stats,
+            unauthenticated=unauthenticated,
+            order_id=order_id,
+        )
 
     def refusal_result(self, call: ToolCallItem) -> tuple[ToolResultItem, str]:
         """The refused call's result for the model and its fixed ``tool.result`` summary."""
@@ -217,7 +226,7 @@ class _Checked:
             call_id=call.call_id,
             name=call.name,
             ok=False,
-            payload=refusal_payload(refusal, self.status),
+            payload=refusal_payload(refusal, self.status, self.order_id),
         )
         return result, refusal_summary(refusal)
 
@@ -334,6 +343,16 @@ def _decision_for(value: object, approval_id: UUID) -> Decision | None:
         return None
     raw = value.get("decision")
     return Decision(raw) if isinstance(raw, str) and raw in Decision else None
+
+
+def _replacement(state: ChatState) -> str:
+    """What replaces an unsafe answer: after a decision, the outcome's fixed text, else the
+    safe message, so a resolved approval is always answered by what actually happened."""
+    raw = state.get("execution")
+    if raw is None:
+        return SAFE_MESSAGE
+    execution = ApprovalExecution.model_validate(raw)
+    return outcome_message(execution.outcome, execution.order_id)
 
 
 def _stat(name: str, outcome: ToolOutcome) -> dict[str, JsonValue]:
@@ -589,7 +608,7 @@ class ChatGraph:
     def _outcome_message(self, state: ChatState, failed: StateUpdate) -> StateUpdate:
         """After a decision the model could not answer: the outcome's fixed text (ADR 0003)."""
         execution = ApprovalExecution.model_validate(state["execution"])
-        message = APPROVAL_OUTCOME_MESSAGES[execution.outcome]
+        message = outcome_message(execution.outcome, execution.order_id)
         get_stream_writer()(Token(text=message))
         usage = Usage.model_validate(failed.get("usage", state["usage"]))
         return self._fixed_ending(state, [message], FinishReason.COMPLETED, usage, None)
@@ -601,7 +620,10 @@ class ChatGraph:
         allowance = runtime.context.allowance
         write = get_stream_writer()
         transcript = tuple(load_transcript(state["transcript"]))
-        evidence = ChatEvidence.from_transcript(transcript)
+        evidence = ChatEvidence.from_transcript(
+            transcript, approval_resolved=state.get("execution") is not None
+        )
+        replacement = _replacement(state)
         request = ChatModelRequest(
             system=self._prompt.system, transcript=transcript, tools=self._tools.tool_specs()
         )
@@ -615,7 +637,7 @@ class ChatGraph:
                 raise _BudgetSpent
             turn = _Turn()
             try:
-                await self._stream_turn(model, request, evidence, write, turn)
+                await self._stream_turn(model, request, evidence, write, turn, replacement)
             except ModelError as error:
                 spent = Usage(input_tokens=error.input_tokens, output_tokens=error.output_tokens)
                 failed = failed + spent
@@ -678,10 +700,11 @@ class ChatGraph:
         evidence: ChatEvidence,
         write: Callable[[GraphEvent], None],
         turn: _Turn,
+        replacement: str = SAFE_MESSAGE,
     ) -> None:
         """Stream one model call into ``turn``, releasing each segment once it is gatekept.
 
-        A violating segment is replaced by the safe message and the model stream stops being
+        A violating segment is replaced by ``replacement`` and the model stream stops being
         read (``turn.replaced``); the remainder is released when the turn ends (FR-016).
         """
         segmenter = Segmenter()
@@ -689,7 +712,7 @@ class ChatGraph:
         def release(segment: str) -> bool:
             """Send ``segment`` if it is safe; else send the safe message and return False."""
             safe = not check_segment(segment, evidence)
-            text = segment if safe else SAFE_MESSAGE
+            text = segment if safe else replacement
             write(Token(text=text))
             turn.sent.append(text)
             return safe
@@ -791,7 +814,11 @@ class ChatGraph:
         read = read_order(outcome)
         if read.refusal is not None:
             return _Checked.refused(
-                read.refusal, read.status, stats, unauthenticated=read.unauthenticated
+                read.refusal,
+                read.status,
+                stats,
+                unauthenticated=read.unauthenticated,
+                order_id=target,
             )
         now = self._clock.now()
         proposal = PendingApproval(
@@ -842,16 +869,25 @@ class ChatGraph:
                 unauthenticated = cancel.upstream_unauthenticated
                 outcome = outcome_of_cancel(cancel)
                 if outcome is ApprovalOutcome.CANCELLED:
-                    result_payload = cancel.payload
+                    # The Orders envelope, with the decision and outcome stated explicitly.
+                    result_payload = cancel.payload | {
+                        "approval": approval_status(decision, outcome)
+                    }
         cancelled = outcome is ApprovalOutcome.CANCELLED
         result = ToolResultItem(
             call_id=pending.call_id,
             name=pending.action,
             ok=cancelled,
-            payload=result_payload if result_payload is not None else outcome_payload(outcome),
+            payload=(
+                result_payload if result_payload is not None else outcome_payload(outcome, decision)
+            ),
         )
         execution = ApprovalExecution(
-            approval_id=pending.approval_id, decision=decision, outcome=outcome, result=result
+            approval_id=pending.approval_id,
+            order_id=pending.order_id,
+            decision=decision,
+            outcome=outcome,
+            result=result,
         )
         write = get_stream_writer()
         write(ApprovalResolved(approval_id=pending.approval_id, decision=decision, outcome=outcome))
@@ -900,10 +936,13 @@ class ChatGraph:
         """Check the whole answer; an unsafe or empty one ends ``replaced`` (FR-015, FR-016)."""
         answer = "".join(state["answer_segments"])
         if answer.strip():
-            evidence = ChatEvidence.from_transcript(load_transcript(state["transcript"]))
+            evidence = ChatEvidence.from_transcript(
+                load_transcript(state["transcript"]),
+                approval_resolved=state.get("execution") is not None,
+            )
             if not check_answer(answer, evidence):
                 return {}
-            message = SAFE_MESSAGE
+            message = _replacement(state)
         else:
             message = NO_ANSWER_MESSAGE
         get_stream_writer()(Token(text=message))

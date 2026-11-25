@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import Checkpoint, CheckpointMetadata, empty_checkpoint
+from pydantic import JsonValue
 from sqlalchemy import Table, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -226,6 +227,10 @@ async def test_should_resume_an_approval_pause_with_a_new_saver_instance(
     assert outcome.finish_reason is FinishReason.COMPLETED
     assert [call.arguments for call in harness.tools.approved_calls] == [{"orderId": ORDER_ID}]
     (request,) = second.requests
+    approval: JsonValue = {"resolved": True, "decision": "approve", "outcome": "cancelled"}
     assert request.transcript[-1] == ToolResultItem(
-        call_id=CANCEL_CALL_ID, name="cancel_order", ok=True, payload=cancelled()
+        call_id=CANCEL_CALL_ID,
+        name="cancel_order",
+        ok=True,
+        payload=cancelled() | {"approval": approval},
     )

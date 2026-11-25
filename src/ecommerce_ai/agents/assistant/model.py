@@ -381,6 +381,7 @@ class ApprovalExecution(_Frozen):
     """What the ``approval`` node did with a decision; never streamed as such."""
 
     approval_id: UUID
+    order_id: UUID
     decision: Decision
     outcome: ApprovalOutcome
     result: ToolResultItem = Field(description="The paused call's result, as the model sees it.")

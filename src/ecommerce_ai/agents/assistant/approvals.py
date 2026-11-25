@@ -21,7 +21,7 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-from ecommerce_ai.agents.assistant.model import ApprovalOutcome, ApprovalSummary
+from ecommerce_ai.agents.assistant.model import ApprovalOutcome, ApprovalSummary, Decision
 from ecommerce_ai.agents.assistant.ports import ToolOutcome
 
 CANCEL_ACTION: Final = "cancel_order"
@@ -189,10 +189,37 @@ def summary_of(read: OrderRead) -> ApprovalSummary:
     return ApprovalSummary(status=read.status, total_amount=read.total_amount)
 
 
-def refusal_payload(refusal: Refusal, status: str | None = None) -> dict[str, JsonValue]:
-    """The ``{error, message}`` result the model gets for a refused ``cancel_order`` call."""
+_REFUSAL_REASONS: Final[Mapping[Refusal, str]] = MappingProxyType(
+    {
+        Refusal.INVALID_ID: "invalid_order_id",
+        Refusal.NOT_FOUND: "order_not_found",
+        Refusal.NOT_PENDING: "order_not_pending",
+        Refusal.ALREADY_PENDING: "approval_pending",
+        Refusal.RATE_LIMITED: "rate_limited",
+        Refusal.UNAVAILABLE: "orders_unavailable",
+    }
+)
+"""The safe, specific reason of each refusal, for the model to explain (never upstream text)."""
+
+
+def refusal_payload(
+    refusal: Refusal, status: str | None = None, order_id: UUID | None = None
+) -> dict[str, JsonValue]:
+    """The ``{error, reason, message}`` result the model gets for a refused ``cancel_order``.
+
+    A refusal because the order is not ``PENDING`` also carries ``data`` ``{orderId, status}``
+    from the fresh read, so the answer may state that status (the gatekeeper treats it as
+    evidence; every ``cancel_order`` result is built here, never from upstream text).
+    """
     message = _REFUSAL_MESSAGES[refusal].format(status=status or "unknown")
-    return {"error": refusal.value, "message": message}
+    payload: dict[str, JsonValue] = {
+        "error": refusal.value,
+        "reason": _REFUSAL_REASONS[refusal],
+        "message": message,
+    }
+    if refusal is Refusal.NOT_PENDING and order_id is not None and status is not None:
+        payload["data"] = {TARGET_ARGUMENT: str(order_id), "status": status}
+    return payload
 
 
 def refusal_summary(refusal: Refusal) -> str:
@@ -218,11 +245,37 @@ def outcome_of_cancel(outcome: ToolOutcome) -> ApprovalOutcome:
     return ApprovalOutcome.FAILED
 
 
-def outcome_payload(outcome: ApprovalOutcome) -> dict[str, JsonValue]:
-    """The fixed result the model gets for an approval that did not cancel."""
+def outcome_payload(
+    outcome: ApprovalOutcome, decision: Decision | None = None
+) -> dict[str, JsonValue]:
+    """The fixed result the model gets for an approval that did not cancel.
+
+    ``approval`` states the customer's decision (``None``: closed without one) and its outcome
+    explicitly, so the answer is about what happened, never a new request for approval.
+    """
     if outcome is ApprovalOutcome.CANCELLED:
         raise ValueError("a cancelled order's result is the Orders envelope")
-    return {"error": outcome.value, "message": _OUTCOME_RESULTS[outcome]}
+    return {
+        "error": outcome.value,
+        "message": _OUTCOME_RESULTS[outcome],
+        "approval": approval_status(decision, outcome),
+    }
+
+
+def approval_status(decision: Decision | None, outcome: ApprovalOutcome) -> dict[str, JsonValue]:
+    """The resolved approval as the model sees it: ``{resolved, decision, outcome}``."""
+    return {
+        "resolved": True,
+        "decision": None if decision is None else decision.value,
+        "outcome": outcome.value,
+    }
+
+
+def outcome_message(outcome: ApprovalOutcome, order_id: UUID) -> str:
+    """The deterministic answer of a resolved approval (model down, or its answer replaced)."""
+    if outcome is ApprovalOutcome.CANCELLED:
+        return f"Your order {order_id} has been cancelled."
+    return APPROVAL_OUTCOME_MESSAGES[outcome]
 
 
 def outcome_summary(outcome: ApprovalOutcome) -> str:

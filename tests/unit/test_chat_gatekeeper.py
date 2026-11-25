@@ -199,3 +199,31 @@ def test_should_pass_a_proposal_and_a_negated_claim_without_a_cancelled_order() 
 
     assert ChatRule.CANCELLATION_CLAIM not in check_answer("I can cancel it for you.", evidence)
     assert ChatRule.CANCELLATION_CLAIM not in check_answer("It was not cancelled.", evidence)
+
+
+def test_should_flag_awaiting_approval_language_only_once_the_approval_is_resolved() -> None:
+    text = "Please approve or reject the request shown in the app to complete it."
+    open_run = _evidence(_result(ORDER))
+    resolved = ChatEvidence.from_transcript([_result(ORDER)], approval_resolved=True)
+
+    assert ChatRule.APPROVAL_LANGUAGE not in check_segment(text, open_run)
+    assert ChatRule.APPROVAL_LANGUAGE in check_segment(text, resolved)
+    assert ChatRule.APPROVAL_LANGUAGE in check_answer("Aguarda a sua aprovação.", resolved)
+    assert ChatRule.APPROVAL_LANGUAGE not in check_answer("Nothing was changed.", resolved)
+
+
+def test_should_take_the_status_of_a_refused_cancel_as_evidence() -> None:
+    refused = ToolResultItem(
+        call_id="toolu_09",
+        name="cancel_order",
+        ok=False,
+        payload={
+            "error": "not_cancellable",
+            "reason": "order_not_pending",
+            "message": "No approval was created.",
+            "data": {"orderId": OTHER_ID, "status": "CANCELLED"},
+        },
+    )
+    text = f"Order {OTHER_ID} is already CANCELLED, so it cannot be cancelled again."
+
+    assert check_answer(text, _evidence(UserTurn(text=f"Cancel {OTHER_ID}"), refused)) == ()
