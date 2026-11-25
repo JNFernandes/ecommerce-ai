@@ -240,9 +240,9 @@ small limits, exceed each → documented 429/409/SSE error with scope and `Retry
 
 ## Phase 9: Polish
 
-- [ ] T037 Update `README.md`, `CLAUDE.md` (guardrails package, settings, tables, prompt v4,
+- [X] T037 Update `README.md`, `CLAUDE.md` (guardrails package, settings, tables, prompt v4,
   red-team tests) and `.env.example`; check the `Dockerfile` needs nothing
-- [ ] T038 Run quickstart.md (automated block; manual steps when the stack is up), full gate,
+- [X] T038 Run quickstart.md (automated block; manual steps when the stack is up), full gate,
   coverage ≥ 80%
 
 ---
