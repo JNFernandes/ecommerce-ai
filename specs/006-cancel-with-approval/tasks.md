@@ -184,14 +184,14 @@ past TTL → 410.
 **Independent test**: CONFIRMED / missing order → no `approval.required`, `tool.result` ok false,
 finishReason `completed`.
 
-- [ ] T026 [P] [US4] Tests in `tests/unit/test_approval_flow.py`: CONFIRMED at proposal, missing
+- [X] T026 [P] [US4] Tests in `tests/unit/test_approval_flow.py`: CONFIRMED at proposal, missing
   or not owned order, malformed id, 6th proposal in an hour (rate limit, survives a new app on the
   same store), CONFIRMED between proposal and approval → `not_cancellable`, Orders 409 →
   `not_cancellable`, Orders timeout → `failed` (answer never claims success), upstream 401 →
   `failed` + terminal `TOOL_FAILED`; no audit row for refusals; client disconnect during the
   approve continuation → exactly one cancel, outcome recorded, next message runs normally;
   decided approval without outcome (simulated crash) → closed as `failed` on next touch
-- [ ] T027 [US4] Hourly limit in the `tools` node via `ApprovalStore.proposals_since` and
+- [X] T027 [US4] Hourly limit in the `tools` node via `ApprovalStore.proposals_since` and
   `CANCEL_PROPOSALS_PER_HOUR`; refusal texts and 401 → `TOOL_FAILED` handling in `graph.py`
   (using T014 mapping)
 

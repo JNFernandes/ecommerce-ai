@@ -346,6 +346,7 @@ def create_app(
         chat_graph,
         chat_clock,
         approvals=approval_store or ApprovalRepository(engine),
+        proposals_per_hour=settings.cancel_proposals_per_hour,
         budget=budget,
         limits=ChatLimits(
             max_messages=settings.chat_max_messages,

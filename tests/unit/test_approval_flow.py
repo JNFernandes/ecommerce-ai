@@ -1,15 +1,26 @@
 """Propose → decide end to end on fakes (US-06 US1, US2): events, storage, the one cancel."""
 
+import asyncio
 from collections import deque
 from collections.abc import Iterator
 from uuid import UUID
 
 import pytest
 import respx
+from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.approvals import APPROVAL_OUTCOME_MESSAGES
-from ecommerce_ai.agents.assistant.model import ApprovalOutcome, Decision, FinishReason
+from ecommerce_ai.agents.assistant.gatekeeper import SAFE_MESSAGE
+from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
+from ecommerce_ai.agents.assistant.model import (
+    ApprovalOutcome,
+    Decision,
+    FinishReason,
+    MessageEnd,
+    MessageStart,
+)
 from ecommerce_ai.agents.assistant.ports import ApprovalStatus
+from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.ports import ModelUnavailable
 from ecommerce_ai.infrastructure.settings import Settings
 from tests.support.approvals import (
@@ -27,7 +38,10 @@ from tests.support.approvals import (
 )
 from tests.support.chat import FakeToolError, envelope
 from tests.support.llm import MODEL_ID, text_turn, tool_turn
+from tests.support.polling import wait_until
+from tests.support.sse import SseEvent
 from tests.support.tokens import jwks
+from tests.support.triage import NOW
 
 JWKS_URL: str = Settings.model_fields["identity_jwks_url"].default
 
@@ -318,3 +332,184 @@ async def test_should_close_as_failed_a_decided_approval_whose_outcome_was_never
     results = [i for i in harness.model.requests[-1].transcript if i.kind == "tool_result"]
     assert results[-1].payload["error"] == "failed"
     assert harness.tools.approved_calls == []
+
+
+# Nothing to approve (US4) -----------------------------------------------------------------------
+
+
+async def _refused(harness: ApprovalHarness, order_id: str = ORDER_ID) -> list[SseEvent]:
+    """Post a message the model answers with ``cancel_order`` on ``order_id``, then text."""
+    harness.script(cancel_turn(order_id), text_turn("I could not do that."))
+    async with harness.client() as client:
+        conversation_id = await harness.conversation(client)
+        response = await harness.post(client, conversation_id)
+    assert response.status_code == 200, response.text
+    return sse(response)
+
+
+def _assert_no_approval(harness: ApprovalHarness, events: list[SseEvent]) -> None:
+    assert "approval.required" not in names(events)
+    assert data(events, "message.end")["finishReason"] == "completed"
+    assert harness.approvals.approvals == []
+    assert harness.approvals.actions == {}
+    assert harness.tools.approved_calls == []
+
+
+@pytest.mark.parametrize(
+    ("result", "summary", "error"),
+    [
+        (envelope(order(status="CONFIRMED")), "Order cannot be cancelled", "not_cancellable"),
+        (FakeToolError("not_found", "no such order"), "Order not found", "not_found"),
+    ],
+    ids=["confirmed", "missing-or-foreign"],
+)
+async def test_should_explain_and_create_no_approval_when_the_order_cannot_be_cancelled(
+    harness: ApprovalHarness, result: dict[str, JsonValue] | FakeToolError, summary: str, error: str
+) -> None:
+    harness.tools.results["get_order"] = result
+    events = await _refused(harness)
+
+    assert data(events, "tool.result") == {
+        "callId": CANCEL_CALL_ID,
+        "name": "cancel_order",
+        "ok": False,
+        "summary": summary,
+    }
+    refusal = harness.model.requests[-1].transcript[-1]
+    assert refusal.kind == "tool_result"
+    assert refusal.payload["error"] == error
+    _assert_no_approval(harness, events)
+
+
+async def test_should_refuse_a_malformed_order_id_without_reading_the_order(
+    harness: ApprovalHarness,
+) -> None:
+    events = await _refused(harness, "order-1")
+
+    assert data(events, "tool.result")["summary"] == "Request refused"
+    assert harness.tools.calls == []
+    _assert_no_approval(harness, events)
+
+
+async def test_should_end_tool_failed_without_approval_when_the_proposal_read_gets_a_401(
+    harness: ApprovalHarness,
+) -> None:
+    harness.tools.results["get_order"] = FakeToolError(
+        "unauthenticated", "session expired", upstream_unauthenticated=True
+    )
+    harness.script(cancel_turn())
+    async with harness.client() as client:
+        conversation_id = await harness.conversation(client)
+        response = await harness.post(client, conversation_id)
+
+    events = sse(response)
+    assert names(events)[-1] == "error"
+    assert data(events, "error")["code"] == "TOOL_FAILED"
+    assert harness.approvals.approvals == []
+    assert harness.tools.approved_calls == []
+
+
+async def test_should_refuse_the_sixth_proposal_in_an_hour_even_after_a_restart(
+    harness: ApprovalHarness,
+) -> None:
+    for _ in range(5):
+        async with harness.client() as client:
+            await harness.propose(client)
+    events = await _refused(harness)  # a new app over the same stores
+
+    assert data(events, "tool.result")["summary"] == "Too many cancellation requests"
+    assert len(harness.approvals.approvals) == 5
+    assert harness.tools.approved_calls == []
+
+    harness.clock.advance(3601)  # the oldest proposals leave the rolling hour
+    async with harness.client() as client:
+        _, _, allowed = await harness.propose(client)
+    assert "approval.required" in names(allowed)
+
+
+async def test_should_end_not_cancellable_when_the_order_changed_before_the_approval(
+    harness: ApprovalHarness,
+) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        harness.tools.results["get_order"] = envelope(order(status="CONFIRMED"))
+        harness.script(text_turn("It could not be cancelled any more."))
+        response = await harness.decide(client, conversation_id, approval_id)
+
+    assert data(sse(response), "approval.resolved")["outcome"] == "not_cancellable"
+    assert harness.tools.approved_calls == []
+    assert harness.action(approval_id).outcome is ApprovalOutcome.NOT_CANCELLABLE
+
+
+async def test_should_end_not_cancellable_when_orders_answers_409(
+    harness: ApprovalHarness,
+) -> None:
+    harness.tools.results["cancel_order"] = FakeToolError("conflict", "not pending")
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        harness.script(text_turn("It could not be cancelled any more."))
+        response = await harness.decide(client, conversation_id, approval_id)
+
+    events = sse(response)
+    assert data(events, "approval.resolved")["outcome"] == "not_cancellable"
+    assert data(events, "tool.result")["ok"] is False
+    assert len(harness.tools.approved_calls) == 1
+    assert harness.action(approval_id).outcome is ApprovalOutcome.NOT_CANCELLABLE
+
+
+async def test_should_end_failed_and_never_claim_success_when_orders_times_out(
+    harness: ApprovalHarness,
+) -> None:
+    harness.tools.results["cancel_order"] = FakeToolError("timeout", "no answer")
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        harness.script(text_turn("Your order was cancelled."))
+        response = await harness.decide(client, conversation_id, approval_id)
+
+    events = sse(response)
+    assert data(events, "approval.resolved")["outcome"] == "failed"
+    assert data(events, "token") == {"text": SAFE_MESSAGE}
+    assert data(events, "message.end")["finishReason"] == "replaced"
+    assert harness.action(approval_id).outcome is ApprovalOutcome.FAILED
+
+
+async def test_should_cancel_once_and_record_it_when_the_client_leaves_during_the_approval(
+    harness: ApprovalHarness,
+) -> None:
+    graph = ChatGraph(
+        model=harness.model,
+        tools=harness.tools,
+        prompt=load_assistant_prompt(),
+        checkpointer=harness.checkpointer,
+        clock=harness.clock,
+    )
+    service = ChatService(harness.store, graph, harness.clock, approvals=harness.approvals)
+    conversation = await harness.store.create(OWNER, None, None, NOW)
+    harness.script(cancel_turn())
+    proposing = await service.start(OWNER, conversation.id, "Cancel my order")
+    assert proposing is not None
+    _ = [event async for event in proposing.events()]
+    (approval,) = harness.approvals.approvals
+
+    harness.tools.gate = asyncio.Event()  # holds the re-read of the approve continuation
+    deciding = await service.decide(OWNER, conversation.id, approval.id, Decision.APPROVE)
+    assert deciding is not None
+    stream = deciding.events()
+    assert isinstance(await anext(stream), MessageStart)
+    step = asyncio.create_task(anext(stream))
+    await wait_until(lambda: len(harness.tools.calls) == 2)
+    step.cancel()  # the client went away while the approval was being carried out
+    harness.tools.gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await step
+
+    assert len(harness.tools.approved_calls) == 1
+    assert harness.approvals.actions[approval.id].outcome is ApprovalOutcome.CANCELLED
+    assert not service.streams.is_active(conversation.id)
+    harness.script(text_turn("You're welcome."))
+    following = await service.start(OWNER, conversation.id, "Thanks")
+    assert following is not None
+    events = [event async for event in following.events()]
+    assert isinstance(events[-1], MessageEnd)
+    assert events[-1].finish_reason is FinishReason.COMPLETED
+    assert len(harness.tools.approved_calls) == 1

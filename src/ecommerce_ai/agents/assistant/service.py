@@ -44,10 +44,12 @@ from ecommerce_ai.agents.assistant.approvals import (
 )
 from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent
 from ecommerce_ai.agents.assistant.limits import (
+    DEFAULT_PROPOSALS_PER_HOUR,
     MESSAGES_PER_EXCHANGE,
     ActiveStreams,
     ChatLimits,
     ConversationFull,
+    ProposalQuota,
     RunAllowance,
 )
 from ecommerce_ai.agents.assistant.model import (
@@ -134,6 +136,7 @@ class ChatRun:
         approvals: ApprovalStore | None = None,
         request_id: str | None = None,
         decided: _Decided | None = None,
+        quota: ProposalQuota | None = None,
     ) -> None:
         """Answer ``content``, or resume from ``decided``; the caller has taken the slot."""
         self.user_id = user_id
@@ -148,6 +151,7 @@ class ChatRun:
         self._approvals = approvals
         self._request_id = request_id
         self._decided = decided
+        self._quota = quota
         self._execution: ApprovalExecution | None = None
         self._started = False
 
@@ -210,12 +214,15 @@ class ChatRun:
 
     def _graph_events(self) -> AsyncGenerator[GraphEvent | RunOutcome]:
         if self._decided is None:
-            return self._graph.run(self.conversation_id, self.content or "", self._allowance)
+            return self._graph.run(
+                self.conversation_id, self.content or "", self._allowance, self._quota
+            )
         resumed = self._graph.resume(
             self.conversation_id,
             self._decided.approval.id,
             self._decided.decision,
             self._allowance,
+            self._quota,
         )
         return self._until_executed(resumed)
 
@@ -388,12 +395,14 @@ class ChatService:
         limits: ChatLimits | None = None,
         streams: ActiveStreams | None = None,
         approvals: ApprovalStore | None = None,
+        proposals_per_hour: int = DEFAULT_PROPOSALS_PER_HOUR,
     ) -> None:
         """Store in ``store``, answer with ``graph``, stamp with ``clock``.
 
         ``budget`` is the daily token budget (``None``: no token limit), ``limits`` the
         per-conversation and per-message limits, ``streams`` the answers in progress,
-        ``approvals`` the proposed actions (``None``: a proposal cannot be stored).
+        ``approvals`` the proposed actions (``None``: a proposal cannot be stored), of which one
+        user gets at most ``proposals_per_hour`` (FR-015).
         """
         self._store = store
         self._graph = graph
@@ -402,6 +411,12 @@ class ChatService:
         self._limits = limits or ChatLimits()
         self.streams = streams or ActiveStreams()
         self._approvals = approvals
+        self._proposals_per_hour = proposals_per_hour
+
+    def _quota(self, user_id: str) -> ProposalQuota | None:
+        if self._approvals is None:
+            return None
+        return ProposalQuota(self._approvals, user_id, self._clock, self._proposals_per_hour)
 
     def _allowance(self) -> RunAllowance | None:
         if self._budget is None:
@@ -442,6 +457,7 @@ class ChatService:
             allowance=self._allowance(),
             approvals=self._approvals,
             request_id=request_id,
+            quota=self._quota(user_id),
         )
 
     async def decide(
@@ -486,6 +502,7 @@ class ChatService:
             approvals=approvals,
             request_id=request_id,
             decided=_Decided(decided, decision),
+            quota=self._quota(user_id),
         )
 
     async def pending_approval(self, user_id: str, conversation_id: UUID) -> Approval | None:

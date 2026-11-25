@@ -77,7 +77,7 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
     check_answer,
     check_segment,
 )
-from ecommerce_ai.agents.assistant.limits import RunAllowance
+from ecommerce_ai.agents.assistant.limits import ProposalQuota, RunAllowance
 from ecommerce_ai.agents.assistant.model import (
     ApprovalExecution,
     ApprovalOutcome,
@@ -173,6 +173,8 @@ class RunContext:
     """Per-run dependencies of the nodes; never checkpointed."""
 
     allowance: RunAllowance | None = None
+    quota: ProposalQuota | None = None
+    """The caller's proposals left this hour (``None``: no limit)."""
 
 
 @dataclass(slots=True)
@@ -406,14 +408,20 @@ class ChatGraph:
         return graph.compile(checkpointer=self._checkpointer)
 
     async def run(
-        self, conversation_id: UUID, text: str, allowance: RunAllowance | None = None
+        self,
+        conversation_id: UUID,
+        text: str,
+        allowance: RunAllowance | None = None,
+        quota: ProposalQuota | None = None,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Answer ``text`` in the conversation: the events in order, then one ``RunOutcome``.
 
-        Every model call is admitted by ``allowance`` (``None``: no token limit). A run that
-        pauses for an approval ends ``awaiting_approval`` with the outcome's ``proposal``.
+        Every model call is admitted by ``allowance`` (``None``: no token limit), every proposal
+        by ``quota`` (``None``: no hourly limit). A run that pauses for an approval ends
+        ``awaiting_approval`` with the outcome's ``proposal``.
         """
-        async for item in self._stream(_initial(text), conversation_id, allowance):
+        context = RunContext(allowance=allowance, quota=quota)
+        async for item in self._stream(_initial(text), conversation_id, context):
             yield item
 
     async def resume(
@@ -422,6 +430,7 @@ class ChatGraph:
         approval_id: UUID,
         decision: Decision,
         allowance: RunAllowance | None = None,
+        quota: ProposalQuota | None = None,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Continue the run paused on ``approval_id`` with the customer's recorded ``decision``.
 
@@ -437,20 +446,21 @@ class ChatGraph:
         ):
             raise ApprovalNotPaused(str(approval_id))
         command: Command[str] = Command(resume=_resume_value(approval_id, decision))
-        async for item in self._stream(command, conversation_id, allowance):
+        context = RunContext(allowance=allowance, quota=quota)
+        async for item in self._stream(command, conversation_id, context):
             yield item
 
     async def _stream(
         self,
         graph_input: ChatState | Command[str],
         conversation_id: UUID,
-        allowance: RunAllowance | None,
+        context: RunContext,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         final: ChatState | None = None
         stream = self._compiled.astream(
             graph_input,
             _config(conversation_id),
-            context=RunContext(allowance=allowance),
+            context=context,
             stream_mode=["custom", "values"],
         )
         try:
@@ -705,7 +715,7 @@ class ChatGraph:
         if rest is not None and not release(rest):
             turn.replaced = True
 
-    async def _run_tools(self, state: ChatState) -> StateUpdate:
+    async def _run_tools(self, state: ChatState, runtime: Runtime[RunContext]) -> StateUpdate:
         """Run every pending call; an upstream 401 ends the run ``TOOL_FAILED`` (FR-011).
 
         A ``cancel_order`` call never runs here: it becomes a checked proposal (routing to
@@ -720,7 +730,9 @@ class ChatGraph:
             call = ToolCallItem.model_validate(raw)
             write(ToolCall(call_id=call.call_id, name=call.name, arguments=call.arguments))
             if call.name in APPROVAL_ACTIONS:
-                checked = await self._propose(call, already_pending=proposal is not None)
+                checked = await self._propose(
+                    call, already_pending=proposal is not None, quota=runtime.context.quota
+                )
                 stats.extend(checked.stats)
                 unauthenticated = unauthenticated or checked.unauthenticated
                 if checked.proposal is not None:
@@ -759,13 +771,21 @@ class ChatGraph:
             update["outcome"] = ChatErrorCode.TOOL_FAILED.value
         return update
 
-    async def _propose(self, call: ToolCallItem, *, already_pending: bool) -> "_Checked":
-        """Check a ``cancel_order`` call: a ``PendingApproval``, or the refusal the model gets."""
+    async def _propose(
+        self, call: ToolCallItem, *, already_pending: bool, quota: ProposalQuota | None
+    ) -> "_Checked":
+        """Check a ``cancel_order`` call: a ``PendingApproval``, or the refusal the model gets.
+
+        Checked in order: a valid id, nothing else pending, the hourly limit (FR-015), then a
+        fresh read showing the caller's order ``PENDING``.
+        """
         target = parse_target(call.arguments)
         if target is None:
             return _Checked.refused(Refusal.INVALID_ID)
         if already_pending:
             return _Checked.refused(Refusal.ALREADY_PENDING)
+        if quota is not None and not await quota.allows():
+            return _Checked.refused(Refusal.RATE_LIMITED)
         outcome = await self._tools.run(READ_TOOL, {TARGET_ARGUMENT: str(target)})
         stats = [_stat(READ_TOOL, outcome)]
         read = read_order(outcome)
