@@ -10,7 +10,9 @@ allowed, even when a tool returned them.
 
 Evidence (``ChatEvidence.from_transcript``) = the leaf values of the ``data`` of every successful
 tool result in the conversation state, plus the UUIDs the customer wrote. Envelope metadata and
-error bodies are never evidence.
+error bodies are never evidence. A cancellation claim (US-06, FR-012) is allowed only for orders a
+successful ``cancel_order``, ``get_order`` or ``list_my_orders`` result holds as ``CANCELLED`` (a
+claim naming no order: any such order); text inside other data never grounds it.
 """
 
 import re
@@ -18,9 +20,13 @@ from collections.abc import Iterable, Iterator
 from enum import StrEnum
 from typing import Final, Self
 
+from pydantic import JsonValue
+
+from ecommerce_ai.agents.assistant.approvals import CANCEL_ACTION, READ_TOOL
 from ecommerce_ai.agents.assistant.model import ToolResultItem, TranscriptItem, UserTurn
 from ecommerce_ai.agents.safety.rules import (
     Evidence,
+    cancellation_claims_grounded,
     facts_grounded,
     has_contact_or_url,
     has_html,
@@ -56,6 +62,7 @@ class ChatRule(StrEnum):
     CONTACT_OR_URL = "contact_or_url"
     INTERNAL_NAME = "internal_name"
     HTML = "html"
+    CANCELLATION_CLAIM = "cancellation_claim"
 
 
 _ALWAYS_INTERNAL: Final = re.compile(
@@ -64,17 +71,32 @@ _ALWAYS_INTERNAL: Final = re.compile(
     re.I,
 )
 _WORD: Final = re.compile(r"[A-Za-z0-9]+")
+_ORDER_TOOLS: Final = frozenset({CANCEL_ACTION, READ_TOOL, "list_my_orders"})
+"""Tools whose data may show an order ``CANCELLED`` (FR-012)."""
+_CANCELLED: Final = "CANCELLED"
 
 
 class ChatEvidence:
     """What an answer may state: facts of the tool data and the customer's ids."""
 
-    def __init__(self, data: Iterable[str], customer_ids: Iterable[str]) -> None:
-        """Index the tool ``data`` leaves and the UUIDs the customer wrote."""
+    def __init__(
+        self,
+        data: Iterable[str],
+        customer_ids: Iterable[str],
+        cancelled: Iterable[str | None] = (),
+    ) -> None:
+        """Index the tool ``data`` leaves and the UUIDs the customer wrote.
+
+        ``cancelled`` holds the id of each order the order tools showed ``CANCELLED`` (``None``
+        when the order had no id).
+        """
         strings = list(data)
         self.facts = Evidence.from_strings([*strings, *customer_ids])
         self.words = {word for text in strings for word in _WORD.findall(text)}
         self.lower_words = {word.lower() for word in self.words}
+        orders = list(cancelled)
+        self.any_cancelled = bool(orders)
+        self.cancelled_ids = frozenset(order for order in orders if order is not None)
 
     @classmethod
     def from_transcript(cls, transcript: Iterable[TranscriptItem]) -> Self:
@@ -83,12 +105,37 @@ class ChatEvidence:
         return cls(
             (leaf for item in items for leaf in _data_leaves(item)),
             (uuid for item in items if isinstance(item, UserTurn) for uuid in uuids_in(item.text)),
+            (order for item in items for order in _cancelled_orders(item)),
         )
 
 
 def _data_leaves(item: TranscriptItem) -> Iterator[str]:
     if isinstance(item, ToolResultItem) and item.ok and "data" in item.payload:
         yield from json_leaves(item.payload["data"])
+
+
+def _cancelled_orders(item: TranscriptItem) -> Iterator[str | None]:
+    """The ids of the orders a successful order tool result shows ``CANCELLED``."""
+    if (
+        isinstance(item, ToolResultItem)
+        and item.ok
+        and item.name in _ORDER_TOOLS
+        and "data" in item.payload
+    ):
+        yield from _cancelled_in(item.payload["data"])
+
+
+def _cancelled_in(value: JsonValue) -> Iterator[str | None]:
+    if isinstance(value, list):
+        for child in value:
+            yield from _cancelled_in(child)
+    elif isinstance(value, dict):
+        status = value.get("status")
+        if isinstance(status, str) and status.upper() == _CANCELLED:
+            order_id = value.get("orderId", value.get("id"))
+            yield order_id.lower() if isinstance(order_id, str) else None
+        for child in value.values():
+            yield from _cancelled_in(child)
 
 
 def _promise_allowed(word: str, evidence: ChatEvidence) -> bool:
@@ -114,6 +161,10 @@ def _broken_rules(text: str, evidence: ChatEvidence) -> Iterator[ChatRule]:
         yield ChatRule.INTERNAL_NAME
     if has_html(text):
         yield ChatRule.HTML
+    if not cancellation_claims_grounded(
+        text, evidence.cancelled_ids, any_cancelled=evidence.any_cancelled
+    ):
+        yield ChatRule.CANCELLATION_CLAIM
 
 
 def check_segment(text: str, evidence: ChatEvidence) -> tuple[ChatRule, ...]:

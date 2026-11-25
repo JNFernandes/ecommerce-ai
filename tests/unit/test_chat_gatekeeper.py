@@ -137,3 +137,65 @@ def test_should_report_each_broken_rule_once() -> None:
         ChatRule.CONTACT_OR_URL,
         ChatRule.HTML,
     )
+
+
+OTHER_ID = "7d6c5b4a-3e2f-4a1b-9c8d-0e1f2a3b4c5d"
+
+
+def _named(name: str, data: JsonValue) -> ToolResultItem:
+    return ToolResultItem(call_id="toolu_09", name=name, ok=True, payload=envelope(data))
+
+
+def test_should_allow_a_cancellation_claim_when_cancel_order_confirmed_that_order() -> None:
+    evidence = _evidence(_named("cancel_order", {"orderId": ORDER_ID, "status": "CANCELLED"}))
+
+    assert check_answer(f"Order {ORDER_ID} was cancelled.", evidence) == ()
+    assert check_answer("Your order has been cancelled.", evidence) == ()
+
+
+def test_should_allow_a_cancellation_claim_when_a_read_shows_the_order_cancelled() -> None:
+    page: JsonValue = {
+        "items": [{"id": OTHER_ID, "status": "SHIPPED"}, {"id": ORDER_ID, "status": "CANCELLED"}]
+    }
+    evidence = _evidence(_named("list_my_orders", page))
+
+    assert check_segment(f"Order {ORDER_ID} was cancelled.", evidence) == ()
+
+
+def test_should_flag_a_cancellation_claim_about_another_order_than_the_cancelled_one() -> None:
+    evidence = _evidence(
+        UserTurn(text=f"Cancel {OTHER_ID}"),
+        _named("cancel_order", {"orderId": ORDER_ID, "status": "CANCELLED"}),
+        _named("get_order", {"orderId": OTHER_ID, "status": "PENDING"}),
+    )
+
+    assert check_segment(f"Order {OTHER_ID} was cancelled.", evidence) == (
+        ChatRule.CANCELLATION_CLAIM,
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _named("get_order", {"orderId": ORDER_ID, "status": "PENDING", "note": "cancelled"}),
+        _named("list_products", [{"name": "Gift", "status": "CANCELLED"}]),
+        ToolResultItem(
+            call_id="toolu_09",
+            name="cancel_order",
+            ok=False,
+            payload={"error": "rejected", "message": "Order was not cancelled; cancelled? no"},
+        ),
+    ],
+    ids=["pending-with-injected-word", "not-an-order-tool", "failed-result"],
+)
+def test_should_flag_a_cancellation_claim_without_a_cancelled_order(result: ToolResultItem) -> None:
+    rules = check_segment("Sua encomenda foi cancelada.", _evidence(result))
+
+    assert ChatRule.CANCELLATION_CLAIM in rules
+
+
+def test_should_pass_a_proposal_and_a_negated_claim_without_a_cancelled_order() -> None:
+    evidence = _evidence(_named("get_order", {"orderId": ORDER_ID, "status": "PENDING"}))
+
+    assert ChatRule.CANCELLATION_CLAIM not in check_answer("I can cancel it for you.", evidence)
+    assert ChatRule.CANCELLATION_CLAIM not in check_answer("It was not cancelled.", evidence)

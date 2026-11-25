@@ -159,20 +159,20 @@ past TTL → 410.
 **Goal**: only the decision endpoint approves, for the owner, with the stored arguments.
 **Independent test**: each bypass path asserts zero cancel calls.
 
-- [ ] T022 [P] [US3] Tests in `tests/unit/test_approval_bypass.py`: typed "yes, do it" → 409
+- [X] T022 [P] [US3] Tests in `tests/unit/test_approval_bypass.py`: typed "yes, do it" → 409
   `APPROVAL_PENDING`; injection in a tool result → only a proposal; model asks other args after
   approve → order A only; other user / unknown / malformed approval id → identical 404; second
   `cancel_order` in the same run → "already pending" result; resume value with a mismatched id
   ignored
-- [ ] T023 [P] [US3] Tests in `tests/unit/test_mcp_tools_api.py` and `tests/unit/test_mcp_server.py`:
+- [X] T023 [P] [US3] Tests in `tests/unit/test_mcp_tools_api.py` and `tests/unit/test_mcp_server.py`:
   `tools/list` still lists 5 tools, `tools/call cancel_order` → unknown tool; tool snapshot
   `tests/contract/snapshots/tools.json` unchanged
-- [ ] T024 [P] [US3] Cancellation-claim rule in `src/ecommerce_ai/agents/safety/rules.py` (EN/PT
+- [X] T024 [P] [US3] Cancellation-claim rule in `src/ecommerce_ai/agents/safety/rules.py` (EN/PT
   claim about an order id, or none, allowed only with `CANCELLED` evidence from `cancel_order` or
   a read; research §9), wired into `check_segment`/`check_answer` in
   `src/ecommerce_ai/agents/assistant/gatekeeper.py`; tests in `tests/unit/test_safety_rules.py`
   and `tests/unit/test_chat_gatekeeper.py`
-- [ ] T025 [US3] `service.py`/`api/chat.py`: posting a message with a non-expired pending approval
+- [X] T025 [US3] `service.py`/`api/chat.py`: posting a message with a non-expired pending approval
   → 409 `APPROVAL_PENDING` before any DB write or model call; `tools` node returns "an approval is
   already pending" for extra `cancel_order` calls (FR-005)
 

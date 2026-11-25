@@ -3,11 +3,12 @@
 Facts (amounts and numbers, UUIDs, ISO and written dates, order status words) must be found in the
 ``Evidence``. Ids and ISO dates are removed before the contact and internal-name checks, so their
 digits and letters never look like phone numbers or identifiers. Nothing here quotes the text it
-checks: callers turn a broken rule into their own fixed message.
+checks: callers turn a broken rule into their own fixed message. A cancellation claim (US-06) must
+name only orders the evidence holds as ``CANCELLED`` (``cancellation_claims_grounded``).
 """
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Final, Self
@@ -233,3 +234,48 @@ def has_internal_name(text: str) -> bool:
 def has_html(text: str) -> bool:
     """True when ``text`` holds an HTML tag or comment."""
     return _HTML_TAG.search(text) is not None
+
+
+_CANCELLATION_CLAIM: Final = re.compile(
+    r"\bcancel(?:l)?ed\b"
+    r"|\bwill\s+(?:now\s+)?(?:be\s+)?cancel\w*"
+    r"|\bcancellation\s+(?:is|was|has\s+been)\s+(?:done|complete\w*|successful|confirmed|processed)"
+    r"|\bcancelad[oa]s?\b|\bcancel(?:ei|ou|amos|aram)\b"
+    r"|\b(?:vou|vamos|irei|iremos|vai|v[aã]o)\s+(?:ser\s+)?cancel\w*"
+    r"|\bcancelamento\s+(?:foi|est[aá])\s+(?:feito|conclu[ií]do|efetuado|confirmado|realizado)",
+    re.I,
+)
+_NEGATED: Final = re.compile(r"(?:\bnot|n't|\bnever|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$", re.I)
+_SENTENCE: Final = re.compile(r"[^.!?\n]+[.!?]*")
+
+
+def cancellation_claims(text: str) -> Iterator[tuple[str, ...]]:
+    """For each sentence of ``text`` saying an order is or will be cancelled: the ids it names.
+
+    English and Portuguese; questions and negated forms ("was not cancelled") are no claims. An
+    empty tuple is a claim that names no order.
+    """
+    for sentence in _SENTENCE.finditer(text):
+        part = sentence.group()
+        if part.rstrip().endswith("?"):
+            continue
+        claimed = any(
+            not _NEGATED.search(part[: match.start()])
+            for match in _CANCELLATION_CLAIM.finditer(part)
+        )
+        if claimed:
+            yield tuple(uuids_in(part))
+
+
+def cancellation_claims_grounded(
+    text: str, cancelled_ids: Collection[str], *, any_cancelled: bool
+) -> bool:
+    """True when every cancellation claim of ``text`` is backed by a ``CANCELLED`` order (FR-012).
+
+    A claim naming ids needs each of them in ``cancelled_ids`` (lower-case); a claim naming none
+    needs ``any_cancelled``.
+    """
+    return all(
+        set(ids) <= set(cancelled_ids) if ids else any_cancelled
+        for ids in cancellation_claims(text)
+    )
