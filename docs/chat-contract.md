@@ -1,7 +1,8 @@
 # Chat API and SSE contract (US-05)
 
-Frozen contract for the frontend. Base path `/chat` (through the gateway: `/api/chat`, once the
-route exists in ecommerce-infra). JSON is camelCase; timestamps are UTC ISO 8601.
+Frozen contract for the frontend. Base path `/chat` on the service; through the gateway
+(ecommerce-infra) every path is prefixed with `/api/ai`, e.g. `POST /api/ai/chat/conversations`.
+The gateway exposes exactly these routes; the stream route has a 300 s response timeout. JSON is camelCase; timestamps are UTC ISO 8601.
 `tests/contract/test_chat_contract.py` checks every example below against the code: each block
 tagged `<!-- schema: Name -->` must validate against that model and use exactly its field names,
 and every event, code and fixed message must match the code.
@@ -22,11 +23,11 @@ same as `POST /mcp`, identical for every bad token:
 
 | Method | Path | Success | Errors |
 |---|---|---|---|
-| POST | `/chat/conversations` | 201 `Conversation` | 401 403 422 503 |
+| POST | `/chat/conversations` | 201 `Conversation` | 401 403 413 422 503 |
 | GET | `/chat/conversations?limit=1..100 (20)&offset≥0 (0)` | 200 `ConversationPage` | 401 403 422 503 |
 | GET | `/chat/conversations/{id}` | 200 `ConversationDetail` (messages oldest first) | 401 403 404 503 |
 | DELETE | `/chat/conversations/{id}` | 204, no body (an answer in progress is cancelled first) | 401 403 404 503 |
-| POST | `/chat/conversations/{id}/messages` | 200 `text/event-stream` | 401 403 404 409 422 429 503 |
+| POST | `/chat/conversations/{id}/messages` | 200 `text/event-stream` | 401 403 404 409 413 422 429 503 |
 
 Create a conversation (`title` optional, ≤ 200 characters, trimmed; blank means none):
 
@@ -125,6 +126,7 @@ message:
 | 404 | `NOT_FOUND` | Conversation not found. | unknown, malformed or another user's id (identical) |
 | 409 | `STREAM_ACTIVE` | An answer is already in progress in this conversation. | a second post while one streams |
 | 409 | `CONVERSATION_FULL` | This conversation is full. Please start a new one. | the conversation holds 100 messages (`CHAT_MAX_MESSAGES`) |
+| 413 | `PAYLOAD_TOO_LARGE` | The request is too large. | a `/chat` request body over 16 KB |
 | 422 | `VALIDATION_FAILED` | The request is not valid. | bad body, `limit` or `offset` |
 | 429 | `RATE_LIMITED` | You are sending messages too fast. Please wait a moment. | more than 10 posts in 60 s per user; `Retry-After: <seconds>` |
 | 503 | `UNAVAILABLE` | The assistant is unavailable right now. Please try again later. | the database is down |

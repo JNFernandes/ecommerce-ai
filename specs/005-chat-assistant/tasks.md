@@ -207,7 +207,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 ---
 
 ## Phase 7: User Story 5 - Limits, budgets and failures are explicit (P2)
-
+/clear
 **Goal**: every limit and failure gives a documented HTTP status or terminal `error`.
 **Independent test**: trigger each limit with fakes; check status/code.
 
@@ -249,26 +249,26 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: starts without model/Kafka/DB; terminal smoke client.
 **Independent test**: app with no model key and failing probes; smoke client against a fake server.
 
-- [X] T042 [P] [US7] Tests in `tests/unit/test_main.py`: no model, Kafka or DB Ã¢â€ â€™ `/health` 200,
+- [ ] T042 [P] [US7] Tests in `tests/unit/test_main.py`: no model, Kafka or DB Ã¢â€ â€™ `/health` 200,
   `/ready` unchanged rules, chat post Ã¢â€ â€™ `error LLM_UNAVAILABLE`; tests
   `tests/unit/test_chat_smoke.py` for `scripts/chat_smoke.py` over an httpx `MockTransport`
-- [X] T043 [US7] Implement `scripts/chat_smoke.py` (`TOKEN`, `CHAT_URL` default
+- [ ] T043 [US7] Implement `scripts/chat_smoke.py` (`TOKEN`, `CHAT_URL` default
   `http://localhost:8002/chat`, creates a conversation, prints tokens and tool events, stdlib SSE
   parsing; research Ã‚Â§18)
-- [X] T044 [US7] Add the assistant case to `tests/integration/test_live_llm.py` (`live_llm`
+- [ ] T044 [US7] Add the assistant case to `tests/integration/test_live_llm.py` (`live_llm`
   marker, one real streamed answer passes the gatekeeper)
 
 ---
 
 ## Phase 10: Polish & cross-cutting
 
-- [X] T045 [P] Write `docs/chat-contract.md` from `contracts/chat-api.md` (every route, event,
+- [ ] T045 [P] Write `docs/chat-contract.md` from `contracts/chat-api.md` (every route, event,
   code and HTTP error with a JSON example); `tests/contract/test_chat_contract.py` checks event
   names, error codes and payload fields against the `StreamEvent`/schema models
-- [X] T046 [P] Update `README.md`, `CLAUDE.md` (layering: `agents/assistant`, `agents/safety`,
+- [ ] T046 [P] Update `README.md`, `CLAUDE.md` (layering: `agents/assistant`, `agents/safety`,
   `tools/invoker.py`, `api/chat.py`/`sse.py`/`auth.py`/`rate_limit.py`, new tables, CHAT_*
   settings, `/chat` routes) and `.env.example`; mark US-09 `TODO(EVAL_SUITE)` for assistant evals
-- [X] T047 Run quickstart.md steps 1Ã¢â‚¬â€œ2 locally and the full gate; mark tasks complete
+- [ ] T047 Run quickstart.md steps 1Ã¢â‚¬â€œ2 locally and the full gate; mark tasks complete
 
 ---
 

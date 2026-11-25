@@ -7,7 +7,14 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ecommerce_ai.api import health
-from ecommerce_ai.api.chat import install_chat_error_handlers
+from ecommerce_ai.api.body_limit import BodySizeLimitMiddleware
+from ecommerce_ai.api.chat import (
+    MAX_BODY_BYTES,
+    PREFIX,
+    ChatHttpCode,
+    error_response,
+    install_chat_error_handlers,
+)
 from ecommerce_ai.api.health import ConsumerStateSource, RelayStateSource, WorkerStateSource
 from ecommerce_ai.api.mcp import McpEndpoint
 from ecommerce_ai.api.middleware import REQUEST_ID_HEADER, RequestIdMiddleware
@@ -46,7 +53,8 @@ def build_api(
 
     CORS is enabled only for the configured origins. ``mcp`` adds the secured MCP route and
     chains the MCP app's lifespan; ``resources`` is opened around it for the app's lifetime.
-    ``chat`` is the ``/chat`` router; its validation and outage errors get ``{code, message}``.
+    ``chat`` is the ``/chat`` router; its validation and outage errors get ``{code, message}``,
+    and its request bodies are limited to ``MAX_BODY_BYTES`` (innermost middleware, 413).
     ``consumer_state``, ``worker_state`` and ``relay_state`` (``None`` when disabled) are
     reported by ``/ready``.
     Every route must declare its access, or this raises ``RoutePolicyError`` (default deny). The
@@ -63,6 +71,12 @@ def build_api(
     app.state.consumer_state = consumer_state
     app.state.worker_state = worker_state
     app.state.relay_state = relay_state
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=MAX_BODY_BYTES,
+        path_prefix=PREFIX,
+        reject=lambda: error_response(ChatHttpCode.PAYLOAD_TOO_LARGE),
+    )
     if cors_allowed_origins:
         app.add_middleware(
             CORSMiddleware,
