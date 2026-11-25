@@ -48,6 +48,7 @@ HTTP_STATUS: Final = {
     ChatHttpCode.NOT_FOUND: 404,
     ChatHttpCode.STREAM_ACTIVE: 409,
     ChatHttpCode.CONVERSATION_FULL: 409,
+    ChatHttpCode.PAYLOAD_TOO_LARGE: 413,
     ChatHttpCode.VALIDATION_FAILED: 422,
     ChatHttpCode.RATE_LIMITED: 429,
     ChatHttpCode.UNAVAILABLE: 503,

@@ -6,7 +6,8 @@ call is scoped to the token subject, so an unknown, malformed or
 another user's id gives the same 404 (FR-003). A storage outage (``is_unavailable``) is a 503
 ``UNAVAILABLE``; any other error propagates. Posting is rate limited per user after
 authentication and before the body is validated (429 ``RATE_LIMITED`` with ``Retry-After``); a
-full conversation or one with an answer in progress is a 409 (research §16).
+full conversation or one with an answer in progress is a 409 (research §16). Bodies over
+``MAX_BODY_BYTES`` get 413 ``PAYLOAD_TOO_LARGE`` from ``api/body_limit.py`` before any route runs.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -41,6 +42,8 @@ from ecommerce_ai.infrastructure.caller import RequestCaller
 PREFIX: Final = "/chat"
 TITLE_MAX_CHARS: Final = 200
 CONTENT_MAX_CHARS: Final = 2000
+MAX_BODY_BYTES: Final = 16 * 1024
+"""Largest ``/chat`` request body: 2000 characters JSON-escaped fit well within it."""
 
 
 class PostMessageRequest(BaseModel):
@@ -69,6 +72,7 @@ class ChatHttpCode(StrEnum):
     STREAM_ACTIVE = "STREAM_ACTIVE"
     CONVERSATION_FULL = "CONVERSATION_FULL"
     VALIDATION_FAILED = "VALIDATION_FAILED"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
     RATE_LIMITED = "RATE_LIMITED"
     UNAVAILABLE = "UNAVAILABLE"
 
@@ -78,6 +82,7 @@ HTTP_MESSAGES: Final = {
     ChatHttpCode.STREAM_ACTIVE: "An answer is already in progress in this conversation.",
     ChatHttpCode.CONVERSATION_FULL: "This conversation is full. Please start a new one.",
     ChatHttpCode.VALIDATION_FAILED: "The request is not valid.",
+    ChatHttpCode.PAYLOAD_TOO_LARGE: "The request is too large.",
     ChatHttpCode.RATE_LIMITED: "You are sending messages too fast. Please wait a moment.",
     ChatHttpCode.UNAVAILABLE: "The assistant is unavailable right now. Please try again later.",
 }
@@ -88,6 +93,7 @@ _STATUS: Final = {
     ChatHttpCode.STREAM_ACTIVE: status.HTTP_409_CONFLICT,
     ChatHttpCode.CONVERSATION_FULL: status.HTTP_409_CONFLICT,
     ChatHttpCode.VALIDATION_FAILED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ChatHttpCode.PAYLOAD_TOO_LARGE: status.HTTP_413_CONTENT_TOO_LARGE,
     ChatHttpCode.RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
     ChatHttpCode.UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
@@ -245,6 +251,7 @@ _NOT_FOUND: Final[dict[int | str, dict[str, object]]] = {
     404: {"model": ErrorBody, "description": "`NOT_FOUND`: unknown, malformed or not yours."},
 }
 _INVALID: Final[dict[int | str, dict[str, object]]] = {
+    413: {"model": ErrorBody, "description": "`PAYLOAD_TOO_LARGE`: body over 16 KB."},
     422: {"model": ErrorBody, "description": "`VALIDATION_FAILED`."},
 }
 
