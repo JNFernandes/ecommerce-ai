@@ -54,7 +54,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   `UserUsageStore` (`accept_message(user_id, day) -> int`, `reserve(user_id, day, tokens, cap) ->
   bool`, `settle(user_id, day, reserved, actual)`), `RateWindow` (`hit(key) -> bool`,
   `retry_after(key) -> int`); tests in `tests/unit/test_guard_events.py`
-- [ ] T004 [P] Implement `src/ecommerce_ai/agents/guardrails/normalizer.py` (research §2):
+- [X] T004 [P] Implement `src/ecommerce_ai/agents/guardrails/normalizer.py` (research §2):
   `normalize(text) -> str` (NFKC, drop `Cf`, drop `Cc` except `\n`/`\t`) and
   `match_variants(text) -> tuple[str, ...]` (casefolded, de-leeted, separator-squashed, bounded
   base64/hex decodes of runs ≥ 16 chars, strict UTF-8, total ≤ 2000 chars, undecodable runs kept
