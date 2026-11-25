@@ -17,10 +17,19 @@ whole answer once more (``check_answer``) and replaces an empty one. A turn aski
 a fixed message, the transcript stores exactly what was sent, so unsafe text never reaches the
 model again. The model is offered only the registry's tools (FR-011); tool results reach it as
 delimited data (``tool_result_text``, FR-013).
+
+Limits (US5): each model call is first admitted by the run's ``RunAllowance`` (daily budget and
+per-message cap, else ``BUDGET_EXCEEDED``). A call failing with ``ModelUnavailable`` before any
+segment was sent is retried (``call_with_retry``); once text was sent, it ends
+``LLM_UNAVAILABLE``. After a cancelled run, ``record_interrupted`` puts what the customer saw into
+the transcript and closes calls left without a result, so the next request stays valid.
 """
 
+import asyncio
+import math
 import operator
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Annotated, Final, Literal, TypedDict, cast
 from uuid import UUID
 
@@ -28,6 +37,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.gatekeeper import (
@@ -38,6 +48,7 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
     check_answer,
     check_segment,
 )
+from ecommerce_ai.agents.assistant.limits import RunAllowance
 from ecommerce_ai.agents.assistant.model import (
     AssistantText,
     ChatErrorCode,
@@ -67,8 +78,9 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.segmenter import Segmenter
 from ecommerce_ai.agents.assistant.summaries import summarize
-from ecommerce_ai.agents.ports import ModelError
+from ecommerce_ai.agents.ports import ModelError, ModelUnavailable
 from ecommerce_ai.agents.prompts.loader import SystemPrompt
+from ecommerce_ai.infrastructure.retry import call_with_retry
 
 type GraphEvent = Token | ToolCall | ToolResult
 """An event a node publishes while the graph runs."""
@@ -84,6 +96,56 @@ _FINALIZE: Final = "finalize"
 _THINKING_BLOCKS: Final = frozenset({"thinking", "redacted_thinking"})
 DEFAULT_MAX_TOOL_ROUNDS: Final = 5
 """Tool-call rounds a run may use (``CHAT_MAX_TOOL_ROUNDS``)."""
+DEFAULT_MAX_RETRIES: Final = 2
+"""Retries of a model call that failed before sending anything (``LLM_MAX_RETRIES``)."""
+RETRY_BACKOFF_SECONDS: Final = 0.5
+"""First retry delay of a model call; doubles per retry, with full jitter."""
+_CANCELLED_RESULT: Final[dict[str, JsonValue]] = {
+    "error": "cancelled",
+    "message": "The call was cancelled before it finished.",
+}
+
+type Sleep = Callable[[float], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """Per-run dependencies of the nodes; never checkpointed."""
+
+    allowance: RunAllowance | None = None
+
+
+@dataclass(slots=True)
+class _Turn:
+    """What one model call produced and what of it was sent."""
+
+    sent: list[str] = field(default_factory=list)
+    text_parts: list[str] = field(default_factory=list)
+    calls: list[ToolCallItem] = field(default_factory=list)
+    end: ModelTurnEnd | None = None
+    replaced: bool = False
+
+
+class _BudgetSpent(Exception):
+    """The run's allowance admits no further model call."""
+
+
+class _TurnFailed(Exception):
+    """A model call failed; carries what it had sent."""
+
+    def __init__(self, turn: _Turn, error: ModelError) -> None:
+        super().__init__("the model call failed")
+        self.turn = turn
+        self.error = error
+
+
+def _retryable(error: Exception) -> bool:
+    """Only an unavailable model that sent nothing yet is retried."""
+    return (
+        isinstance(error, _TurnFailed)
+        and isinstance(error.error, ModelUnavailable)
+        and not error.turn.sent
+    )
 
 
 class ChatState(TypedDict):
@@ -153,6 +215,11 @@ def _after_tools(state: ChatState) -> Literal["agent", "finalize"]:
     return _FINALIZE if state["outcome"] is not None else _AGENT
 
 
+def _config(conversation_id: UUID) -> RunnableConfig:
+    """The checkpointer thread of the conversation."""
+    return {"configurable": {"thread_id": str(conversation_id)}}
+
+
 def _ending(outcome: str | None) -> FinishReason | ChatErrorCode:
     if outcome is None:
         return FinishReason.COMPLETED
@@ -172,10 +239,14 @@ class ChatGraph:
         prompt: SystemPrompt,
         checkpointer: Checkpointer,
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        sleep: Sleep = asyncio.sleep,
     ) -> None:
         """Answer with ``model`` (``None``: every run ends ``LLM_UNAVAILABLE``) and ``tools``."""
         self._model = model
         self._max_tool_rounds = max_tool_rounds
+        self._max_retries = max_retries
+        self._sleep = sleep
         self._tools = tools
         self._prompt = prompt
         self._checkpointer = checkpointer
@@ -186,8 +257,8 @@ class ChatGraph:
         """Version of the system prompt, reported as ``promptVersion``."""
         return self._prompt.version
 
-    def _compile(self) -> CompiledStateGraph[ChatState, None, ChatState, ChatState]:
-        graph = StateGraph(ChatState)
+    def _compile(self) -> CompiledStateGraph[ChatState, RunContext, ChatState, ChatState]:
+        graph = StateGraph(ChatState, context_schema=RunContext)
         graph.add_node(_GUARD, self._guard_input)
         graph.add_node(_AGENT, self._agent)
         graph.add_node(_TOOLS, self._run_tools)
@@ -201,17 +272,29 @@ class ChatGraph:
         graph.add_edge(_FINALIZE, END)
         return graph.compile(checkpointer=self._checkpointer)
 
-    async def run(self, conversation_id: UUID, text: str) -> AsyncIterator[GraphEvent | RunOutcome]:
-        """Answer ``text`` in the conversation: the events in order, then one ``RunOutcome``."""
-        config: RunnableConfig = {"configurable": {"thread_id": str(conversation_id)}}
+    async def run(
+        self, conversation_id: UUID, text: str, allowance: RunAllowance | None = None
+    ) -> AsyncGenerator[GraphEvent | RunOutcome]:
+        """Answer ``text`` in the conversation: the events in order, then one ``RunOutcome``.
+
+        Every model call is admitted by ``allowance`` (``None``: no token limit).
+        """
         final: ChatState | None = None
-        async for mode, chunk in self._compiled.astream(
-            _initial(text), config, stream_mode=["custom", "values"]
-        ):
-            if mode == "custom" and isinstance(chunk, Token | ToolCall | ToolResult):
-                yield chunk
-            elif mode == "values" and isinstance(chunk, dict):
-                final = cast("ChatState", chunk)
+        stream = self._compiled.astream(
+            _initial(text),
+            _config(conversation_id),
+            context=RunContext(allowance=allowance),
+            stream_mode=["custom", "values"],
+        )
+        try:
+            async for mode, chunk in stream:
+                if mode == "custom" and isinstance(chunk, Token | ToolCall | ToolResult):
+                    yield chunk
+                elif mode == "values" and isinstance(chunk, dict):
+                    final = cast("ChatState", chunk)
+        finally:
+            if isinstance(stream, AsyncGenerator):  # cancel the nodes still running
+                await stream.aclose()
         if final is None:  # pragma: no cover - LangGraph always emits the final values
             raise RuntimeError("the chat graph produced no state")
         yield self._outcome(final)
@@ -219,6 +302,35 @@ class ChatGraph:
     async def forget(self, conversation_id: UUID) -> None:
         """Delete the stored state of the conversation (FR-004)."""
         await self._checkpointer.adelete_thread(str(conversation_id))
+
+    async def record_interrupted(self, conversation_id: UUID, sent: str) -> None:
+        """After a cancelled run, keep the transcript what the customer saw (FR-014, US6).
+
+        Calls left without a result get a ``cancelled`` result, and the part of ``sent`` not yet
+        in the transcript (the turn that was streaming) is added as the assistant's text.
+        """
+        config = _config(conversation_id)
+        snapshot = await self._compiled.aget_state(config)
+        values = cast("ChatState | None", snapshot.values or None)
+        if values is None:
+            return
+        transcript = load_transcript(values["transcript"])
+        answered = {item.call_id for item in transcript if isinstance(item, ToolResultItem)}
+        items: list[TranscriptItem] = [
+            ToolResultItem(
+                call_id=item.call_id, name=item.name, ok=False, payload=_CANCELLED_RESULT
+            )
+            for item in transcript
+            if isinstance(item, ToolCallItem) and item.call_id not in answered
+        ]
+        committed = "".join(values.get("answer_segments", []))
+        rest = sent.removeprefix(committed) if sent.startswith(committed) else sent
+        if rest:
+            items.append(AssistantText(text=rest))
+        if items:
+            await self._compiled.aupdate_state(
+                config, {"transcript": dump_transcript(items)}, as_node=_FINALIZE
+            )
 
     def _outcome(self, state: ChatState) -> RunOutcome:
         ending = _ending(state["outcome"])
@@ -240,65 +352,71 @@ class ChatGraph:
             raise ValueError("the chat transcript must end with the customer's message")
         return {}
 
-    async def _agent(self, state: ChatState) -> StateUpdate:
+    async def _agent(self, state: ChatState, runtime: Runtime[RunContext]) -> StateUpdate:
         """One model turn: stream gatekept segments, collect tool calls, add usage."""
         if self._model is None:
             return {"outcome": ChatErrorCode.LLM_UNAVAILABLE.value}
+        model = self._model
+        allowance = runtime.context.allowance
         write = get_stream_writer()
         transcript = tuple(load_transcript(state["transcript"]))
         evidence = ChatEvidence.from_transcript(transcript)
         request = ChatModelRequest(
             system=self._prompt.system, transcript=transcript, tools=self._tools.tool_specs()
         )
-        segmenter = Segmenter()
-        sent: list[str] = []
-        text_parts: list[str] = []
-        calls: list[ToolCallItem] = []
-        end: ModelTurnEnd | None = None
-
-        def release(segment: str) -> bool:
-            """Send ``segment`` if it is safe; else send the safe message and return False."""
-            safe = not check_segment(segment, evidence)
-            text = segment if safe else SAFE_MESSAGE
-            write(Token(text=text))
-            sent.append(text)
-            return safe
-
         usage = _usage(state)
-        stream = self._model.stream(request)
-        replaced = False
+        failed = Usage()
+
+        async def attempt(_timeout: float) -> _Turn:
+            # The adapter enforces the per-call timeout itself (LLM_TIMEOUT_SECONDS).
+            nonlocal failed
+            if allowance is not None and not await allowance.admit():
+                raise _BudgetSpent
+            turn = _Turn()
+            try:
+                await self._stream_turn(model, request, evidence, write, turn)
+            except ModelError as error:
+                spent = Usage(input_tokens=error.input_tokens, output_tokens=error.output_tokens)
+                failed = failed + spent
+                if allowance is not None:
+                    allowance.spend(spent)
+                raise _TurnFailed(turn, error) from error
+            if allowance is not None and turn.end is not None:
+                allowance.spend(turn.end.usage, turn.end.model_id)
+            return turn
+
         try:
-            async for event in stream:
-                if isinstance(event, TextDelta):
-                    text_parts.append(event.text)
-                    if not all(release(segment) for segment in segmenter.feed(event.text)):
-                        replaced = True
-                        break
-                elif isinstance(event, ToolUseRequest):
-                    calls.append(
-                        ToolCallItem(call_id=event.id, name=event.name, arguments=event.input)
-                    )
-                else:
-                    end = event
-        except ModelError as error:
-            spent = Usage(input_tokens=error.input_tokens, output_tokens=error.output_tokens)
+            turn = await call_with_retry(
+                attempt,
+                deadline=math.inf,
+                max_retries=self._max_retries,
+                backoff_base=RETRY_BACKOFF_SECONDS,
+                attempt_timeout=math.inf,
+                is_retryable=_retryable,
+                sleep=self._sleep,
+            )
+        except _BudgetSpent:
+            return {
+                "outcome": ChatErrorCode.BUDGET_EXCEEDED.value,
+                "usage": (usage + failed).model_dump(),
+            }
+        except _TurnFailed as error:
             return {
                 "outcome": ChatErrorCode.LLM_UNAVAILABLE.value,
-                "answer_segments": [*state["answer_segments"], *sent],
-                "usage": (usage + spent).model_dump(),
+                "answer_segments": [*state["answer_segments"], *error.turn.sent],
+                "usage": (usage + failed).model_dump(),
             }
-        finally:
-            if isinstance(stream, AsyncGenerator):  # stop reading the model (FR-016)
-                await stream.aclose()
-        rest = None if replaced else segmenter.finish()
-        if replaced or (rest is not None and not release(rest)):
+        usage = usage + failed
+        sent, end = turn.sent, turn.end
+        if turn.replaced:
             return self._fixed_ending(state, sent, FinishReason.REPLACED, usage, end)
         if end is None:
             return {
                 "outcome": ChatErrorCode.LLM_UNAVAILABLE.value,
                 "answer_segments": [*state["answer_segments"], *sent],
+                "usage": usage.model_dump(),
             }
-        items = _turn_items(text_parts, calls, end)
+        items = _turn_items(turn.text_parts, turn.calls, end)
         pending = [item for item in items if isinstance(item, ToolCallItem)]
         if pending and state["rounds"] >= self._max_tool_rounds:
             write(Token(text=TOOL_LIMIT_MESSAGE))
@@ -311,6 +429,50 @@ class ChatGraph:
             "usage": (usage + end.usage).model_dump(),
             "model_id": end.model_id,
         }
+
+    async def _stream_turn(
+        self,
+        model: ChatModel,
+        request: ChatModelRequest,
+        evidence: ChatEvidence,
+        write: Callable[[GraphEvent], None],
+        turn: _Turn,
+    ) -> None:
+        """Stream one model call into ``turn``, releasing each segment once it is gatekept.
+
+        A violating segment is replaced by the safe message and the model stream stops being
+        read (``turn.replaced``); the remainder is released when the turn ends (FR-016).
+        """
+        segmenter = Segmenter()
+
+        def release(segment: str) -> bool:
+            """Send ``segment`` if it is safe; else send the safe message and return False."""
+            safe = not check_segment(segment, evidence)
+            text = segment if safe else SAFE_MESSAGE
+            write(Token(text=text))
+            turn.sent.append(text)
+            return safe
+
+        stream = model.stream(request)
+        try:
+            async for event in stream:
+                if isinstance(event, TextDelta):
+                    turn.text_parts.append(event.text)
+                    if not all(release(segment) for segment in segmenter.feed(event.text)):
+                        turn.replaced = True
+                        return
+                elif isinstance(event, ToolUseRequest):
+                    turn.calls.append(
+                        ToolCallItem(call_id=event.id, name=event.name, arguments=event.input)
+                    )
+                else:
+                    turn.end = event
+        finally:
+            if isinstance(stream, AsyncGenerator):  # stop reading the model (FR-016)
+                await stream.aclose()
+        rest = segmenter.finish()
+        if rest is not None and not release(rest):
+            turn.replaced = True
 
     async def _run_tools(self, state: ChatState) -> StateUpdate:
         """Run every pending call; an upstream 401 ends the run ``TOOL_FAILED`` (FR-011)."""

@@ -4,7 +4,9 @@ I/O only: authentication (``require_caller``, any role), validation, the ``{code
 error bodies and SSE framing; posting and deleting go through ``ChatService``. Every store
 call is scoped to the token subject, so an unknown, malformed or
 another user's id gives the same 404 (FR-003). A storage outage (``is_unavailable``) is a 503
-``UNAVAILABLE``; any other error propagates.
+``UNAVAILABLE``; any other error propagates. Posting is rate limited per user after
+authentication and before the body is validated (429 ``RATE_LIMITED`` with ``Retry-After``); a
+full conversation or one with an answer in progress is a 409 (research §16).
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -20,6 +22,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
+from ecommerce_ai.agents.assistant.limits import ConversationFull, StreamActive
 from ecommerce_ai.agents.assistant.model import (
     Conversation,
     ConversationHistory,
@@ -30,6 +33,7 @@ from ecommerce_ai.agents.assistant.model import (
 )
 from ecommerce_ai.agents.assistant.ports import ConversationStore
 from ecommerce_ai.agents.assistant.service import ChatService
+from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.api.route_policy import AUTHENTICATED
 from ecommerce_ai.api.sse import MEDIA_TYPE, sse_response
 from ecommerce_ai.infrastructure.caller import RequestCaller
@@ -62,20 +66,29 @@ class ChatHttpCode(StrEnum):
     """Code of an error answered before any stream opens."""
 
     NOT_FOUND = "NOT_FOUND"
+    STREAM_ACTIVE = "STREAM_ACTIVE"
+    CONVERSATION_FULL = "CONVERSATION_FULL"
     VALIDATION_FAILED = "VALIDATION_FAILED"
+    RATE_LIMITED = "RATE_LIMITED"
     UNAVAILABLE = "UNAVAILABLE"
 
 
 HTTP_MESSAGES: Final = {
     ChatHttpCode.NOT_FOUND: "Conversation not found.",
+    ChatHttpCode.STREAM_ACTIVE: "An answer is already in progress in this conversation.",
+    ChatHttpCode.CONVERSATION_FULL: "This conversation is full. Please start a new one.",
     ChatHttpCode.VALIDATION_FAILED: "The request is not valid.",
+    ChatHttpCode.RATE_LIMITED: "You are sending messages too fast. Please wait a moment.",
     ChatHttpCode.UNAVAILABLE: "The assistant is unavailable right now. Please try again later.",
 }
 """The fixed message of each code; never request or storage details."""
 
 _STATUS: Final = {
     ChatHttpCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    ChatHttpCode.STREAM_ACTIVE: status.HTTP_409_CONFLICT,
+    ChatHttpCode.CONVERSATION_FULL: status.HTTP_409_CONFLICT,
     ChatHttpCode.VALIDATION_FAILED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ChatHttpCode.RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
     ChatHttpCode.UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
@@ -181,14 +194,23 @@ class ConversationListResponse(_Camel):
     offset: int = Field(description="Conversations skipped.")
 
 
-def error_response(code: ChatHttpCode) -> JSONResponse:
+def error_response(code: ChatHttpCode, headers: dict[str, str] | None = None) -> JSONResponse:
     """The fixed ``{code, message}`` response of ``code``."""
     body = ErrorBody(code=code.value, message=HTTP_MESSAGES[code])
-    return JSONResponse(body.model_dump(by_alias=True), status_code=_STATUS[code])
+    return JSONResponse(body.model_dump(by_alias=True), status_code=_STATUS[code], headers=headers)
 
 
 class ChatUnavailable(Exception):
     """Storage was unreachable; answered 503 ``UNAVAILABLE``."""
+
+
+class RateLimited(Exception):
+    """The caller posts too fast; answered 429 ``RATE_LIMITED`` with ``Retry-After``."""
+
+    def __init__(self, retry_after: int) -> None:
+        """Ask the caller to wait ``retry_after`` whole seconds."""
+        super().__init__("rate limited")
+        self.retry_after = retry_after
 
 
 def install_chat_error_handlers(app: FastAPI) -> None:
@@ -204,8 +226,14 @@ def install_chat_error_handlers(app: FastAPI) -> None:
     async def on_unavailable(_request: Request, _exc: Exception) -> Response:
         return error_response(ChatHttpCode.UNAVAILABLE)
 
+    async def on_rate_limited(_request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, RateLimited):  # registered for this class only
+            raise exc
+        return error_response(ChatHttpCode.RATE_LIMITED, {"Retry-After": str(exc.retry_after)})
+
     app.add_exception_handler(RequestValidationError, on_validation)
     app.add_exception_handler(ChatUnavailable, on_unavailable)
+    app.add_exception_handler(RateLimited, on_rate_limited)
 
 
 _ERRORS: Final[dict[int | str, dict[str, object]]] = {
@@ -223,6 +251,14 @@ _INVALID: Final[dict[int | str, dict[str, object]]] = {
 
 _STREAM: Final[dict[int | str, dict[str, object]]] = {
     200: {"content": {MEDIA_TYPE: {}}, "description": "The answer as Server-Sent Events."},
+    409: {
+        "model": ErrorBody,
+        "description": "`STREAM_ACTIVE` (an answer is in progress) or `CONVERSATION_FULL`.",
+    },
+    429: {
+        "model": ErrorBody,
+        "description": "`RATE_LIMITED`; `Retry-After` gives the seconds to wait.",
+    },
 }
 
 
@@ -241,14 +277,24 @@ def build_chat_router(
     clock: Callable[[], datetime],
     is_unavailable: Callable[[BaseException], bool],
     keepalive_seconds: float,
+    limiter: SlidingWindowLimiter,
 ) -> APIRouter:
     """Return the ``/chat`` router: reads on ``store``, posts and deletes through ``service``.
 
     ``clock`` stamps new conversations; a stream sends a keep-alive comment after
-    ``keepalive_seconds`` of silence.
+    ``keepalive_seconds`` of silence; ``limiter`` bounds each user's posts.
     """
     router = APIRouter(prefix=PREFIX, tags=["chat"])
     Caller = Annotated[RequestCaller, Depends(caller_dependency)]  # a type alias
+
+    async def rate_limited(caller: Caller) -> RequestCaller:
+        """The caller, once its post fits in the rate limit (before the body is validated)."""
+        retry_after = limiter.hit(caller.identity.subject)
+        if retry_after is not None:
+            raise RateLimited(retry_after)
+        return caller
+
+    LimitedCaller = Annotated[RequestCaller, Depends(rate_limited)]  # a type alias
 
     async def guarded[T](call: Awaitable[T]) -> T:
         try:
@@ -345,16 +391,21 @@ def build_chat_router(
         openapi_extra=AUTHENTICATED,
     )
     async def post_message(
-        caller: Caller, conversation_id: str, body: PostMessageRequest
+        caller: LimitedCaller, conversation_id: str, body: PostMessageRequest
     ) -> Response:
         parsed = _parse_id(conversation_id)
-        run = (
-            None
-            if parsed is None
-            else await guarded(service.start(caller.identity.subject, parsed, body.content))
-        )
+        try:
+            run = (
+                None
+                if parsed is None
+                else await guarded(service.start(caller.identity.subject, parsed, body.content))
+            )
+        except ConversationFull:
+            return error_response(ChatHttpCode.CONVERSATION_FULL)
+        except StreamActive:
+            return error_response(ChatHttpCode.STREAM_ACTIVE)
         if run is None:
             return error_response(ChatHttpCode.NOT_FOUND)
-        return sse_response(run.events(), keepalive_seconds)
+        return sse_response(run.events(), keepalive_seconds, on_close=run.discard)
 
     return router

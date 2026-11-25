@@ -27,6 +27,7 @@ from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from ecommerce_ai.agents.assistant.graph import ChatGraph
+from ecommerce_ai.agents.assistant.limits import ChatLimits
 from ecommerce_ai.agents.assistant.ports import (
     ChatModel,
     Checkpointer,
@@ -51,6 +52,7 @@ from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
+from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
@@ -219,9 +221,10 @@ def create_app(
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
     tool_runner: ToolRunner | None = None,
+    token_budget: TokenBudget | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
-    checkpointer and the chat's tool runner replace the real ones in tests.
+    checkpointer, the chat's tool runner and the token budget replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
@@ -279,10 +282,11 @@ def create_app(
         if chat_model is None:
             chat_model = build_anthropic_chat_model(settings, llm_client)
     wake = asyncio.Event()
+    budget = token_budget or TokenBudgetRepository(engine, settings.daily_token_budget)
     worker = build_triage_worker(
         settings,
         triage_queue or TriageQueueRepository(engine, to_outbox_message),
-        TokenBudgetRepository(engine, settings.daily_token_budget),
+        budget,
         model,
         wake,
     )
@@ -303,14 +307,29 @@ def create_app(
         prompt=load_system_prompt("assistant", "v1"),
         checkpointer=checkpointer or PostgresCheckpointSaver(engine),
         max_tool_rounds=settings.chat_max_tool_rounds,
+        max_retries=settings.llm_max_retries,
+    )
+    chat_service = ChatService(
+        store,
+        chat_graph,
+        SystemClock(),
+        budget=budget,
+        limits=ChatLimits(
+            max_messages=settings.chat_max_messages,
+            request_token_cap=settings.chat_request_token_cap,
+            max_output_tokens=settings.llm_max_output_tokens,
+        ),
     )
     chat = build_chat_router(
         store,
-        ChatService(store, chat_graph, SystemClock()),
+        chat_service,
         require_caller(verifier),
         clock=lambda: datetime.now(UTC),
         is_unavailable=is_transient_db_error,
         keepalive_seconds=settings.chat_keepalive_seconds,
+        limiter=SlidingWindowLimiter(
+            settings.chat_rate_limit_messages, settings.chat_rate_limit_window_seconds
+        ),
     )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 

@@ -211,18 +211,18 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: every limit and failure gives a documented HTTP status or terminal `error`.
 **Independent test**: trigger each limit with fakes; check status/code.
 
-- [ ] T036 [P] [US5] Tests `tests/unit/test_rate_limit.py`: sliding window with injected clock,
+- [X] T036 [P] [US5] Tests `tests/unit/test_rate_limit.py`: sliding window with injected clock,
   `Retry-After` = ceil(seconds until oldest hit leaves), per-subject isolation
-- [ ] T037 [P] [US5] Tests `tests/unit/test_chat_limits.py`: empty/2001 chars Ã¢â€ â€™ 422 nothing stored;
+- [X] T037 [P] [US5] Tests `tests/unit/test_chat_limits.py`: empty/2001 chars Ã¢â€ â€™ 422 nothing stored;
   100 messages Ã¢â€ â€™ 409 `CONVERSATION_FULL`; concurrent post Ã¢â€ â€™ 409 `STREAM_ACTIVE`, first stream
   unaffected; 11th post Ã¢â€ â€™ 429 `RATE_LIMITED` + `Retry-After`; no model / `ModelUnavailable`
   (retries before first delta) Ã¢â€ â€™ user message stored, `error LLM_UNAVAILABLE`; exhausted daily
   budget or request cap Ã¢â€ â€™ `error BUDGET_EXCEEDED`, usage settled; upstream 401 in a tool Ã¢â€ â€™
   `error TOOL_FAILED`; store failure after open Ã¢â€ â€™ `error INTERNAL`; DB down before open Ã¢â€ â€™ 503;
   lock released after every ending; error endings store no assistant message
-- [ ] T038 [US5] Implement `src/ecommerce_ai/api/rate_limit.py::SlidingWindowLimiter` and apply it
+- [X] T038 [US5] Implement `src/ecommerce_ai/api/rate_limit.py::SlidingWindowLimiter` and apply it
   in the post route after auth, before DB work
-- [ ] T039 [US5] Add to `src/ecommerce_ai/agents/assistant/service.py`: `ActiveStreams` lock
+- [X] T039 [US5] Add to `src/ecommerce_ai/agents/assistant/service.py`: `ActiveStreams` lock
   (conversation id Ã¢â€ â€™ task, released in `finally`), full check (`count + 2 > CHAT_MAX_MESSAGES`),
   budget reserve/settle via `TokenBudget` (research Ã‚Â§11), `call_with_retry` before the first
   delta, error endings with fixed messages; map the 409s/429/503 in `src/ecommerce_ai/api/chat.py`
@@ -234,11 +234,11 @@ message needs an existing conversation; both are P1 and together form the MVP.
 **Goal**: disconnect cancels the run, keeps the partial answer, frees the lock.
 **Independent test**: disconnect after the first `token`; partial stored, new post accepted.
 
-- [ ] T040 [P] [US6] Tests `tests/unit/test_chat_disconnect.py`: cancel after first `token` Ã¢â€ â€™ no
+- [X] T040 [P] [US6] Tests `tests/unit/test_chat_disconnect.py`: cancel after first `token` Ã¢â€ â€™ no
   further model/tool calls, assistant message = sent text with `client_disconnected`, usage
   settled, lock released (new post accepted); delete during an active stream cancels it first,
   then 204
-- [ ] T041 [US6] Implement shielded `finish_disconnected` in
+- [X] T041 [US6] Implement shielded `finish_disconnected` in
   `src/ecommerce_ai/agents/assistant/service.py` and `CancelledError` handling in
   `src/ecommerce_ai/api/sse.py` (research Ã‚Â§2); delete cancels and awaits the active task
 

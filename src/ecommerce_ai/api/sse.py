@@ -4,16 +4,20 @@ Each event is ``id: <n>`` (1, 2, 3… per stream), ``event: <name>``, ``data: <J
 line. The run is pumped by one task into a one-slot queue, so the run keeps a single context and
 the framer can wait for the next event with a timeout: after ``keepalive_seconds`` of silence a
 ``: keep-alive`` comment is sent (FR-008). When the response stops early (the client went away),
-the pump task is cancelled and the run is closed.
+the pump task is cancelled: the run sees a ``CancelledError`` (or ``GeneratorExit``) and ends
+itself, shielded (research §2). When the run is cancelled from elsewhere (a delete), the stream
+ends without a terminal event. ``on_close`` runs once the response is over, also when it never
+started streaming (so a run that never began frees its conversation's slot).
 """
 
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Final
 
 from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from ecommerce_ai.agents.assistant.model import StreamEvent
 
@@ -46,6 +50,12 @@ async def sse_frames(
             async with contextlib.aclosing(events):
                 async for event in events:
                     await queue.put(event)
+        except asyncio.CancelledError:
+            # Wake the framer, dropping an event it has not taken: the run was cancelled.
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(_DONE)
+            raise
         except Exception as error:
             await queue.put(error)
             return
@@ -71,10 +81,24 @@ async def sse_frames(
         await asyncio.wait({task})
 
 
+class _EventStreamResponse(StreamingResponse):
+    """A streaming response that calls ``on_close`` when it is over, however it ended."""
+
+    def __init__(self, frames: AsyncGenerator[str], on_close: Callable[[], None]) -> None:
+        super().__init__(frames, media_type=MEDIA_TYPE, headers=HEADERS)
+        self._on_close = on_close
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._on_close()
+
+
 def sse_response(
-    events: AsyncGenerator[StreamEvent], keepalive_seconds: float
+    events: AsyncGenerator[StreamEvent],
+    keepalive_seconds: float,
+    on_close: Callable[[], None] = lambda: None,
 ) -> StreamingResponse:
-    """A ``text/event-stream`` response streaming ``events``."""
-    return StreamingResponse(
-        sse_frames(events, keepalive_seconds), media_type=MEDIA_TYPE, headers=HEADERS
-    )
+    """A ``text/event-stream`` response streaming ``events``; ``on_close`` runs at its end."""
+    return _EventStreamResponse(sse_frames(events, keepalive_seconds), on_close)

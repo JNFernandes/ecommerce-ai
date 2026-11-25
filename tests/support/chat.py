@@ -24,9 +24,13 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolRunner,
     ToolSpec,
 )
+from ecommerce_ai.agents.ports import TokenBudget
 from ecommerce_ai.agents.prompts.loader import load_system_prompt
 from ecommerce_ai.main import create_app
-from tests.support.stores import InMemoryConversationStore
+from tests.support.stores import InMemoryConversationStore, InMemoryTokenBudget
+
+UNLIMITED_BUDGET = 10**9
+"""A daily budget no test reaches."""
 
 TOOL_NAMES = (
     "get_order",
@@ -152,12 +156,14 @@ def chat_app(
     tools: ToolRunner | None = None,
     store: ConversationStore | None = None,
     checkpointer: Checkpointer | None = None,
+    budget: TokenBudget | None = None,
 ) -> FastAPI:
-    """The app with the chat on fakes: in-memory store and saver, fake tools, no probes."""
+    """The app with the chat on fakes: in-memory store, saver and budget, fake tools, no probes."""
     return create_app(
         probes=[],
         conversation_store=store or InMemoryConversationStore(),
         chat_model=model,
         tool_runner=tools or FakeToolRunner(),
         checkpointer=checkpointer or InMemorySaver(),
+        token_budget=budget or InMemoryTokenBudget(UNLIMITED_BUDGET),
     )
