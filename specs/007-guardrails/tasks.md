@@ -74,7 +74,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   `src/ecommerce_ai/infrastructure/db/guardrail_event_repository.py` (`GuardrailEventStore`; one
   insert per event, UTC `created_at`, filters by `user_id`); integration tests in
   `tests/integration/test_guardrail_repository.py`
-- [ ] T007 [P] Implement `UserUsageRepository` in
+- [X] T007 [P] Implement `UserUsageRepository` in
   `src/ecommerce_ai/infrastructure/db/user_usage_repository.py` (`UserUsageStore`; upsert on
   accept, conditional upsert `tokens + n ≤ cap` like `TokenBudgetRepository`, settle never below
   0); integration tests in `tests/integration/test_user_usage_repository.py` (concurrent reserves
