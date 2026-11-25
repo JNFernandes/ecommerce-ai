@@ -76,7 +76,7 @@ async def test_should_log_one_chat_run_line_with_counts_and_no_content() -> None
     assert run["tools"] == [{"name": "get_order", "outcome": "ok", "duration_ms": 1.0}]
     assert run["finish_reason"] == "completed"
     assert run["error_code"] is None
-    assert run["prompt_version"] == "assistant.v2"
+    assert run["prompt_version"] == "assistant.v3"
     assert run["model_id"] == MODEL_ID
     for secret in (QUESTION, ANSWER, "blue teapot", ARGUMENT, RESULT_VALUE, TOKEN, SUBJECT):
         assert secret not in output

@@ -130,7 +130,8 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   the lifespan and stops them (cancel after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before closing
   the LLM client and disposing the engine.
 - Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, `assistant.v1.md`,
-  `assistant.v2.md` (active, US-06 approval rules), loaded by
+  `assistant.v2.md` (US-06 approval rules), `assistant.v3.md` (active: calls `cancel_order`
+  directly for a named or single clear order, never asks in the chat first), loaded by
   `loader.py::load_prompt`, SHA-256 pinned by a test), immutable once released; never inline
   prompt strings in Python.
 

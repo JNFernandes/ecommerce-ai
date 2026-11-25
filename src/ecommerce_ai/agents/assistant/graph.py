@@ -147,8 +147,9 @@ class ApprovalNotPaused(LookupError):
     """``resume`` found no pause on that approval in the conversation's state."""
 
 
-ASSISTANT_PROMPT_VERSION: Final = "v2"
-"""The active assistant prompt (US-06 adds the approval flow); ``assistant.v1`` stays unchanged."""
+ASSISTANT_PROMPT_VERSION: Final = "v3"
+"""The active assistant prompt: v3 calls ``cancel_order`` directly for a named or single clear
+order (no confirmation in the chat); ``assistant.v1`` and ``v2`` stay unchanged."""
 
 
 def load_assistant_prompt() -> SystemPrompt:

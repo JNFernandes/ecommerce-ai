@@ -133,7 +133,7 @@ The frozen frontend contract (routes, SSE events, codes, fixed messages, example
 [`docs/chat-contract.md`](docs/chat-contract.md). Through the gateway the routes are
 `/api/ai/chat/...`. Request bodies over 16 KB get `413 PAYLOAD_TOO_LARGE` from the service itself,
 because the gateway's buffering body limit would hold back the stream. Posting a message stores it, then runs a
-LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v2.md`) whose state is
+LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v3.md`) whose state is
 checkpointed per conversation in PostgreSQL (`chat_checkpoints`, `chat_checkpoint_writes`), so a
 follow-up remembers earlier turns across restarts. The model (Anthropic, streamed) may call only
 the five read-only MCP tools, in process through `tools/invoker.py` with the caller's own token
