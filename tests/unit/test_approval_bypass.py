@@ -164,7 +164,9 @@ async def test_should_refuse_a_second_cancel_in_the_same_run_as_already_pending(
     )
     async with harness.client() as client:
         conversation_id = await harness.conversation(client)
-        response = await harness.post(client, conversation_id)
+        response = await harness.post(
+            client, conversation_id, f"Cancel {ORDER_ID} and {OTHER_ORDER_ID}"
+        )
 
     events = sse(response)
     assert names(events) == [

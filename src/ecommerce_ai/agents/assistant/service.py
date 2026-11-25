@@ -66,6 +66,7 @@ from ecommerce_ai.agents.assistant.model import (
     ApprovalExecution,
     ApprovalOutcome,
     ChatErrorCode,
+    Conversation,
     Decision,
     FinishReason,
     MessageEnd,
@@ -157,6 +158,12 @@ class _Failed:
 type _Queued = GraphEvent | RunOutcome | _End | _Failed
 
 
+def _allowlist(conversation: Conversation) -> frozenset[str] | None:
+    """The tools ``conversation`` may call (US-07 FR-010), ``None`` when it has no allowlist."""
+    allowlist = conversation.tool_allowlist
+    return None if allowlist is None else frozenset(allowlist)
+
+
 class ChatRun:
     """One accepted message (or decision) and the stream of its answer; holds the slot."""
 
@@ -176,10 +183,12 @@ class ChatRun:
         decided: _Decided | None = None,
         quota: ProposalQuota | None = None,
         guard_store: GuardrailEventStore | None = None,
+        tool_allowlist: frozenset[str] | None = None,
     ) -> None:
         """Answer ``content``, or resume from ``decided``; the caller has taken the slot.
 
-        The run's guard events go to ``guard_store`` (``None``: logged only).
+        The run's guard events go to ``guard_store`` (``None``: logged only); the model may call
+        only the conversation's ``tool_allowlist`` (``None``: every offered tool).
         """
         self.user_id = user_id
         self.conversation_id = conversation_id
@@ -195,6 +204,7 @@ class ChatRun:
         self._decided = decided
         self._quota = quota
         self._guard_store = guard_store
+        self._tool_allowlist = tool_allowlist
         self._guard_events: list[GuardEvent] = []
         self._execution: ApprovalExecution | None = None
         self._started = False
@@ -267,7 +277,11 @@ class ChatRun:
     def _graph_events(self) -> AsyncGenerator[GraphEvent | RunOutcome]:
         if self._decided is None:
             return self._graph.run(
-                self.conversation_id, self.content or "", self._allowance, self._quota
+                self.conversation_id,
+                self.content or "",
+                self._allowance,
+                self._quota,
+                tool_allowlist=self._tool_allowlist,
             )
         resumed = self._graph.resume(
             self.conversation_id,
@@ -275,6 +289,7 @@ class ChatRun:
             self._decided.decision,
             self._allowance,
             self._quota,
+            tool_allowlist=self._tool_allowlist,
         )
         return self._until_executed(resumed)
 
@@ -522,8 +537,9 @@ class ChatService:
         ``ConversationFull``, ``StreamActive`` or ``ApprovalPending`` (nothing stored).
         """
         content = normalize(content).strip()
+        conversation = await self._store.find(user_id, conversation_id)
         count = await self._store.count_messages(user_id, conversation_id)
-        if count is None:
+        if conversation is None or count is None:
             return None
         if count + MESSAGES_PER_EXCHANGE > self._limits.max_messages:
             raise ConversationFull
@@ -550,6 +566,7 @@ class ChatService:
             request_id=request_id,
             quota=self._quota(user_id),
             guard_store=self._guard_store,
+            tool_allowlist=_allowlist(conversation),
         )
 
     async def decide(
@@ -568,6 +585,9 @@ class ChatService:
         """
         approvals = self._approvals
         if approvals is None or await approvals.get(user_id, conversation_id, approval_id) is None:
+            return None
+        conversation = await self._store.find(user_id, conversation_id)
+        if conversation is None:
             return None
         self.streams.acquire(conversation_id)
         try:
@@ -596,6 +616,7 @@ class ChatService:
             decided=_Decided(decided, decision),
             quota=self._quota(user_id),
             guard_store=self._guard_store,
+            tool_allowlist=_allowlist(conversation),
         )
 
     async def pending_approval(self, user_id: str, conversation_id: UUID) -> Approval | None:

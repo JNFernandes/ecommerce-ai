@@ -455,6 +455,9 @@ class Conversation(_Frozen):
     title: str | None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    tool_allowlist: tuple[str, ...] | None = None
+    """Tools the conversation may call, set on create (US-07 FR-010); ``None``: no allowlist
+    (only stores without one, in tests). Never part of the HTTP responses."""
 
 
 class StoredMessage(_Frozen):

@@ -129,6 +129,7 @@ async def test_should_treat_another_users_conversation_as_unknown_on_every_call(
     foreign = await store.create(OTHER, None, "theirs", NOW)
 
     assert await store.get(OWNER, foreign.id) is None
+    assert await store.find(OWNER, foreign.id) is None
     assert await store.count_messages(OWNER, foreign.id) is None
     assert await store.delete(OWNER, foreign.id) is False
     assert (await store.list(OWNER, 20, 0)).total == 0
@@ -155,8 +156,36 @@ async def test_should_return_none_or_false_when_the_conversation_is_unknown(
     unknown = uuid4()
 
     assert await store.get(OWNER, unknown) is None
+    assert await store.find(OWNER, unknown) is None
     assert await store.count_messages(OWNER, unknown) is None
     assert await store.delete(OWNER, unknown) is False
+
+
+async def test_should_store_the_tool_allowlist_on_create_and_return_it_everywhere(
+    db_engine: AsyncEngine,
+) -> None:
+    store = ConversationRepository(db_engine, ("get_order", "cancel_order", "get_order"))
+
+    created = await store.create(OWNER, None, None, NOW)
+    found = await store.find(OWNER, created.id)
+    history = await store.get(OWNER, created.id)
+    page = await store.list(OWNER, 20, 0)
+
+    allowlist = ("get_order", "cancel_order")
+    assert created.tool_allowlist == allowlist
+    assert found is not None
+    assert found.tool_allowlist == allowlist
+    assert history is not None
+    assert history.conversation.tool_allowlist == allowlist
+    assert page.items[0].tool_allowlist == allowlist
+
+
+async def test_should_allow_no_tool_when_the_repository_has_no_allowlist(
+    store: ConversationStore,
+) -> None:
+    created = await store.create(OWNER, None, None, NOW)
+
+    assert created.tool_allowlist == ()
 
 
 async def test_should_count_messages_when_some_are_stored(store: ConversationStore) -> None:

@@ -79,6 +79,7 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
     check_answer,
     check_segment,
     replaced_events,
+    seen_ids,
 )
 from ecommerce_ai.agents.assistant.limits import ProposalQuota, RunAllowance
 from ecommerce_ai.agents.assistant.model import (
@@ -117,8 +118,10 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.segmenter import Segmenter
 from ecommerce_ai.agents.assistant.summaries import summarize
-from ecommerce_ai.agents.guardrails import Guardrails
+from ecommerce_ai.agents.guardrails import Guardrails, ToolContext
 from ecommerce_ai.agents.guardrails.events import GuardEvent
+from ecommerce_ai.agents.guardrails.tool_guard import TOOL_GUARD_SUMMARY, ToolRule, call_key
+from ecommerce_ai.agents.guardrails.tool_guard import refusal_payload as tool_refusal_payload
 from ecommerce_ai.agents.ports import Clock, ModelError, ModelUnavailable, SystemClock
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
 from ecommerce_ai.infrastructure.retry import call_with_retry
@@ -205,6 +208,8 @@ class RunContext:
     """The caller's proposals left this hour (``None``: no limit)."""
     canary: str | None = None
     """This run's canary (US-07 FR-007); in the context only, so never checkpointed."""
+    tool_allowlist: frozenset[str] | None = None
+    """Tools the conversation may call (US-07 FR-010; ``None``: every offered tool)."""
 
 
 @dataclass(slots=True)
@@ -302,6 +307,8 @@ class ChatState(TypedDict):
     """Names of the gatekeeper rules this run's answer broke (never its text)."""
     guard_events: list[dict[str, JsonValue]]
     """The ``GuardEvent``s of this run (US-07), content-free."""
+    call_keys: list[str]
+    """Canonical keys of every tool call of this message, refused ones included (FR-012)."""
 
 
 def record_guard_events(state: ChatState, events: Sequence[GuardEvent]) -> StateUpdate:
@@ -331,6 +338,7 @@ def _initial(text: str) -> ChatState:
         "execution": None,
         "violations": [],
         "guard_events": [],
+        "call_keys": [],
     }
 
 
@@ -511,14 +519,17 @@ class ChatGraph:
         text: str,
         allowance: RunAllowance | None = None,
         quota: ProposalQuota | None = None,
+        *,
+        tool_allowlist: frozenset[str] | None = None,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Answer ``text`` in the conversation: the events in order, then one ``RunOutcome``.
 
         Every model call is admitted by ``allowance`` (``None``: no token limit), every proposal
-        by ``quota`` (``None``: no hourly limit). A run that pauses for an approval ends
+        by ``quota`` (``None``: no hourly limit); the tool guard allows only ``tool_allowlist``
+        (``None``: every offered tool). A run that pauses for an approval ends
         ``awaiting_approval`` with the outcome's ``proposal``.
         """
-        context = self._context(allowance, quota)
+        context = self._context(allowance, quota, tool_allowlist)
         async for item in self._stream(_initial(text), conversation_id, context):
             yield item
 
@@ -529,6 +540,8 @@ class ChatGraph:
         decision: Decision,
         allowance: RunAllowance | None = None,
         quota: ProposalQuota | None = None,
+        *,
+        tool_allowlist: frozenset[str] | None = None,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Continue the run paused on ``approval_id`` with the customer's recorded ``decision``.
 
@@ -547,13 +560,23 @@ class ChatGraph:
         command: Command[str] = Command(
             resume=_resume_value(approval_id, decision), update={"guard_events": []}
         )
-        context = self._context(allowance, quota)
+        context = self._context(allowance, quota, tool_allowlist)
         async for item in self._stream(command, conversation_id, context):
             yield item
 
-    def _context(self, allowance: RunAllowance | None, quota: ProposalQuota | None) -> RunContext:
+    def _context(
+        self,
+        allowance: RunAllowance | None,
+        quota: ProposalQuota | None,
+        tool_allowlist: frozenset[str] | None,
+    ) -> RunContext:
         """The run's context, with a fresh canary."""
-        return RunContext(allowance=allowance, quota=quota, canary=self.guardrails.canary_factory())
+        return RunContext(
+            allowance=allowance,
+            quota=quota,
+            canary=self.guardrails.canary_factory(),
+            tool_allowlist=tool_allowlist,
+        )
 
     def _evidence(
         self, transcript: Sequence[TranscriptItem], state: ChatState, canary: str | None
@@ -860,6 +883,10 @@ class ChatGraph:
 
         A ``cancel_order`` call never runs here: it becomes a checked proposal (routing to
         ``approval``) or a refusal result (FR-003, FR-005).
+
+        The tool guard checks every call first (US-07 FR-010..012): a refused call does not run
+        and gets a fixed refusal result. A loop verdict refuses the rest of the batch too and
+        ends the answer with the safe message (``tool_loop``).
         """
         write = get_stream_writer()
         results: list[ToolResultItem] = []
@@ -867,10 +894,39 @@ class ChatGraph:
         guard_events: list[GuardEvent] = []
         unauthenticated = False
         proposal: PendingApproval | None = None
+        keys = list(state.get("call_keys") or [])
+        seen = seen_ids(model_view(load_transcript(state["transcript"])))
+        looped = False
         for raw in state["pending_tool_calls"]:
             call = ToolCallItem.model_validate(raw)
             write(ToolCall(call_id=call.call_id, name=call.name, arguments=call.arguments))
-            if call.name in APPROVAL_ACTIONS:
+            verdict = (
+                None
+                if looped
+                else self.guardrails.tool_guard.check(
+                    call.name,
+                    call.arguments,
+                    ToolContext(
+                        allowlist=runtime.context.tool_allowlist,
+                        seen_ids=seen,
+                        previous_calls=tuple(keys),
+                    ),
+                )
+            )
+            keys.append(call_key(call.name, call.arguments))
+            if verdict is not None:
+                guard_events.append(verdict.event)
+                looped = looped or verdict.ends_answer
+            if looped or verdict is not None:
+                rule = ToolRule.TOOL_LOOP.value if verdict is None else verdict.event.rule
+                result = ToolResultItem(
+                    call_id=call.call_id,
+                    name=call.name,
+                    ok=False,
+                    payload=tool_refusal_payload(rule),
+                )
+                summary = TOOL_GUARD_SUMMARY
+            elif call.name in APPROVAL_ACTIONS:
                 checked = await self._propose(
                     call, already_pending=proposal is not None, quota=runtime.context.quota
                 )
@@ -904,17 +960,43 @@ class ChatGraph:
                 )
             )
             proposal = None
+        if looped and proposal is not None:
+            # The answer ends here: no pause, and the proposed call is refused too.
+            results.append(
+                ToolResultItem(
+                    call_id=proposal.call_id,
+                    name=proposal.action,
+                    ok=False,
+                    payload=tool_refusal_payload(ToolRule.TOOL_LOOP.value),
+                )
+            )
+            write(
+                ToolResult(
+                    call_id=proposal.call_id,
+                    name=proposal.action,
+                    ok=False,
+                    summary=TOOL_GUARD_SUMMARY,
+                )
+            )
+            proposal = None
+        transcript: list[TranscriptItem] = list(results)
         update: StateUpdate = {
-            "transcript": dump_transcript(results),
             "pending_tool_calls": [],
             "rounds": state["rounds"] + 1,
             "tool_stats": [*state["tool_stats"], *stats],
             "pending_approval": None if proposal is None else proposal.model_dump(mode="json"),
+            "call_keys": keys,
         }
         if guard_events:
             update |= record_guard_events(state, guard_events)
         if unauthenticated:
             update["outcome"] = ChatErrorCode.TOOL_FAILED.value
+        elif looped:
+            write(Token(text=SAFE_MESSAGE))
+            transcript.append(AssistantText(text=SAFE_MESSAGE))
+            update["outcome"] = FinishReason.TOOL_LOOP.value
+            update["answer_segments"] = [*state["answer_segments"], SAFE_MESSAGE]
+        update["transcript"] = dump_transcript(transcript)
         return update
 
     async def _propose(
@@ -1036,6 +1118,7 @@ class ChatGraph:
             "model_id": None,
             "tool_stats": stats,
             "violations": [],
+            "call_keys": [],
         }
 
     def _fixed_ending(

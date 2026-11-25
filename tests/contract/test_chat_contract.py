@@ -23,6 +23,7 @@ from ecommerce_ai.agents.assistant.model import (
     ChatErrorCode,
     FinishReason,
 )
+from ecommerce_ai.agents.guardrails.tool_guard import TOOL_GUARD_SUMMARY
 from ecommerce_ai.api.chat import (
     HTTP_MESSAGES,
     PREFIX,
@@ -186,3 +187,7 @@ def test_should_document_every_cancel_order_summary() -> None:
 
 def test_should_document_the_fixed_blocked_refusal() -> None:
     assert BLOCKED_REFUSAL in " ".join(DOC.split())
+
+
+def test_should_document_the_fixed_tool_guard_summary() -> None:
+    assert f"`{TOOL_GUARD_SUMMARY}`" in " ".join(DOC.split())

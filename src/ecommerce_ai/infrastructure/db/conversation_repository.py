@@ -5,6 +5,7 @@ unknown one. Adding a message bumps the conversation's ``updated_at`` in the sam
 deleting a conversation also deletes its LangGraph checkpoint rows (thread id = conversation id).
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -29,10 +30,17 @@ from ecommerce_ai.infrastructure.db.tables import (
 
 _conversations = chat_conversations.c
 _messages = chat_messages.c
+_CONVERSATION_COLUMNS = (
+    _conversations.id,
+    _conversations.title,
+    _conversations.created_at,
+    _conversations.updated_at,
+    _conversations.tool_allowlist,
+)
 
 
 def _conversation(row: RowMapping) -> Conversation:
-    return Conversation.model_validate(row)
+    return Conversation.model_validate(dict(row) | {"tool_allowlist": tuple(row["tool_allowlist"])})
 
 
 def _message(row: RowMapping) -> StoredMessage:
@@ -61,9 +69,13 @@ def _message(row: RowMapping) -> StoredMessage:
 class ConversationRepository:
     """``ConversationStore`` over the async engine; one transaction per call."""
 
-    def __init__(self, engine: AsyncEngine) -> None:
-        """Read and write on ``engine``."""
+    def __init__(self, engine: AsyncEngine, tool_allowlist: Sequence[str] = ()) -> None:
+        """Read and write on ``engine``; new conversations get ``tool_allowlist`` (FR-010).
+
+        The default allows no tool at all, so a missing allowlist fails closed.
+        """
         self._engine = engine
+        self._tool_allowlist = list(dict.fromkeys(tool_allowlist))
 
     async def create(
         self, user_id: str, customer_id: UUID | None, title: str | None, now: datetime
@@ -81,13 +93,9 @@ class ConversationRepository:
                         title=title,
                         created_at=stamp,
                         updated_at=stamp,
+                        tool_allowlist=self._tool_allowlist,
                     )
-                    .returning(
-                        _conversations.id,
-                        _conversations.title,
-                        _conversations.created_at,
-                        _conversations.updated_at,
-                    )
+                    .returning(*_CONVERSATION_COLUMNS)
                 )
             ).one()
         return _conversation(row._mapping)
@@ -103,12 +111,7 @@ class ConversationRepository:
                 )
             ).scalar_one()
             rows = await connection.execute(
-                select(
-                    _conversations.id,
-                    _conversations.title,
-                    _conversations.created_at,
-                    _conversations.updated_at,
-                )
+                select(*_CONVERSATION_COLUMNS)
                 .where(_conversations.user_id == user_id)
                 .order_by(_conversations.updated_at.desc(), _conversations.id.desc())
                 .limit(limit)
@@ -122,12 +125,9 @@ class ConversationRepository:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
-                    select(
-                        _conversations.id,
-                        _conversations.title,
-                        _conversations.created_at,
-                        _conversations.updated_at,
-                    ).where(_conversations.id == conversation_id, _conversations.user_id == user_id)
+                    select(*_CONVERSATION_COLUMNS).where(
+                        _conversations.id == conversation_id, _conversations.user_id == user_id
+                    )
                 )
             ).one_or_none()
             if row is None:
@@ -154,6 +154,18 @@ class ConversationRepository:
             for table in (chat_checkpoint_writes, chat_checkpoints):
                 await connection.execute(delete(table).where(table.c.thread_id == thread_id))
         return True
+
+    async def find(self, user_id: str, conversation_id: UUID) -> Conversation | None:
+        """The conversation without its messages, or ``None``."""
+        async with self._engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    select(*_CONVERSATION_COLUMNS).where(
+                        _conversations.id == conversation_id, _conversations.user_id == user_id
+                    )
+                )
+            ).one_or_none()
+        return None if row is None else _conversation(row._mapping)
 
     async def count_messages(self, user_id: str, conversation_id: UUID) -> int | None:
         """Number of stored messages, or ``None`` when the conversation is unknown."""

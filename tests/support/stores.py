@@ -465,8 +465,9 @@ class InMemoryConversationStore:
     calls of that method raise; nothing is changed by a failing call.
     """
 
-    def __init__(self) -> None:
-        """Start without conversations."""
+    def __init__(self, tool_allowlist: Sequence[str] | None = None) -> None:
+        """Start without conversations; new ones get ``tool_allowlist`` (``None``: none)."""
+        self.tool_allowlist = None if tool_allowlist is None else tuple(tool_allowlist)
         self.conversations: dict[UUID, tuple[str, Conversation]] = {}
         self.messages: dict[UUID, list[StoredMessage]] = {}
         self.failures: dict[str, deque[BaseException]] = {}
@@ -492,7 +493,13 @@ class InMemoryConversationStore:
     ) -> Conversation:
         """Create an empty conversation."""
         self._fail("create")
-        conversation = Conversation(id=uuid4(), title=title, created_at=now, updated_at=now)
+        conversation = Conversation(
+            id=uuid4(),
+            title=title,
+            created_at=now,
+            updated_at=now,
+            tool_allowlist=self.tool_allowlist,
+        )
         self.conversations[conversation.id] = (user_id, conversation)
         self.messages[conversation.id] = []
         return conversation
@@ -525,6 +532,11 @@ class InMemoryConversationStore:
         del self.conversations[conversation_id]
         del self.messages[conversation_id]
         return True
+
+    async def find(self, user_id: str, conversation_id: UUID) -> Conversation | None:
+        """The conversation without its messages, or ``None``."""
+        self._fail("find")
+        return self._owned(user_id, conversation_id)
 
     async def count_messages(self, user_id: str, conversation_id: UUID) -> int | None:
         """Number of messages, or ``None`` when unknown."""

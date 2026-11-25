@@ -27,6 +27,7 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
+from ecommerce_ai.agents.assistant.approvals import APPROVAL_ACTIONS, TARGET_ARGUMENT
 from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
 from ecommerce_ai.agents.assistant.limits import ChatLimits
 from ecommerce_ai.agents.assistant.ports import (
@@ -44,6 +45,7 @@ from ecommerce_ai.agents.guardrails.canary import new_canary
 from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
 from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_input_rules
 from ecommerce_ai.agents.guardrails.output_checks import LeakChecks
+from ecommerce_ai.agents.guardrails.tool_guard import CallGuard
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -248,6 +250,7 @@ def build_guardrails(settings: Settings) -> Guardrails:
         input_guard=input_guard,
         tool_result_guard=ToolResultSanitizer(settings.tool_result_max_chars, input_guard),
         output_checks=LeakChecks(),
+        tool_guard=CallGuard(dict.fromkeys(APPROVAL_ACTIONS, TARGET_ARGUMENT)),
         canary_factory=new_canary,
     )
 
@@ -353,11 +356,14 @@ def create_app(
         backoff_max_seconds=settings.outbox_backoff_max_seconds,
         state=relay_state,
     )
-    store = conversation_store or ConversationRepository(engine)
+    chat_registry = registry.exposed(Exposure.CHAT)
+    store = conversation_store or ConversationRepository(
+        engine, tuple(tool.name for tool in chat_registry)
+    )
     chat_clock = clock or SystemClock()
     chat_graph = ChatGraph(
         model=chat_model,
-        tools=tool_runner or InvokerToolRunner(ToolInvoker(registry.exposed(Exposure.CHAT))),
+        tools=tool_runner or InvokerToolRunner(ToolInvoker(chat_registry)),
         prompt=load_assistant_prompt(),
         checkpointer=checkpointer or PostgresCheckpointSaver(engine),
         max_tool_rounds=settings.chat_max_tool_rounds,

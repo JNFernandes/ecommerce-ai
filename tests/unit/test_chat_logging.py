@@ -116,7 +116,7 @@ async def test_should_log_one_chat_approval_line_per_proposal_and_per_decision()
         conversation_id = created.json()["id"]
         proposed = await client.post(
             f"/chat/conversations/{conversation_id}/messages",
-            json={"content": QUESTION},
+            json={"content": f"{QUESTION} ({ORDER_ID})"},
             headers=headers() | {"X-Request-Id": "req-propose"},
         )
         approval_id = data(sse(proposed), "approval.required")["approvalId"]

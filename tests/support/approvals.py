@@ -122,7 +122,7 @@ class ApprovalHarness:
         self,
         client: httpx.AsyncClient,
         conversation_id: str,
-        content: str = "Please cancel my order",
+        content: str = f"Please cancel my order {ORDER_ID}",
         token: str = TOKEN,
     ) -> httpx.Response:
         """Post a chat message."""

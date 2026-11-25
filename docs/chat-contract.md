@@ -337,6 +337,14 @@ is `replaced`; past 5 tool rounds
 `CANCEL_PROPOSALS_PER_HOUR`) or `Orders unavailable`. The `/mcp` endpoint never offers
 `cancel_order`.
 
+A tool guard checks every call before it runs (US-07): a tool off the conversation's allowlist
+(set on create from the chat tools), a `cancel_order` for an order id the customer never typed
+and no tool returned in this conversation, or a repeat of an identical call (same tool, same
+arguments) in one message is not run and gets `tool.result` with `ok` `false` and the summary
+`The call was refused by the assistant's safety rules.`; no approval is created. A second repeat
+also refuses the rest of that turn's calls and ends the answer with the safe message and
+`finishReason` `tool_loop`. Chat text is never an approval: only the decision endpoint decides.
+
 ### Terminal error codes
 
 | Code | Fixed message | When |
