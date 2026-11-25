@@ -170,21 +170,26 @@ is stored, but neither it nor the refusal is shown to the model in later turns.
 ## Errors before the stream
 
 Every error answered before the stream opens has the body `{"code", "message"}` with a fixed
-message:
+message; a `RATE_LIMITED` 429 adds `"scope": "user"` (US-07):
 
 <!-- schema: ErrorBody -->
 ```json
 {"code": "NOT_FOUND", "message": "Conversation not found."}
 ```
 
+<!-- schema: ErrorBody -->
+```json
+{"code": "RATE_LIMITED", "message": "You are sending messages too fast. Please wait a moment.", "scope": "user"}
+```
+
 | Status | Code | Fixed message | When |
 |---|---|---|---|
 | 404 | `NOT_FOUND` | Conversation not found. | unknown, malformed or another user's id (identical) |
-| 409 | `STREAM_ACTIVE` | An answer is already in progress in this conversation. | a second post while one streams |
+| 409 | `STREAM_ACTIVE` | An answer is already in progress. Please wait for it to finish. | a post or decision while the same user has an answer streaming in any conversation |
 | 409 | `CONVERSATION_FULL` | This conversation is full. Please start a new one. | the conversation holds 100 messages (`CHAT_MAX_MESSAGES`) |
 | 413 | `PAYLOAD_TOO_LARGE` | The request is too large. | a `/chat` request body over 16 KB |
 | 422 | `VALIDATION_FAILED` | The request is not valid. | bad body, `limit` or `offset`; a message empty once normalised |
-| 429 | `RATE_LIMITED` | You are sending messages too fast. Please wait a moment. | more than 10 posts in 60 s per user; `Retry-After: <seconds>` |
+| 429 | `RATE_LIMITED` | You are sending messages too fast. Please wait a moment. | checked in order: cooldown active (after `GUARD_VIOLATION_THRESHOLD` blocked inputs of medium/high severity in `GUARD_VIOLATION_WINDOW_SECONDS`; lasts `GUARD_COOLDOWN_SECONDS`), more than `USER_MESSAGES_PER_MINUTE` (10) posts in 60 s, `USER_MESSAGES_PER_DAY` (200) messages this UTC day; `Retry-After: <seconds>` until it lifts. The decision endpoint gets only the cooldown and minute checks |
 | 503 | `UNAVAILABLE` | The assistant is unavailable right now. Please try again later. | the database is down |
 | 409 | `APPROVAL_PENDING` | Please approve or reject the pending action first. | a message posted while an approval is pending |
 | 409 | `APPROVAL_ALREADY_DECIDED` | This action has already been decided. | a decision for an approval no longer pending |
@@ -267,7 +272,7 @@ data: {"code":"LLM_UNAVAILABLE","message":"The assistant is unavailable right no
 | `token` | `text` |
 | `message.replaced` | `messageId`, `text` (the full text the message now holds) |
 | `message.end` | `messageId`, `finishReason`, `promptVersion`, `modelId` (`null` when no model answered), `usage`, `violations` (names of the gatekeeper rules a replaced answer broke, e.g. ungrounded_fact; never text; else empty) |
-| `error` | `code`, `message` |
+| `error` | `code`, `message`, `scope` (limit errors only: user or global) |
 | `approval.required` | `approvalId`, `action`, `orderId`, `summary`, `expiresAt` |
 | `approval.resolved` | `approvalId`, `decision`, `outcome` |
 
@@ -350,7 +355,7 @@ also refuses the rest of that turn's calls and ends the answer with the safe mes
 | Code | Fixed message | When |
 |---|---|---|
 | `LLM_UNAVAILABLE` | The assistant is unavailable right now. Please try again later. | no model configured, timeout or retries exhausted |
-| `BUDGET_EXCEEDED` | The assistant has reached its usage limit. Please try again later. | daily token budget or per-message cap reached |
+| `BUDGET_EXCEEDED` | The assistant has reached its usage limit. Please try again later. | `scope` user: the user's `USER_DAILY_TOKEN_BUDGET` or the per-message cap; global: the shared `DAILY_TOKEN_BUDGET` |
 | `RATE_LIMITED` | You are sending messages too fast. Please wait a moment. | reserved (the rate limit is a 429 before the stream) |
 | `TOOL_FAILED` | Your session has expired. Please sign in again. | an upstream rejected the caller's token |
 | `INTERNAL` | Something went wrong. Please try again. | storage failure after the stream opened |

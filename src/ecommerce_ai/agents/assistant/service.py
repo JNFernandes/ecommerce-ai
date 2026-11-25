@@ -34,6 +34,13 @@ Guard events (US-07, research §10): the graph publishes each ``GuardEvent`` as 
 the run collects them, and the shielded close logs one ``guardrail_event`` line per event and
 appends them to the ``GuardrailEventStore``, also after a disconnect. ``chat_run`` carries their
 counts per stage and action (``guards``). A failing append is logged and changes nothing else.
+
+Per-user quotas (US-07 US5, research §9): the API checks cooldown and the minute window before
+the body; ``start`` then counts the day limit (``QuotaExceeded``) before the conversation-full and
+stream checks, and a user holds at most one stream across conversations. The allowance reserves
+the user's day tokens before the global budget; ``BUDGET_EXCEEDED`` carries the refusing
+``scope``. After the audit, ``UserQuotas.after_run`` may add a ``cooldown`` event. Quota refusals
+come before any approval is touched, so a pending approval is never withdrawn by them.
 """
 
 import asyncio
@@ -60,6 +67,7 @@ from ecommerce_ai.agents.assistant.limits import (
     ConversationFull,
     ProposalQuota,
     RunAllowance,
+    UserBudget,
 )
 from ecommerce_ai.agents.assistant.model import (
     AnswerReplaced,
@@ -85,8 +93,9 @@ from ecommerce_ai.agents.assistant.ports import (
     ConversationStore,
     ProposalMessage,
 )
-from ecommerce_ai.agents.guardrails.events import GuardEvent, GuardrailEventStore
+from ecommerce_ai.agents.guardrails.events import GuardEvent, GuardrailEventStore, UserUsageStore
 from ecommerce_ai.agents.guardrails.normalizer import normalize
+from ecommerce_ai.agents.guardrails.quotas import UserQuotas
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.errors import error_fields
 
@@ -184,12 +193,15 @@ class ChatRun:
         quota: ProposalQuota | None = None,
         guard_store: GuardrailEventStore | None = None,
         tool_allowlist: frozenset[str] | None = None,
+        quotas: UserQuotas | None = None,
     ) -> None:
         """Answer ``content``, or resume from ``decided``; the caller has taken the slot.
 
         The run's guard events go to ``guard_store`` (``None``: logged only); the model may call
-        only the conversation's ``tool_allowlist`` (``None``: every offered tool).
+        only the conversation's ``tool_allowlist`` (``None``: every offered tool); ``quotas``
+        decides whether the run's blocks start a cooldown.
         """
+        self._quotas = quotas
         self.user_id = user_id
         self.conversation_id = conversation_id
         self.message_id = uuid4()
@@ -252,7 +264,8 @@ class ChatRun:
             finished = True
             self._log(outcome, started)
             if outcome.error is not None:
-                yield StreamError.for_code(outcome.error)
+                scope = None if self._allowance is None else self._allowance.denied_scope
+                yield StreamError.for_code(outcome.error, scope)
             elif outcome.finish_reason is not None:
                 if outcome.proposal is not None:
                     yield outcome.proposal.required_event()
@@ -375,6 +388,18 @@ class ChatRun:
         The guards have already acted: an audit that cannot be written is logged, never undone.
         """
         events = tuple(self._guard_events)
+        if not await self._append(events) or self._quotas is None:
+            return
+        try:
+            cooldown = await self._quotas.after_run(self.user_id, events)
+        except Exception as error:
+            _logger.error("guardrail_cooldown_failed", **error_fields(error))
+            return
+        if cooldown is not None:
+            await self._append((cooldown,))
+
+    async def _append(self, events: tuple[GuardEvent, ...]) -> bool:
+        """Log and store ``events``; whether they were stored."""
         for event in events:
             _logger.info(
                 "guardrail_event",
@@ -385,13 +410,15 @@ class ChatRun:
                 user_hash=user_hash(self.user_id),
             )
         if not events or self._guard_store is None:
-            return
+            return False
         try:
             await self._guard_store.append(
                 self.user_id, self.conversation_id, self._request_id, events
             )
         except Exception as error:
             _logger.error("guardrail_audit_failed", **error_fields(error))
+            return False
+        return True
 
     async def finish_disconnected(self, sent: str, started: float) -> None:
         """Keep the text already sent as a ``client_disconnected`` answer (US6)."""
@@ -498,6 +525,9 @@ class ChatService:
         approvals: ApprovalStore | None = None,
         proposals_per_hour: int = DEFAULT_PROPOSALS_PER_HOUR,
         guard_store: GuardrailEventStore | None = None,
+        quotas: UserQuotas | None = None,
+        user_usage: UserUsageStore | None = None,
+        user_daily_tokens: int | None = None,
     ) -> None:
         """Store in ``store``, answer with ``graph``, stamp with ``clock``.
 
@@ -505,8 +535,12 @@ class ChatService:
         per-conversation and per-message limits, ``streams`` the answers in progress,
         ``approvals`` the proposed actions (``None``: a proposal cannot be stored), of which one
         user gets at most ``proposals_per_hour`` (FR-015). ``guard_store`` keeps the guard audit
-        (``None``: guard events are only logged).
+        (``None``: guard events are only logged). ``quotas`` holds the day limit and cooldown;
+        ``user_usage`` with ``user_daily_tokens`` the per-user token budget (``None``: off).
         """
+        self._quotas = quotas
+        self._user_usage = user_usage
+        self._user_daily_tokens = user_daily_tokens
         self._store = store
         self._graph = graph
         self._clock = clock
@@ -522,10 +556,13 @@ class ChatService:
             return None
         return ProposalQuota(self._approvals, user_id, self._clock, self._proposals_per_hour)
 
-    def _allowance(self) -> RunAllowance | None:
+    def _allowance(self, user_id: str) -> RunAllowance | None:
         if self._budget is None:
             return None
-        return RunAllowance(self._budget, self._clock.now().date(), self._limits)
+        user = None
+        if self._user_usage is not None and self._user_daily_tokens is not None:
+            user = UserBudget(self._user_usage, user_id, self._user_daily_tokens)
+        return RunAllowance(self._budget, self._clock.now().date(), self._limits, user)
 
     async def start(
         self, user_id: str, conversation_id: UUID, content: str, request_id: str | None = None
@@ -534,16 +571,19 @@ class ChatService:
 
         ``content`` is already trimmed, within limits and not empty once normalised (validated by
         the API); it is stored and answered in its normalised form (FR-001). Raises
-        ``ConversationFull``, ``StreamActive`` or ``ApprovalPending`` (nothing stored).
+        ``QuotaExceeded`` (day limit), ``ConversationFull``, ``StreamActive`` or
+        ``ApprovalPending`` (nothing stored).
         """
         content = normalize(content).strip()
         conversation = await self._store.find(user_id, conversation_id)
         count = await self._store.count_messages(user_id, conversation_id)
         if conversation is None or count is None:
             return None
+        if self._quotas is not None:
+            await self._quotas.before_message(user_id)
         if count + MESSAGES_PER_EXCHANGE > self._limits.max_messages:
             raise ConversationFull
-        self.streams.acquire(conversation_id)
+        self.streams.acquire(conversation_id, user_id)
         try:
             if await self._settle_approvals(user_id, conversation_id) is not None:
                 raise ApprovalPending
@@ -561,12 +601,13 @@ class ChatService:
             graph=self._graph,
             clock=self._clock,
             streams=self.streams,
-            allowance=self._allowance(),
+            allowance=self._allowance(user_id),
             approvals=self._approvals,
             request_id=request_id,
             quota=self._quota(user_id),
             guard_store=self._guard_store,
             tool_allowlist=_allowlist(conversation),
+            quotas=self._quotas,
         )
 
     async def decide(
@@ -589,7 +630,7 @@ class ChatService:
         conversation = await self._store.find(user_id, conversation_id)
         if conversation is None:
             return None
-        self.streams.acquire(conversation_id)
+        self.streams.acquire(conversation_id, user_id)
         try:
             await self._settle_approvals(user_id, conversation_id)
             now = self._clock.now()
@@ -610,13 +651,14 @@ class ChatService:
             graph=self._graph,
             clock=self._clock,
             streams=self.streams,
-            allowance=self._allowance(),
+            allowance=self._allowance(user_id),
             approvals=approvals,
             request_id=request_id,
             decided=_Decided(decided, decision),
             quota=self._quota(user_id),
             guard_store=self._guard_store,
             tool_allowlist=_allowlist(conversation),
+            quotas=self._quotas,
         )
 
     async def pending_approval(self, user_id: str, conversation_id: UUID) -> Approval | None:

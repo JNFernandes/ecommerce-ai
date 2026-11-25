@@ -29,6 +29,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from ecommerce_ai.agents.guardrails.events import GuardEvent
+from ecommerce_ai.agents.guardrails.quotas import QuotaScope
 
 
 class FinishReason(StrEnum):
@@ -288,11 +289,20 @@ class StreamError(_Event):
     EVENT: ClassVar[str] = "error"
     code: ChatErrorCode = Field(description="Error code.")
     message: str = Field(description="Fixed, customer-safe message of the code.")
+    scope: QuotaScope | None = Field(
+        default=None,
+        description="`user` or `global`: whose limit `BUDGET_EXCEEDED`/`RATE_LIMITED` hit.",
+    )
 
     @classmethod
-    def for_code(cls, code: ChatErrorCode) -> "StreamError":
-        """The error event of ``code`` with its fixed message."""
-        return cls(code=code, message=ERROR_MESSAGES[code])
+    def for_code(cls, code: ChatErrorCode, scope: QuotaScope | None = None) -> "StreamError":
+        """The error event of ``code`` with its fixed message (and ``scope`` for limit errors)."""
+        limited = code in {ChatErrorCode.BUDGET_EXCEEDED, ChatErrorCode.RATE_LIMITED}
+        return cls(code=code, message=ERROR_MESSAGES[code], scope=scope if limited else None)
+
+    def data(self) -> dict[str, JsonValue]:
+        """The payload; ``scope`` only on the limit errors."""
+        return self.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 class ApprovalSummary(_Camel):

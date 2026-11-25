@@ -58,8 +58,10 @@ from tests.support.sse import events_of, parse_sse
 from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
+    InMemoryGuardrailEventStore,
     InMemoryOutboxStore,
     InMemoryTriageCaseQueue,
+    InMemoryUserUsageStore,
 )
 from tests.support.tokens import jwks, make_token
 from tests.support.triage import NOW, make_case
@@ -456,6 +458,8 @@ async def test_should_end_chat_llm_unavailable_without_model_kafka_or_database()
         conversation_store=store,
         checkpointer=InMemorySaver(),
         approval_store=InMemoryApprovalStore(store),
+        guard_store=InMemoryGuardrailEventStore(),
+        user_usage_store=InMemoryUserUsageStore(),
     )
     headers = {"Authorization": f"Bearer {make_token(sub='user-1')}"}
     with respx.mock(assert_all_called=False) as router:

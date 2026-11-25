@@ -189,15 +189,15 @@ unlisted tool, an unseen id and repeats → refused, no proposal, tool events.
 **Goal**: user budget, minute/day limits, one stream per user, cooldown. **Independent test**:
 small limits, exceed each → documented 429/409/SSE error with scope and `Retry-After`.
 
-- [ ] T025 [P] [US5] Tests in `tests/unit/test_quotas.py`: `QuotaVerdict`, cooldown threshold
+- [X] T025 [P] [US5] Tests in `tests/unit/test_quotas.py`: `QuotaVerdict`, cooldown threshold
   counts only input `blocked` ≥ `medium`, active while newest cooldown is younger than
   `GUARD_COOLDOWN_SECONDS`, retry-after to next UTC midnight, check order (research §9)
-- [ ] T026 [US5] Implement `src/ecommerce_ai/agents/guardrails/quotas.py` (`UserQuotas` over
+- [X] T026 [US5] Implement `src/ecommerce_ai/agents/guardrails/quotas.py` (`UserQuotas` over
   `RateWindow`, `UserUsageStore`, `GuardrailEventStore`, `Clock`)
-- [ ] T027 [US5] Extend `src/ecommerce_ai/agents/assistant/limits.py`: `RunAllowance` reserves the
+- [X] T027 [US5] Extend `src/ecommerce_ai/agents/assistant/limits.py`: `RunAllowance` reserves the
   user budget then the global one (global failure settles the user reservation to 0), error
   carries `scope`; `ActiveStreams` per-user slot; tests in `tests/unit/test_chat_limits.py`
-- [ ] T028 [US5] Wire quotas into `service.py` and `src/ecommerce_ai/api/chat.py`: post order
+- [X] T028 [US5] Wire quotas into `service.py` and `src/ecommerce_ai/api/chat.py`: post order
   cooldown → minute → day → full → stream; decision endpoint cooldown → minute; 429
   `{code, message, scope}` + `Retry-After`; 409 `STREAM_ACTIVE` across conversations; cooldown
   event appended at the threshold; SSE `BUDGET_EXCEEDED`/`RATE_LIMITED` carry `scope`; pending

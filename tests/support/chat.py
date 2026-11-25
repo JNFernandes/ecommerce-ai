@@ -26,7 +26,7 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolSpec,
 )
 from ecommerce_ai.agents.guardrails import Guardrails
-from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
+from ecommerce_ai.agents.guardrails.events import GuardrailEventStore, UserUsageStore
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
 from ecommerce_ai.infrastructure.settings import Settings
@@ -36,6 +36,7 @@ from tests.support.stores import (
     InMemoryConversationStore,
     InMemoryGuardrailEventStore,
     InMemoryTokenBudget,
+    InMemoryUserUsageStore,
 )
 
 UNLIMITED_BUDGET = 10**9
@@ -206,6 +207,12 @@ def chat_graph(
     )
 
 
+def _guard_store(clock: Clock | None) -> InMemoryGuardrailEventStore:
+    return (
+        InMemoryGuardrailEventStore() if clock is None else InMemoryGuardrailEventStore(clock.now)
+    )
+
+
 def chat_app(
     model: ChatModel | None,
     tools: ToolRunner | None = None,
@@ -217,11 +224,13 @@ def chat_app(
     settings: Settings | None = None,
     guard_store: GuardrailEventStore | None = None,
     guardrails: Guardrails | None = None,
+    user_usage: UserUsageStore | None = None,
 ) -> FastAPI:
     """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
 
     Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used; without
-    ``guard_store`` a fresh ``InMemoryGuardrailEventStore``.
+    ``guard_store`` a fresh ``InMemoryGuardrailEventStore`` (stamped by ``clock`` when given);
+    without ``user_usage`` a fresh ``InMemoryUserUsageStore``.
     """
     conversations = store or InMemoryConversationStore()
     return create_app(
@@ -234,6 +243,12 @@ def chat_app(
         token_budget=budget or InMemoryTokenBudget(UNLIMITED_BUDGET),
         approval_store=approvals or InMemoryApprovalStore(conversations),
         clock=clock,
-        guard_store=guard_store or InMemoryGuardrailEventStore(),
+        guard_store=guard_store
+        or (
+            InMemoryGuardrailEventStore()
+            if clock is None
+            else InMemoryGuardrailEventStore(clock.now)
+        ),
         guardrails=guardrails,
+        user_usage_store=user_usage or InMemoryUserUsageStore(),
     )

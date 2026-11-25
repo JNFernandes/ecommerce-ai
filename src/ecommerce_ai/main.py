@@ -18,7 +18,7 @@ import argparse
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 import httpx
@@ -42,9 +42,10 @@ from ecommerce_ai.agents.assistant.tool_results import ToolResultSanitizer
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
 from ecommerce_ai.agents.guardrails import Guardrails
 from ecommerce_ai.agents.guardrails.canary import new_canary
-from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
+from ecommerce_ai.agents.guardrails.events import GuardrailEventStore, UserUsageStore
 from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_input_rules
 from ecommerce_ai.agents.guardrails.output_checks import LeakChecks
+from ecommerce_ai.agents.guardrails.quotas import QuotaLimits, UserQuotas
 from ecommerce_ai.agents.guardrails.tool_guard import CallGuard
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
@@ -75,6 +76,7 @@ from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
 from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
+from ecommerce_ai.infrastructure.db.user_usage_repository import UserUsageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
@@ -271,10 +273,12 @@ def create_app(
     clock: Clock | None = None,
     guard_store: GuardrailEventStore | None = None,
     guardrails: Guardrails | None = None,
+    user_usage_store: UserUsageStore | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
     checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
-    clock, the guard audit store and the chat's guardrails replace the real ones in tests.
+    clock, the guard audit store, the chat's guardrails and the per-user usage store replace the
+    real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
@@ -372,13 +376,30 @@ def create_app(
         approval_ttl_seconds=settings.approval_ttl_seconds,
         guardrails=guardrails or build_guardrails(settings),
     )
+    guard_events = guard_store or GuardrailEventRepository(engine)
+    user_usage = user_usage_store or UserUsageRepository(engine)
+    quotas = UserQuotas(
+        SlidingWindowLimiter(settings.user_messages_per_minute, RATE_WINDOW_SECONDS),
+        user_usage,
+        guard_events,
+        chat_clock,
+        QuotaLimits(
+            messages_per_day=settings.user_messages_per_day,
+            violation_threshold=settings.guard_violation_threshold,
+            violation_window=timedelta(seconds=settings.guard_violation_window_seconds),
+            cooldown=timedelta(seconds=settings.guard_cooldown_seconds),
+        ),
+    )
     chat_service = ChatService(
         store,
         chat_graph,
         chat_clock,
         approvals=approval_store or ApprovalRepository(engine),
         proposals_per_hour=settings.cancel_proposals_per_hour,
-        guard_store=guard_store or GuardrailEventRepository(engine),
+        guard_store=guard_events,
+        quotas=quotas,
+        user_usage=user_usage,
+        user_daily_tokens=settings.user_daily_token_budget,
         budget=budget,
         limits=ChatLimits(
             max_messages=settings.chat_max_messages,
@@ -393,7 +414,7 @@ def create_app(
         clock=lambda: datetime.now(UTC),
         is_unavailable=is_transient_db_error,
         keepalive_seconds=settings.chat_keepalive_seconds,
-        limiter=SlidingWindowLimiter(settings.user_messages_per_minute, RATE_WINDOW_SECONDS),
+        quotas=quotas,
     )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 

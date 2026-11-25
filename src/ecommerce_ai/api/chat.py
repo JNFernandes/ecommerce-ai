@@ -4,9 +4,10 @@ I/O only: authentication (``require_caller``, any role), validation, the ``{code
 error bodies and SSE framing; posting and deleting go through ``ChatService``. Every store
 call is scoped to the token subject, so an unknown, malformed or
 another user's id gives the same 404 (FR-003). A storage outage (``is_unavailable``) is a 503
-``UNAVAILABLE``; any other error propagates. Posting is rate limited per user after
-authentication and before the body is validated (429 ``RATE_LIMITED`` with ``Retry-After``); a
-full conversation or one with an answer in progress is a 409 (research §16). Bodies over
+``UNAVAILABLE``; any other error propagates. After authentication and before the body is
+validated, ``UserQuotas`` checks the cooldown and the minute window (US-07); the service then
+counts the day limit. Each refusal is a 429 ``{code, message, scope}`` with ``Retry-After``; a
+full conversation, or a user with an answer in progress in any conversation, is a 409. Bodies over
 ``MAX_BODY_BYTES`` get 413 ``PAYLOAD_TOO_LARGE`` from ``api/body_limit.py`` before any route runs.
 
 US-06: ``POST .../approvals/{approvalId}`` is the only way to decide a proposed action
@@ -25,7 +26,14 @@ from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response, statu
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+)
 from pydantic.alias_generators import to_camel
 
 from ecommerce_ai.agents.assistant.approvals import (
@@ -47,10 +55,15 @@ from ecommerce_ai.agents.assistant.model import (
 from ecommerce_ai.agents.assistant.ports import Approval, ConversationStore
 from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.guardrails.normalizer import normalize
+from ecommerce_ai.agents.guardrails.quotas import (
+    QuotaExceeded,
+    QuotaScope,
+    QuotaVerdict,
+    UserQuotas,
+)
 from ecommerce_ai.api.route_policy import AUTHENTICATED
 from ecommerce_ai.api.sse import MEDIA_TYPE, sse_response
 from ecommerce_ai.infrastructure.caller import RequestCaller
-from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 
 PREFIX: Final = "/chat"
 TITLE_MAX_CHARS: Final = 200
@@ -116,7 +129,7 @@ HTTP_MESSAGES: Final = {
     ChatHttpCode.APPROVAL_ALREADY_DECIDED: "This action has already been decided.",
     ChatHttpCode.APPROVAL_EXPIRED: "This action has expired. Please ask again.",
     ChatHttpCode.NOT_FOUND: "Conversation not found.",
-    ChatHttpCode.STREAM_ACTIVE: "An answer is already in progress in this conversation.",
+    ChatHttpCode.STREAM_ACTIVE: "An answer is already in progress. Please wait for it to finish.",
     ChatHttpCode.CONVERSATION_FULL: "This conversation is full. Please start a new one.",
     ChatHttpCode.VALIDATION_FAILED: "The request is not valid.",
     ChatHttpCode.PAYLOAD_TOO_LARGE: "The request is too large.",
@@ -148,6 +161,16 @@ class ErrorBody(_Camel):
 
     code: str = Field(description="Error code, e.g. `NOT_FOUND`.", examples=["NOT_FOUND"])
     message: str = Field(description="Fixed, customer-safe message of the code.")
+    scope: QuotaScope | None = Field(
+        default=None, description="`user` on a `RATE_LIMITED` 429; absent otherwise."
+    )
+
+    @model_serializer(mode="wrap")
+    def _without_absent_scope(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        data: dict[str, object] = handler(self)
+        if data.get("scope") is None:
+            data.pop("scope", None)
+        return data
 
 
 class CreateConversationRequest(_Camel):
@@ -251,23 +274,29 @@ class ConversationListResponse(_Camel):
     offset: int = Field(description="Conversations skipped.")
 
 
-def error_response(code: ChatHttpCode, headers: dict[str, str] | None = None) -> JSONResponse:
-    """The fixed ``{code, message}`` response of ``code``."""
-    body = ErrorBody(code=code.value, message=HTTP_MESSAGES[code])
-    return JSONResponse(body.model_dump(by_alias=True), status_code=_STATUS[code], headers=headers)
+def error_response(
+    code: ChatHttpCode,
+    headers: dict[str, str] | None = None,
+    scope: QuotaScope | None = None,
+) -> JSONResponse:
+    """The fixed ``{code, message}`` response of ``code`` (with ``scope`` when given)."""
+    body = ErrorBody(code=code.value, message=HTTP_MESSAGES[code], scope=scope)
+    return JSONResponse(
+        body.model_dump(mode="json", by_alias=True, exclude_none=True),
+        status_code=_STATUS[code],
+        headers=headers,
+    )
+
+
+def quota_response(verdict: QuotaVerdict) -> JSONResponse:
+    """The 429 ``RATE_LIMITED`` of a quota refusal, with ``scope`` and ``Retry-After``."""
+    return error_response(
+        ChatHttpCode.RATE_LIMITED, {"Retry-After": str(verdict.retry_after)}, verdict.scope
+    )
 
 
 class ChatUnavailable(Exception):
     """Storage was unreachable; answered 503 ``UNAVAILABLE``."""
-
-
-class RateLimited(Exception):
-    """The caller posts too fast; answered 429 ``RATE_LIMITED`` with ``Retry-After``."""
-
-    def __init__(self, retry_after: int) -> None:
-        """Ask the caller to wait ``retry_after`` whole seconds."""
-        super().__init__("rate limited")
-        self.retry_after = retry_after
 
 
 def install_chat_error_handlers(app: FastAPI) -> None:
@@ -283,14 +312,14 @@ def install_chat_error_handlers(app: FastAPI) -> None:
     async def on_unavailable(_request: Request, _exc: Exception) -> Response:
         return error_response(ChatHttpCode.UNAVAILABLE)
 
-    async def on_rate_limited(_request: Request, exc: Exception) -> Response:
-        if not isinstance(exc, RateLimited):  # registered for this class only
+    async def on_quota(_request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, QuotaExceeded):  # registered for this class only
             raise exc
-        return error_response(ChatHttpCode.RATE_LIMITED, {"Retry-After": str(exc.retry_after)})
+        return quota_response(exc.verdict)
 
     app.add_exception_handler(RequestValidationError, on_validation)
     app.add_exception_handler(ChatUnavailable, on_unavailable)
-    app.add_exception_handler(RateLimited, on_rate_limited)
+    app.add_exception_handler(QuotaExceeded, on_quota)
 
 
 _ERRORS: Final[dict[int | str, dict[str, object]]] = {
@@ -350,21 +379,26 @@ def build_chat_router(
     clock: Callable[[], datetime],
     is_unavailable: Callable[[BaseException], bool],
     keepalive_seconds: float,
-    limiter: SlidingWindowLimiter,
+    quotas: UserQuotas,
 ) -> APIRouter:
     """Return the ``/chat`` router: reads on ``store``, posts and deletes through ``service``.
 
     ``clock`` stamps new conversations; a stream sends a keep-alive comment after
-    ``keepalive_seconds`` of silence; ``limiter`` bounds each user's posts.
+    ``keepalive_seconds`` of silence; ``quotas`` holds each user's cooldown and minute window.
     """
     router = APIRouter(prefix=PREFIX, tags=["chat"])
     Caller = Annotated[RequestCaller, Depends(caller_dependency)]  # a type alias
 
     async def rate_limited(caller: Caller) -> RequestCaller:
-        """The caller, once its post fits in the rate limit (before the body is validated)."""
-        subject = caller.identity.subject
-        if not limiter.hit(subject):
-            raise RateLimited(limiter.retry_after(subject))
+        """The caller, once out of cooldown and within the minute window (before the body)."""
+        try:
+            await quotas.before_request(caller.identity.subject)
+        except QuotaExceeded:
+            raise
+        except Exception as exc:
+            if is_unavailable(exc):
+                raise ChatUnavailable from exc
+            raise
         return caller
 
     LimitedCaller = Annotated[RequestCaller, Depends(rate_limited)]  # a type alias
@@ -480,6 +514,8 @@ def build_chat_router(
                     service.start(subject, parsed, body.content, request_id=caller.request_id)
                 )
             )
+        except QuotaExceeded as exceeded:
+            return quota_response(exceeded.verdict)
         except ConversationFull:
             return error_response(ChatHttpCode.CONVERSATION_FULL)
         except StreamActive:

@@ -4,10 +4,13 @@
   ``request_token_cap`` from the daily ``TokenBudget``; a call is admitted only while what the run
   spent plus one call's ``max_output_tokens`` fits in the cap. ``settle`` replaces the reservation
   with the actual spend, once, on every ending (also a disconnect).
-- ``ActiveStreams``: at most one answer per conversation at a time (409 ``STREAM_ACTIVE``). The
-  slot is taken before the stream opens and released when the run ends; the running task is
-  attached so a delete can cancel it and wait for it. In process only (single instance until
-  US-07 adds shared locks).
+  With a ``UserBudget`` (US-07), the user's day budget is reserved first and the global one
+  second; if the global one refuses, the user reservation is settled back to 0. ``denied_scope``
+  says which one refused (the ``scope`` of ``BUDGET_EXCEEDED``).
+- ``ActiveStreams``: at most one answer per conversation, and per user, at a time (409
+  ``STREAM_ACTIVE``). The slot is taken before the stream opens and released when the run ends;
+  the running task is attached so a delete can cancel it and wait for it. In process only
+  (single instance, spec assumption).
 - ``ProposalQuota``: the cancellation proposals one user may still get in the rolling hour
   (``CANCEL_PROPOSALS_PER_HOUR``, FR-015), counted from the audit rows so it survives restarts.
 - ``ConversationFull`` / ``StreamActive``: the 409s answered before any stream opens.
@@ -21,6 +24,8 @@ from uuid import UUID
 
 from ecommerce_ai.agents.assistant.model import Usage
 from ecommerce_ai.agents.assistant.ports import ApprovalStore
+from ecommerce_ai.agents.guardrails.events import UserUsageStore
+from ecommerce_ai.agents.guardrails.quotas import QuotaScope
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 
 DEFAULT_MAX_MESSAGES: Final = 100
@@ -49,12 +54,28 @@ class ChatLimits:
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
 
 
-class RunAllowance:
-    """Token allowance of one message, reserved from the daily budget on first use."""
+@dataclass(frozen=True, slots=True)
+class UserBudget:
+    """One user's day token budget (``USER_DAILY_TOKEN_BUDGET``) kept in ``store``."""
 
-    def __init__(self, budget: TokenBudget, day: date, limits: ChatLimits) -> None:
-        """Reserve on ``day`` from ``budget`` within ``limits``."""
+    store: UserUsageStore
+    user_id: str
+    daily_cap: int
+
+
+class RunAllowance:
+    """Token allowance of one message, reserved from the daily budget(s) on first use."""
+
+    def __init__(
+        self,
+        budget: TokenBudget,
+        day: date,
+        limits: ChatLimits,
+        user: UserBudget | None = None,
+    ) -> None:
+        """Reserve on ``day`` from ``user``'s budget, then ``budget``, within ``limits``."""
         self._budget = budget
+        self._user = user
         self._day = day
         self._cap = limits.request_token_cap
         self._max_output = limits.max_output_tokens
@@ -62,16 +83,35 @@ class RunAllowance:
         self._settled = False
         self.usage = Usage()
         self.model_id: str | None = None
+        self.denied_scope: QuotaScope | None = None
 
     async def admit(self) -> bool:
         """Whether one more model call may run; the first one reserves the cap."""
         if self.usage.total + self._max_output > self._cap:
+            self.denied_scope = QuotaScope.USER
             return False
         if not self._reserved:
-            if not await self._budget.reserve(self._day, self._cap):
+            user = self._user
+            if user is not None and not await user.store.reserve(
+                user.user_id, self._day, self._cap, user.daily_cap
+            ):
+                self.denied_scope = QuotaScope.USER
+                return False
+            try:
+                admitted = await self._budget.reserve(self._day, self._cap)
+            except BaseException:
+                await self._release_user()
+                raise
+            if not admitted:
+                await self._release_user()
+                self.denied_scope = QuotaScope.GLOBAL
                 return False
             self._reserved = True
         return True
+
+    async def _release_user(self) -> None:
+        if self._user is not None:
+            await self._user.store.settle(self._user.user_id, self._day, self._cap, 0)
 
     def spend(self, usage: Usage, model_id: str | None = None) -> None:
         """Count the tokens one model call spent."""
@@ -84,7 +124,13 @@ class RunAllowance:
         if not self._reserved or self._settled:
             return
         self._settled = True
-        await self._budget.settle(self._day, self._cap, self.usage.total)
+        try:
+            await self._budget.settle(self._day, self._cap, self.usage.total)
+        finally:
+            if self._user is not None:
+                await self._user.store.settle(
+                    self._user.user_id, self._day, self._cap, self.usage.total
+                )
 
 
 class ProposalQuota:
@@ -109,12 +155,17 @@ class ActiveStreams:
     def __init__(self) -> None:
         """Start with no active stream."""
         self._runs: dict[UUID, asyncio.Task[object] | None] = {}
+        self._users: dict[UUID, str] = {}
 
-    def acquire(self, conversation_id: UUID) -> None:
-        """Take the conversation's slot; ``StreamActive`` when it is taken."""
-        if conversation_id in self._runs:
+    def acquire(self, conversation_id: UUID, user_id: str | None = None) -> None:
+        """Take the conversation's (and ``user_id``'s) slot; ``StreamActive`` when taken."""
+        if conversation_id in self._runs or (
+            user_id is not None and user_id in self._users.values()
+        ):
             raise StreamActive
         self._runs[conversation_id] = None
+        if user_id is not None:
+            self._users[conversation_id] = user_id
 
     def is_active(self, conversation_id: UUID) -> bool:
         """Whether an answer is in progress in the conversation."""
@@ -126,8 +177,9 @@ class ActiveStreams:
             self._runs[conversation_id] = asyncio.current_task()
 
     def release(self, conversation_id: UUID) -> None:
-        """Free the conversation's slot."""
+        """Free the conversation's slot (and its user's)."""
         self._runs.pop(conversation_id, None)
+        self._users.pop(conversation_id, None)
 
     async def cancel(self, conversation_id: UUID) -> None:
         """Cancel the conversation's running answer and wait until it has ended."""
