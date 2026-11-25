@@ -210,7 +210,7 @@ data: {"text":"Your last order was placed on 2026-11-20 and is SHIPPED."}
 
 id: 5
 event: message.end
-data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"completed","promptVersion":"assistant.v1","modelId":"claude-opus-5-5","usage":{"inputTokens":1830,"outputTokens":42}}
+data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"completed","promptVersion":"assistant.v1","modelId":"claude-opus-5-5","usage":{"inputTokens":1830,"outputTokens":42},"violations":[]}
 ```
 
 A failed answer (the `error` event replaces `message.end`; no assistant message is stored, the
@@ -232,7 +232,7 @@ data: {"code":"LLM_UNAVAILABLE","message":"The assistant is unavailable right no
 | `tool.call` | `callId`, `name`, `arguments` (never the token) |
 | `tool.result` | `callId`, `name`, `ok`, `summary` |
 | `token` | `text` |
-| `message.end` | `messageId`, `finishReason`, `promptVersion`, `modelId` (`null` when no model answered), `usage` |
+| `message.end` | `messageId`, `finishReason`, `promptVersion`, `modelId` (`null` when no model answered), `usage`, `violations` (names of the gatekeeper rules a replaced answer broke, e.g. ungrounded_fact; never text; else empty) |
 | `error` | `code`, `message` |
 | `approval.required` | `approvalId`, `action`, `orderId`, `summary`, `expiresAt` |
 | `approval.resolved` | `approvalId`, `decision`, `outcome` |
@@ -256,7 +256,7 @@ data: {"approvalId":"9b1e6c2d-3a4f-4b5c-8d6e-7f8a9b0c1d2e","action":"cancel_orde
 
 id: 4
 event: message.end
-data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"awaiting_approval","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":1900,"outputTokens":60}}
+data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"awaiting_approval","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":1900,"outputTokens":60},"violations":[]}
 ```
 
 The decision stream starts with `approval.resolved`; `outcome` is `cancelled`, `rejected`,
@@ -281,7 +281,7 @@ data: {"text":"Your order 3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b is now cancelled.
 
 id: 5
 event: message.end
-data: {"messageId":"d52b3c4d-5e6f-4a70-9b8c-0d1e2f3a4b5c","finishReason":"completed","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":2100,"outputTokens":30}}
+data: {"messageId":"d52b3c4d-5e6f-4a70-9b8c-0d1e2f3a4b5c","finishReason":"completed","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":2100,"outputTokens":30},"violations":[]}
 ```
 
 `token.text` has always passed the gatekeeper. When a segment or the whole answer breaks a rule,

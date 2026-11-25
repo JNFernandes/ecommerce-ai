@@ -36,7 +36,15 @@ def test_should_index_uuids_dates_and_numbers_when_built_from_strings() -> None:
     assert evidence.uuids == {ORDER_ID}
     assert evidence.has_date(11, 20, 2026)
     assert not evidence.has_date(11, 21, None)
-    assert evidence.numbers == {"49.9"}
+    # The parts of the ISO timestamp are numbers too (a date written as 20/11/2026 is grounded).
+    assert evidence.numbers == {"49.9", "2026", "11", "20", "10", "0"}
+
+
+def test_should_ground_ids_dates_and_numbers_of_extra_facts_but_not_their_status_words() -> None:
+    evidence = Evidence.from_strings(["status PENDING"], facts=[f"Cancel {ORDER_ID}, 3 x SKU-001"])
+
+    assert facts_grounded(f"Order {ORDER_ID}: 3 x SKU-001.", evidence)
+    assert not facts_grounded("It was shipped.", Evidence.from_strings([], facts=["shipped?"]))
 
 
 @pytest.mark.parametrize(

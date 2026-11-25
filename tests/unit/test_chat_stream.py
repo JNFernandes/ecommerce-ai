@@ -104,6 +104,7 @@ async def test_should_stream_the_contract_sequence_and_store_both_messages() -> 
         "promptVersion": "assistant.v2",
         "modelId": MODEL_ID,
         "usage": {"inputTokens": 200, "outputTokens": 30},
+        "violations": [],
     }
     question, answer = store.messages[UUID(conversation_id)]
     assert (question.role, question.content) == (MessageRole.USER, "Where is my last order?")

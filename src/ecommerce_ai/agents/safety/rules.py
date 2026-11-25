@@ -137,25 +137,42 @@ def scrub_ids_and_dates(text: str) -> str:
 
 
 class Evidence:
-    """Facts a text may state: UUIDs, ISO dates, numbers and status words of the source texts."""
+    """Facts a text may state: UUIDs, ISO dates, numbers and status words of the source texts.
 
-    def __init__(self, text: str, topics: frozenset[str]) -> None:
-        """Index the facts of ``text``; ``topics`` ground status words (``cancelled``...)."""
+    The parts of every ISO date and time (year, month, day, hour, minute, second) are numbers of
+    the evidence too, so a date or time written another way (``24/11/2026``, ``10:15``) is
+    grounded by the timestamp it comes from.
+    """
+
+    def __init__(self, text: str, topics: frozenset[str], facts: str = "") -> None:
+        """Index the facts of ``text`` and ``facts``; ``topics`` ground status words.
+
+        Status words (``cancelled``, ``shipped``...) are grounded only by ``text`` or ``topics``;
+        ``facts`` (e.g. the customer's own messages) adds only ids, dates and numbers.
+        """
         self.text = text
         self.topics = topics
-        self.uuids = {match.group().lower() for match in _UUID.finditer(text)}
-        without_uuids = _strip(_UUID, text)
+        source = f"{text}\n{facts}" if facts else text
+        self.uuids = {match.group().lower() for match in _UUID.finditer(source)}
+        without_uuids = _strip(_UUID, source)
         self.dates = _iso_dates(without_uuids)
         self.numbers = {
             number
             for match in _NUMBER.finditer(_strip(_ISO_DATE, without_uuids))
             if (number := _number(match.group())) is not None
+        } | {
+            number
+            for match in _ISO_DATE.finditer(without_uuids)
+            for part in re.findall(r"\d+", match.group())
+            if (number := _number(part)) is not None
         }
 
     @classmethod
-    def from_strings(cls, strings: Iterable[str], topics: Iterable[str] = ()) -> Self:
-        """Evidence made of ``strings`` (e.g. JSON leaves) and the event ``topics`` behind them."""
-        return cls("\n".join(strings), frozenset(topics))
+    def from_strings(
+        cls, strings: Iterable[str], topics: Iterable[str] = (), facts: Iterable[str] = ()
+    ) -> Self:
+        """Evidence of ``strings`` (e.g. JSON leaves), their ``topics`` and extra ``facts``."""
+        return cls("\n".join(strings), frozenset(topics), "\n".join(facts))
 
     def has_date(self, month: int, day: int | None, year: int | None) -> bool:
         """True when a date of the evidence matches every given part."""
@@ -248,21 +265,25 @@ _CANCELLATION_CLAIM: Final = re.compile(
 _NEGATED: Final = re.compile(
     r"(?:\bnot|\bcannot|n't|\bnever|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$", re.I
 )
+_MODAL: Final = re.compile(
+    r"\b(?:can|could|may|might|must|should|cannot)(?:\s+not|n't)?\s+(?:\w+\s+)?be\s+$", re.I
+)
+"""A possibility, not a claim: "only pending orders can be cancelled"."""
 _SENTENCE: Final = re.compile(r"[^.!?\n]+[.!?]*")
 
 
 def cancellation_claims(text: str) -> Iterator[tuple[str, ...]]:
     """For each sentence of ``text`` saying an order is or will be cancelled: the ids it names.
 
-    English and Portuguese; questions and negated forms ("was not cancelled") are no claims. An
-    empty tuple is a claim that names no order.
+    English and Portuguese; questions, negated forms ("was not cancelled") and possibilities
+    ("can be cancelled") are no claims. An empty tuple is a claim that names no order.
     """
     for sentence in _SENTENCE.finditer(text):
         part = sentence.group()
         if part.rstrip().endswith("?"):
             continue
         claimed = any(
-            not _NEGATED.search(part[: match.start()])
+            not _NEGATED.search(part[: match.start()]) and not _MODAL.search(part[: match.start()])
             for match in _CANCELLATION_CLAIM.finditer(part)
         )
         if claimed:

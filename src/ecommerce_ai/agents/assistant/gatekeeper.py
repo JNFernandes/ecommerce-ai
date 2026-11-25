@@ -9,10 +9,14 @@ contains it. Internal names (``ecommerce-*``, topic names, ``graphql``, ``localh
 allowed, even when a tool returned them.
 
 Evidence (``ChatEvidence.from_transcript``) = the leaf values of the ``data`` of every successful
-tool result in the conversation state, plus the UUIDs the customer wrote. Envelope metadata and
-error bodies are never evidence. A cancellation claim (US-06, FR-012) is allowed only for orders a
-successful ``cancel_order``, ``get_order`` or ``list_my_orders`` result holds as ``CANCELLED`` (a
-claim naming no order: any such order); text inside other data never grounds it. Every
+tool result in the conversation state, plus the ids, amounts, dates, quantities and SKU-like words
+the customer wrote (never their status words). Envelope metadata and error bodies are never
+evidence. Order statuses (``PENDING``, ``CONFIRMED``, ``CANCELLED``) are public words, never
+internal names. ``cancelled`` is not checked as a plain status word: the cancellation-claim rule
+decides it, so "cannot be cancelled" or "only pending orders can be cancelled" pass. A
+cancellation claim (US-06, FR-012) is allowed only for orders a successful ``cancel_order``,
+``get_order`` or ``list_my_orders`` result holds as ``CANCELLED`` (a claim naming no order: any
+such order); text inside other data never grounds it. Every
 ``cancel_order`` result is built by the service (fixed refusals carry the fresh read's
 ``{orderId, status}``), so its ``data`` is evidence even when the call was refused. Once an approval
 was resolved in the run (``approval_resolved``), asking for or waiting on an approval breaks
@@ -38,9 +42,8 @@ from ecommerce_ai.agents.safety.rules import (
     internal_name_matches,
     json_leaves,
     promise_matches,
-    uuids_in,
 )
-from ecommerce_ai.agents.triage_intake.cause import TRIAGE_TOPICS
+from ecommerce_ai.agents.triage_intake.cause import ORDER_CANCELLED, TRIAGE_TOPICS
 
 SAFE_MESSAGE: Final = (
     "Sorry, I can't give you a reliable answer to that. "
@@ -80,6 +83,10 @@ _WORD: Final = re.compile(r"[A-Za-z0-9]+")
 _ORDER_TOOLS: Final = frozenset({CANCEL_ACTION, READ_TOOL, "list_my_orders"})
 """Tools whose data may show an order ``CANCELLED`` (FR-012)."""
 _CANCELLED: Final = "CANCELLED"
+_ORDER_STATUSES: Final = frozenset({"PENDING", "CONFIRMED", _CANCELLED})
+"""Public order statuses: never internal names (``tools/orders.py::OrderStatus``)."""
+_CLAIM_RULED: Final = frozenset({ORDER_CANCELLED})
+"""Status topics whose words the dedicated cancellation-claim rule checks instead."""
 
 
 class ChatEvidence:
@@ -88,20 +95,23 @@ class ChatEvidence:
     def __init__(
         self,
         data: Iterable[str],
-        customer_ids: Iterable[str],
+        customer_texts: Iterable[str],
         cancelled: Iterable[str | None] = (),
         *,
         approval_resolved: bool = False,
     ) -> None:
-        """Index the tool ``data`` leaves and the UUIDs the customer wrote.
+        """Index the tool ``data`` leaves and the facts of the customer's own messages.
 
         ``cancelled`` holds the id of each order the order tools showed ``CANCELLED`` (``None``
         when the order had no id); ``approval_resolved`` marks a run resumed from a decision.
         """
         strings = list(data)
-        self.facts = Evidence.from_strings([*strings, *customer_ids])
-        self.words = {word for text in strings for word in _WORD.findall(text)}
-        self.lower_words = {word.lower() for word in self.words}
+        customer = list(customer_texts)
+        self.facts = Evidence.from_strings(strings, _CLAIM_RULED, customer)
+        self.lower_words = {word.lower() for text in strings for word in _WORD.findall(text)}
+        self.words = {
+            word for text in [*strings, *customer] for word in _WORD.findall(text)
+        } | _ORDER_STATUSES
         orders = list(cancelled)
         self.any_cancelled = bool(orders)
         self.cancelled_ids = frozenset(order for order in orders if order is not None)
@@ -115,7 +125,7 @@ class ChatEvidence:
         items = list(transcript)
         return cls(
             (leaf for item in items for leaf in _data_leaves(item)),
-            (uuid for item in items if isinstance(item, UserTurn) for uuid in uuids_in(item.text)),
+            (item.text for item in items if isinstance(item, UserTurn)),
             (order for item in items for order in _cancelled_orders(item)),
             approval_resolved=approval_resolved,
         )

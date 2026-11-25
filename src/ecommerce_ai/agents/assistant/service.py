@@ -220,6 +220,7 @@ class ChatRun:
                     prompt_version=self._graph.prompt_version,
                     model_id=outcome.model_id,
                     usage=outcome.usage,
+                    violations=outcome.violations,
                 )
         finally:
             # Shielded: a cancelled stream still stores, settles and frees the slot.
@@ -401,6 +402,8 @@ class ChatRun:
             error_code=None if outcome.error is None else outcome.error.value,
             prompt_version=self._graph.prompt_version,
             model_id=outcome.model_id,
+            # Rule names only, never the text that broke them.
+            violations=list(outcome.violations),
         )
 
 

@@ -59,13 +59,13 @@ EVIDENCE = _evidence(UserTurn(text=f"Where is {OWN_ID}?"), _result(ORDER))
         ("The graphql API answered.", ChatRule.INTERNAL_NAME),
         ("It runs on localhost here.", ChatRule.INTERNAL_NAME),
         ("I used list_my_orders for that.", ChatRule.INTERNAL_NAME),
-        ("The status is PENDING.", ChatRule.INTERNAL_NAME),
+        ("The flag is ENABLED.", ChatRule.INTERNAL_NAME),
         ("It failed with a TimeoutError.", ChatRule.INTERNAL_NAME),
         ("Order 9b2e4f6a-1c3d-4e5f-8a7b-6c5d4e3f2a1b is fine.", ChatRule.UNGROUNDED_FACT),
         ("The total is 59.90 euros.", ChatRule.UNGROUNDED_FACT),
         ("It was placed on 2026-11-21.", ChatRule.UNGROUNDED_FACT),
         ("It was placed on November 22.", ChatRule.UNGROUNDED_FACT),
-        ("Your order was cancelled.", ChatRule.UNGROUNDED_FACT),
+        ("Your order was cancelled.", ChatRule.CANCELLATION_CLAIM),
         ("Your order is <b>here</b>.", ChatRule.HTML),
     ],
 )
@@ -129,7 +129,7 @@ def test_should_flag_a_rule_that_spans_two_segments_only_on_the_whole_answer() -
 
 
 def test_should_report_each_broken_rule_once() -> None:
-    rules = check_segment("We will refund 10 euros at https://x.example <b>now</b>.", EVIDENCE)
+    rules = check_segment("We will refund 75 euros at https://x.example <b>now</b>.", EVIDENCE)
 
     assert rules == (
         ChatRule.PROMISE,

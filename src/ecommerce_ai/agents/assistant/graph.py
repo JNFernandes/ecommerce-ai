@@ -187,6 +187,7 @@ class _Turn:
     calls: list[ToolCallItem] = field(default_factory=list)
     end: ModelTurnEnd | None = None
     replaced: bool = False
+    violations: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +269,8 @@ class ChatState(TypedDict):
     """The ``PendingApproval`` the run is paused on, until decided or closed."""
     execution: dict[str, JsonValue] | None
     """The ``ApprovalExecution`` of the decision this run resumed from."""
+    violations: list[str]
+    """Names of the gatekeeper rules this run's answer broke (never its text)."""
 
 
 def _initial(text: str) -> ChatState:
@@ -282,6 +285,7 @@ def _initial(text: str) -> ChatState:
         "tool_stats": [],
         "pending_approval": None,
         "execution": None,
+        "violations": [],
     }
 
 
@@ -569,6 +573,7 @@ class ChatGraph:
             "model_id": state["model_id"],
             "tools": tuple(ToolStat.model_validate(stat) for stat in state["tool_stats"]),
             "execution": execution,
+            "violations": tuple(dict.fromkeys(state.get("violations") or [])),
         }
         pending = state.get("pending_approval")
         if pending is not None and state["outcome"] is None:
@@ -672,7 +677,9 @@ class ChatGraph:
         usage = usage + failed
         sent, end = turn.sent, turn.end
         if turn.replaced:
-            return self._fixed_ending(state, sent, FinishReason.REPLACED, usage, end)
+            ending = self._fixed_ending(state, sent, FinishReason.REPLACED, usage, end)
+            ending["violations"] = [*(state.get("violations") or []), *turn.violations]
+            return ending
         if end is None:
             return {
                 "outcome": ChatErrorCode.LLM_UNAVAILABLE.value,
@@ -711,11 +718,12 @@ class ChatGraph:
 
         def release(segment: str) -> bool:
             """Send ``segment`` if it is safe; else send the safe message and return False."""
-            safe = not check_segment(segment, evidence)
-            text = segment if safe else replacement
+            rules = check_segment(segment, evidence)
+            turn.violations.extend(rule.value for rule in rules)
+            text = replacement if rules else segment
             write(Token(text=text))
             turn.sent.append(text)
-            return safe
+            return not rules
 
         stream = model.stream(request)
         try:
@@ -912,6 +920,7 @@ class ChatGraph:
             "usage": Usage().model_dump(),
             "model_id": None,
             "tool_stats": stats,
+            "violations": [],
         }
 
     def _fixed_ending(
@@ -940,16 +949,20 @@ class ChatGraph:
                 load_transcript(state["transcript"]),
                 approval_resolved=state.get("execution") is not None,
             )
-            if not check_answer(answer, evidence):
+            rules = check_answer(answer, evidence)
+            if not rules:
                 return {}
+            violations = [*(state.get("violations") or []), *(rule.value for rule in rules)]
             message = _replacement(state)
         else:
+            violations = list(state.get("violations") or [])
             message = NO_ANSWER_MESSAGE
         get_stream_writer()(Token(text=message))
         return {
             "outcome": FinishReason.REPLACED.value,
             "transcript": dump_transcript([AssistantText(text=message)]),
             "answer_segments": [*state["answer_segments"], message],
+            "violations": violations,
         }
 
     async def _finalize(self, state: ChatState) -> StateUpdate:

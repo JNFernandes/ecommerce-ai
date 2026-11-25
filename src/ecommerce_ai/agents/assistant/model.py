@@ -261,6 +261,13 @@ class MessageEnd(_Event):
     prompt_version: str = Field(min_length=1, description="System prompt version, e.g. v1.")
     model_id: str | None = Field(description="Model that answered; null when none did.")
     usage: Usage = Field(description="Tokens spent on the answer.")
+    violations: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Gatekeeper rules the answer broke (rule names only, e.g. `ungrounded_fact`); empty"
+            " unless `finishReason` is `replaced`."
+        ),
+    )
 
     @model_validator(mode="after")
     def _sent_reason(self) -> Self:
@@ -402,6 +409,8 @@ class RunOutcome(_Frozen):
     tools: tuple[ToolStat, ...] = ()
     proposal: PendingApproval | None = None
     execution: ApprovalExecution | None = None
+    violations: tuple[str, ...] = ()
+    """Names of the gatekeeper rules the answer broke, once each, in order."""
 
     @model_validator(mode="after")
     def _one_ending(self) -> Self:

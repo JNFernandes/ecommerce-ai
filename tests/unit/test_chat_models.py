@@ -153,6 +153,7 @@ def test_should_serialize_event_data_in_camel_case() -> None:
         "promptVersion": "assistant.v1",
         "modelId": "claude-opus-5-5",
         "usage": {"inputTokens": 1830, "outputTokens": 42},
+        "violations": [],
     }
 
 
