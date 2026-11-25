@@ -97,7 +97,7 @@ async def test_should_log_one_chat_run_line_with_counts_and_no_content() -> None
     assert run["tools"] == [{"name": "get_order", "outcome": "ok", "duration_ms": 1.0}]
     assert run["finish_reason"] == "completed"
     assert run["error_code"] is None
-    assert run["prompt_version"] == "assistant.v3"
+    assert run["prompt_version"] == "assistant.v4"
     assert run["model_id"] == MODEL_ID
     for secret in (QUESTION, ANSWER, "blue teapot", ARGUMENT, RESULT_VALUE, TOKEN, SUBJECT):
         assert secret not in output
@@ -236,7 +236,8 @@ async def test_should_audit_and_log_each_guard_event_once_when_the_run_ends() ->
 
 
 async def test_should_report_no_guards_on_chat_run_when_no_guard_acted() -> None:
-    app = chat_app(ScriptedChatModel([text_turn(ANSWER)]), store=InMemoryConversationStore())
+    model = ScriptedChatModel([text_turn("Hello! How can I help with your orders?")])
+    app = chat_app(model, store=InMemoryConversationStore())
     stream = io.StringIO()
     configure_logging("INFO", stream)
     headers = {"Authorization": f"Bearer {TOKEN}"}

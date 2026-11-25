@@ -139,24 +139,24 @@ unchanged.
 **Independent test**: inject text/secrets into fake tool results with a model that repeats them →
 answer replaced, events recorded.
 
-- [ ] T015 [P] [US3] Tests in `tests/unit/test_tool_results.py`: string leaves normalised,
+- [X] T015 [P] [US3] Tests in `tests/unit/test_tool_results.py`: string leaves normalised,
   delimiters inside data neutralised, result over `TOOL_RESULT_MAX_CHARS` cut with
   `…[truncated N chars]` and a tool `sanitized` event, input-rule match in data → tool
   `sanitized` event, not a block
-- [ ] T016 [US3] Implement sanitising and capping in
+- [X] T016 [US3] Implement sanitising and capping in
   `src/ecommerce_ai/agents/assistant/tool_results.py` (research §5) as the bundle's
   `tool_result_guard`; the `tools` node adds its events to state
-- [ ] T017 [P] [US3] Tests in `tests/unit/test_canary.py` (format, fresh per run) and
+- [X] T017 [P] [US3] Tests in `tests/unit/test_canary.py` (format, fresh per run) and
   `tests/unit/test_prompt_loader.py` (v4 template hash pinned, `{canary}` rendered, v1–v3 unchanged)
-- [ ] T018 [US3] Implement `src/ecommerce_ai/agents/guardrails/canary.py` (`cnry-` +
+- [X] T018 [US3] Implement `src/ecommerce_ai/agents/guardrails/canary.py` (`cnry-` +
   `secrets.token_hex(12)`, never logged) and `src/ecommerce_ai/agents/prompts/assistant.v4.md`
   (v3 text + canary slot + truncation note); make v4 the active prompt, rendered per run
-- [ ] T019 [P] [US3] Tests in `tests/unit/test_output_checks.py`: canary (`high`), JWT-like,
+- [X] T019 [P] [US3] Tests in `tests/unit/test_output_checks.py`: canary (`high`), JWT-like,
   `sk-ant-`/`sk-`/`AKIA`/`ghp_`/`key=` secrets, table names from `tables.py` metadata, hosts
   (`*:5436`, `ai:8002`, `*.internal`), foreign UUID vs seen ids, 12-word prompt shingle; existing
   grounding/promise/cancellation-claim cases unchanged (FR-009); streamed canary →
   `message.replaced` in `tests/unit/test_chat_gatekeeper.py`
-- [ ] T020 [US3] Implement `src/ecommerce_ai/agents/guardrails/output_checks.py` and the new
+- [X] T020 [US3] Implement `src/ecommerce_ai/agents/guardrails/output_checks.py` and the new
   `ChatRule` members (`canary`, `token_like`, `secret_like`, `foreign_id`, `prompt_leak`) plus
   extended `_ALWAYS_INTERNAL` in `src/ecommerce_ai/agents/assistant/gatekeeper.py`; wire into
   `check_segment`/`check_answer` with output `replaced` events

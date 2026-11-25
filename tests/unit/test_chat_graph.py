@@ -326,7 +326,22 @@ async def test_should_replace_a_violating_last_segment_at_turn_end() -> None:
 
     events, outcome = await collect_run(chat_graph(model), _conversation(), "Help")
 
-    assert events == [Token(text=SAFE_MESSAGE)]
+    assert events == [
+        Token(text=SAFE_MESSAGE),
+        GuardEvent(
+            stage=GuardStage.OUTPUT,
+            rule="contact_or_url",
+            action=GuardAction.REPLACED,
+            severity=GuardSeverity.LOW,
+        ),
+        GuardEvent(  # "shop.example" also reads as a host name
+            stage=GuardStage.OUTPUT,
+            rule="internal_name",
+            action=GuardAction.REPLACED,
+            severity=GuardSeverity.MEDIUM,
+        ),
+    ]
+    assert outcome.guard_events == tuple(events[1:])
     assert outcome.finish_reason is FinishReason.REPLACED
     assert outcome.usage == Usage(input_tokens=100, output_tokens=20)
     assert outcome.model_id == MODEL_ID
@@ -337,7 +352,15 @@ async def test_should_replace_an_answer_that_breaks_a_rule_across_segments() -> 
 
     events, outcome = await collect_run(chat_graph(model), _conversation(), "Help")
 
-    assert events[-1] == AnswerReplaced(text=SAFE_MESSAGE)
+    assert events[-2:] == [
+        AnswerReplaced(text=SAFE_MESSAGE),
+        GuardEvent(
+            stage=GuardStage.OUTPUT,
+            rule="html",
+            action=GuardAction.REPLACED,
+            severity=GuardSeverity.LOW,
+        ),
+    ]
     assert outcome.finish_reason is FinishReason.REPLACED
     assert outcome.text == SAFE_MESSAGE
     assert outcome.violations == ("html",)

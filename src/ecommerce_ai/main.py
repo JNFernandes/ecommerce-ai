@@ -37,10 +37,13 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolRunner,
 )
 from ecommerce_ai.agents.assistant.service import ChatService
+from ecommerce_ai.agents.assistant.tool_results import ToolResultSanitizer
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
 from ecommerce_ai.agents.guardrails import Guardrails
+from ecommerce_ai.agents.guardrails.canary import new_canary
 from ecommerce_ai.agents.guardrails.events import GuardrailEventStore
 from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_input_rules
+from ecommerce_ai.agents.guardrails.output_checks import LeakChecks
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -240,8 +243,13 @@ def build_triage_worker(
 
 def build_guardrails(settings: Settings) -> Guardrails:
     """The chat's US-07 guards; an invalid input rules file raises, so the build fails."""
-    _ = settings
-    return Guardrails(input_guard=RuleInputGuard(load_input_rules()))
+    input_guard = RuleInputGuard(load_input_rules())
+    return Guardrails(
+        input_guard=input_guard,
+        tool_result_guard=ToolResultSanitizer(settings.tool_result_max_chars, input_guard),
+        output_checks=LeakChecks(),
+        canary_factory=new_canary,
+    )
 
 
 def create_app(

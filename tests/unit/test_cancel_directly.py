@@ -46,7 +46,7 @@ async def test_should_reach_the_approval_card_in_one_message_when_the_order_is_n
     events = sse(response)
     assert names(events) == ["message.start", "tool.call", "approval.required", "message.end"]
     end = data(events, "message.end")
-    assert (end["finishReason"], end["promptVersion"]) == ("awaiting_approval", "assistant.v3")
+    assert (end["finishReason"], end["promptVersion"]) == ("awaiting_approval", "assistant.v4")
     (request,) = harness.model.requests
     assert "call cancel_order for it right away" in request.system
     assert "Never ask the customer to confirm the cancellation in the chat" in request.system
