@@ -9,8 +9,10 @@ Notifications: Python, Identity). It reaches the platform only through the gatew
 **Status: in progress.** The service answers health and readiness checks, serves the read-only
 MCP tools (US-01, US-02), records a triage case for every failed order it consumes from Kafka
 (US-03), triages and publishes it (US-04) and streams grounded answers of the customer chat
-assistant over SSE (US-05, [Chat assistant](#chat-assistant)). Mutating tools with approval and
-the eval suite arrive with their own user stories.
+assistant over SSE (US-05, [Chat assistant](#chat-assistant)), where the customer can cancel a
+`PENDING` order only by approving the exact proposed call (US-06,
+[Cancelling with approval](#cancelling-with-approval)). The eval suite arrives with its own user
+story.
 
 ## Planned capabilities
 
@@ -131,7 +133,7 @@ The frozen frontend contract (routes, SSE events, codes, fixed messages, example
 [`docs/chat-contract.md`](docs/chat-contract.md). Through the gateway the routes are
 `/api/ai/chat/...`. Request bodies over 16 KB get `413 PAYLOAD_TOO_LARGE` from the service itself,
 because the gateway's buffering body limit would hold back the stream. Posting a message stores it, then runs a
-LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v1.md`) whose state is
+LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v2.md`) whose state is
 checkpointed per conversation in PostgreSQL (`chat_checkpoints`, `chat_checkpoint_writes`), so a
 follow-up remembers earlier turns across restarts. The model (Anthropic, streamed) may call only
 the five read-only MCP tools, in process through `tools/invoker.py` with the caller's own token
@@ -151,6 +153,34 @@ the text already sent is stored with `finishReason: client_disconnected`. One `c
 per answer (ids, latency, tokens, tool names/outcomes/durations, finish reason, prompt version,
 model id, hashed user), never message text, tool arguments or results. Assistant evals arrive
 with US-09 (TODO(EVAL_SUITE)).
+
+#### Cancelling with approval
+
+The chat (never `/mcp`, which still lists five read-only tools) also offers the mutating
+`cancel_order` (`POST {ORDERS_BASE_URL}/{orderId}/cancel` with the caller's token,
+[ADR 0002](docs/adr/0002-human-in-the-loop-for-mutating-tools.md)). The model can only propose
+it: the graph checks the id, that nothing else is pending in the conversation, the hourly limit
+(`CANCEL_PROPOSALS_PER_HOUR`) and a fresh `get_order` read showing the caller's order `PENDING`;
+otherwise the model gets a fixed refusal and no approval exists. A valid proposal pauses the run
+with a LangGraph `interrupt` (checkpointed, so it survives restarts), is stored with an audit row
+(`chat_approvals`, append-only `chat_actions`, migration 0004) and streams `approval.required`
+(action, order id, status and total read just now, `expiresAt` after `APPROVAL_TTL_SECONDS`), then
+`message.end` `awaiting_approval`. While it is pending, posting a message gets
+`409 APPROVAL_PENDING`: typed text never approves.
+
+`POST /chat/conversations/{id}/approvals/{approvalId}` with `{"decision": "approve" | "reject"}`
+decides once (`409 APPROVAL_ALREADY_DECIDED`, `410 APPROVAL_EXPIRED`, identical `404` for another
+user's or unknown ids) and streams the continuation: `approve` re-reads the order and cancels it
+once with the stored arguments (`cancelled`, `not_cancellable` when no longer `PENDING` or Orders
+answers 409, `failed` on timeout/5xx/401, never retried); `reject` changes nothing. A started
+cancel completes and is recorded even if the client disconnects; if the model is down afterwards
+a fixed per-outcome text is the answer. The gatekeeper replaces any claim that an order was
+cancelled unless a `cancel_order` result or a read shows that order `CANCELLED`. Expired,
+orphaned and deleted-conversation approvals are closed lazily on the next touch (`expired`,
+`withdrawn`); `GET /chat/conversations/{id}` shows `pendingApproval` or `null`. One `chat_approval`
+log line per proposal and per decision (ids, action, decision, outcome, hashed user). The gateway
+(ecommerce-infra) must route the decision endpoint like the message stream (no buffering limit);
+that route is a follow-up there.
 
 ### Logging
 
@@ -259,6 +289,8 @@ use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL
 | `CHAT_RATE_LIMIT_MESSAGES` / `_WINDOW_SECONDS` | `10` / `60` | Posts per user per sliding window |
 | `CHAT_MAX_TOOL_ROUNDS` | `5` | Model → tool rounds per answer |
 | `CHAT_MAX_MESSAGES` | `100` | Messages (user + assistant) per conversation |
+| `APPROVAL_TTL_SECONDS` | `600` | Seconds a proposed cancellation stays approvable (`> 0`) |
+| `CANCEL_PROPOSALS_PER_HOUR` | `5` | Cancellation proposals per user per rolling hour (`≥ 1`) |
 
 ### Docker
 
@@ -332,9 +364,10 @@ src/ecommerce_ai/
                      /mcp, /chat (conversations, SSE framer, rate limiter)
   agents/            triage_intake (cause rules, intake), triage (graph, gatekeeper, templates,
                      worker, ports), assistant (chat graph, gatekeeper, segmenter, summaries,
-                     limits, service), safety (shared gatekeeper rules), prompts (versioned
-                     prompt files); no HTTP/Kafka/SQL
-  tools/             MCP server, tool invoker, registry/allowlist, Orders/Inventory/Notifications tools
+                     limits, approvals, service), safety (shared gatekeeper rules), prompts
+                     (versioned prompt files); no HTTP/Kafka/SQL
+  tools/             MCP server, tool invoker, registry/allowlist, Orders/Inventory/Notifications tools,
+                     mutating/ (approval policy, exposure, chat-only cancel_order)
   messaging/         Event contracts, decoding, Kafka ports/adapters, triage consumer, outbox relay
   infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, llm/
                      (Anthropic adapter), db/ (engine, tables, repositories, Alembic migrations)
@@ -343,6 +376,6 @@ tests/integration/   PostgreSQL tests: migrations, repositories, consumer and tr
 tests/contract/      Tool schema snapshot, Orders queries vs its schema, event models vs events.md,
                      chat models vs docs/chat-contract.md
 tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka, ScriptedModel, stores
-scripts/             Manual tools: mcp_smoke.py (/mcp) and chat_smoke.py (/chat) against the local stack
+scripts/             Manual tools: mcp_smoke.py (/mcp) and chat_smoke.py (/chat, y/n approvals) against the local stack
 docs/                chat-contract.md (frozen chat API), adr/ (Architecture Decision Records)
 ```

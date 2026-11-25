@@ -231,7 +231,7 @@ finishReason `completed`.
 
 ## Phase 9: Polish & cross-cutting
 
-- [ ] T034 [P] Update `README.md`, `CLAUDE.md` (layering: `tools/mutating`, `approvals.py`,
+- [X] T034 [P] Update `README.md`, `CLAUDE.md` (layering: `tools/mutating`, `approvals.py`,
   `approval` node, `ApprovalRepository`, tables 0004, settings, decision route, `/mcp` still 5
   tools) and `.env.example`; status note in `docs/adr/0002-*.md`; note the ecommerce-infra
   gateway route follow-up

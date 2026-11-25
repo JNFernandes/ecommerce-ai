@@ -78,12 +78,24 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   finalize, ≤ `CHAT_MAX_TOOL_ROUNDS`, custom events via `get_stream_writer`), `gatekeeper.py`
   (`check_segment`/`check_answer`, `SAFE_MESSAGE`), `segmenter.py`, `summaries.py` (fixed
   `tool.result` phrases), `tool_results.py` (delimited `<tool_result>` blocks), `tool_runner.py`
-  (`ToolRunner` over `ToolInvoker`), `limits.py` (`RunAllowance`, `ActiveStreams`), `service.py`
-  (`ChatService`: checks → stream → store; one `chat_run` log line, `user_hash` only), ports
-  `ChatModel`/`ToolRunner`/`ConversationStore`/`Checkpointer`. `agents/safety/rules.py`: pure rules
-  shared by both gatekeepers. `agents/ports.py`: shared `TokenBudget`/`Clock`.
+  (`ToolRunner` over `ToolInvoker`, `run_approved`), `limits.py` (`RunAllowance`, `ActiveStreams`,
+  `ProposalQuota`), `service.py` (`ChatService`: checks → stream → store; one `chat_run` log line,
+  `user_hash` only), ports `ChatModel`/`ToolRunner`/`ConversationStore`/`Checkpointer`/
+  `ApprovalStore`. `agents/safety/rules.py`: pure rules shared by both gatekeepers (incl. the
+  cancellation-claim rule). `agents/ports.py`: shared `TokenBudget`/`Clock`.
+- US-06 approvals: `approvals.py` (pure: proposal checks, `PENDING` rule, `Refusal`, outcome
+  mapping, fixed `APPROVAL_OUTCOME_MESSAGES`); the `tools` node turns `cancel_order` into a checked
+  `PendingApproval` (hourly `ProposalQuota` via `RunContext`) or a refusal; the `approval` node
+  starts with `interrupt()` (no side effect before it), then re-reads and runs `run_approved` with
+  the state's arguments; `ChatGraph.resume`/`close_approval`. `ChatService.decide` records the
+  decision atomically before resuming (shielded from disconnect), closes expired/orphaned
+  approvals lazily, withdraws on delete; one `chat_approval` log line per proposal and decision.
 - `tools`: MCP server and tools, one documented endpoint each. `invoker.py::ToolInvoker` runs a
-  tool in process (allowlist, input validation, timeout, error mapping) for `/mcp` and the chat. No prompts, LLM calls or decisions.
+  tool in process (allowlist, input validation, timeout, error mapping) for `/mcp` and the chat;
+  `invoke` refuses mutating tools, only `invoke_approved` runs them (no retry). `tools/mutating/`:
+  `Exposure` (`MCP`/`CHAT`), `ApprovalPolicy`, chat-only `cancel_order_tool`; `ToolRegistry.build`
+  fails on a mutating tool without policy or exposed on `MCP`; `/mcp` serves
+  `registry.exposed(Exposure.MCP)` (still the five read-only tools). No prompts, LLM calls or decisions.
 - `messaging`: consumers/producers, dead letters, retry worker. No business logic.
   `contracts/` (frozen event models, `TOPIC_MODELS`), `decoding.py` (bytes → `TriageEventInput` or
   `DecodeFailure` with a reason free of payload values), `kafka.py` (`ConsumerPort`/`ProducerPort`
@@ -97,9 +109,12 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   thread's checkpoints), `PostgresCheckpointSaver` (LangGraph saver, newest checkpoint only),
   `TriageQueueRepository` (`SKIP LOCKED` pick; result + outbox +
   COMPLETED in one transaction), `OutboxRepository`, `TokenBudgetRepository` (conditional upsert
-  on `llm_token_usage`), `migrate.py`. Tables: `triage_cases`, `triage_evidence`,
+  on `llm_token_usage`), `ApprovalRepository` (approvals + audit; conditional `decide`, every query
+  filters `user_id`), `migrate.py`. Tables: `triage_cases`, `triage_evidence`,
   `inbound_dead_letters`, `triage_results`, `outbox_events`, `llm_token_usage`, `chat_conversations`,
-  `chat_messages`, `chat_checkpoints`, `chat_checkpoint_writes` (migration 0003).
+  `chat_messages`, `chat_checkpoints`, `chat_checkpoint_writes` (migration 0003), `chat_approvals`
+  (cascade with the conversation, one `pending` per conversation) and append-only `chat_actions`
+  (audit, trigger-enforced, migration 0004).
 - `infrastructure/llm/anthropic_model.py`: `AnthropicTriageModel` (`messages.parse`,
   `output_format=DraftOutput`, `max_retries=0`, per-call timeout, effort; refusal/truncation/schema
   → `ModelOutputInvalid`, API errors → `ModelUnavailable`); `build_anthropic_model(settings)`.
@@ -109,12 +124,13 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - `main.py` is the composition root (`create_app(settings=None, probes=None,
   consumer_factory=None, producer_factory=None, triage_queue=None, outbox_store=None,
   conversation_store=None, chat_model=None, checkpointer=None, tool_runner=None,
-  token_budget=None)`): builds
+  token_budget=None, approval_store=None, clock=None)`): builds
   the engine, repositories and (only when `model_configured`) the Anthropic client; starts the
   consumer (`TRIAGE_CONSUMER_ENABLED`) and the worker + relay (`TRIAGE_WORKER_ENABLED`) tasks in
   the lifespan and stops them (cancel after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before closing
   the LLM client and disposing the engine.
-- Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, `assistant.v1.md`, loaded by
+- Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, `assistant.v1.md`,
+  `assistant.v2.md` (active, US-06 approval rules), loaded by
   `loader.py::load_prompt`, SHA-256 pinned by a test), immutable once released; never inline
   prompt strings in Python.
 
@@ -136,7 +152,10 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `DAILY_TOKEN_BUDGET`, `OUTBOX_*`. Triage, relay and model logs never carry evidence, reasons,
   explanations or prompt text (FR-020).
 - `/chat` (US-05, any role via `AUTHENTICATED`): conversations CRUD and
-  `POST /chat/conversations/{id}/messages` → SSE. Frozen contract `docs/chat-contract.md`, checked
+  `POST /chat/conversations/{id}/messages` → SSE (409 `APPROVAL_PENDING` while an approval is
+  pending); US-06 `POST /chat/conversations/{id}/approvals/{approvalId}` (`{decision}`, same rate
+  and body limits) → SSE continuation; the detail carries `pendingApproval`. Settings
+  `APPROVAL_TTL_SECONDS`, `CANCEL_PROPOSALS_PER_HOUR`. Frozen contract `docs/chat-contract.md`, checked
   by `tests/contract/test_chat_contract.py`; change both together. Chat settings: `CHAT_*`
   (keep-alive, per-message token cap, rate limit, tool rounds, max messages); tools reuse
   `TOOL_TIMEOUT_SECONDS`; the budget is the shared `DAILY_TOKEN_BUDGET`. Chat logs never carry
@@ -235,4 +254,5 @@ layers (evals) extend `ci.yml` in the story that adds them. The image's entrypoi
   caller's token), the topic in `kafka-init`, `postgres-ai` on `5436` and the `ai` compose service.
   The gateway routes `/api/ai/health` and the `/api/ai/chat/...` routes by allowlist (the stream
   route without the buffering body limit; entrypoint write timeout 300 s); `/mcp` is internal only
-  (`http://ai:8002/mcp`), never routed.
+  (`http://ai:8002/mcp`), never routed. Follow-up there (US-06): route the approval decision
+  endpoint like the message stream.
