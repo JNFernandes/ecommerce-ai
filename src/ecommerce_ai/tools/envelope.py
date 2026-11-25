@@ -24,6 +24,7 @@ class ToolErrorCode(StrEnum):
     NOT_ALLOWED = "not_allowed"
     INVALID_INPUT = "invalid_input"
     UPSTREAM_ERROR = "upstream_error"
+    CONFLICT = "conflict"
 
 
 ERROR_MESSAGES: Final[dict[ToolErrorCode, str]] = {
@@ -31,6 +32,7 @@ ERROR_MESSAGES: Final[dict[ToolErrorCode, str]] = {
     ToolErrorCode.NOT_ALLOWED: "not allowed",
     ToolErrorCode.INVALID_INPUT: "invalid input",
     ToolErrorCode.UPSTREAM_ERROR: "orders service unavailable",
+    ToolErrorCode.CONFLICT: "order cannot be cancelled",
 }
 """Default message of each error code, used when a tool names no message of its own."""
 

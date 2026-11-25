@@ -5,6 +5,8 @@ from pydantic import JsonValue
 
 from ecommerce_ai.agents.safety.rules import (
     Evidence,
+    cancellation_claims,
+    cancellation_claims_grounded,
     facts_grounded,
     has_contact_or_url,
     has_html,
@@ -34,7 +36,15 @@ def test_should_index_uuids_dates_and_numbers_when_built_from_strings() -> None:
     assert evidence.uuids == {ORDER_ID}
     assert evidence.has_date(11, 20, 2026)
     assert not evidence.has_date(11, 21, None)
-    assert evidence.numbers == {"49.9"}
+    # The parts of the ISO timestamp are numbers too (a date written as 20/11/2026 is grounded).
+    assert evidence.numbers == {"49.9", "2026", "11", "20", "10", "0"}
+
+
+def test_should_ground_ids_dates_and_numbers_of_extra_facts_but_not_their_status_words() -> None:
+    evidence = Evidence.from_strings(["status PENDING"], facts=[f"Cancel {ORDER_ID}, 3 x SKU-001"])
+
+    assert facts_grounded(f"Order {ORDER_ID}: 3 x SKU-001.", evidence)
+    assert not facts_grounded("It was shipped.", Evidence.from_strings([], facts=["shipped?"]))
 
 
 @pytest.mark.parametrize(
@@ -143,3 +153,54 @@ def test_should_blank_ids_and_iso_dates_when_scrubbing() -> None:
 
     assert ORDER_ID not in scrubbed
     assert "2026" not in scrubbed
+
+
+OTHER_ID = "4c1e2f3a-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+
+
+@pytest.mark.parametrize(
+    ("text", "claims"),
+    [
+        ("Your order was cancelled.", [()]),
+        ("It has been canceled.", [()]),
+        (f"Order {ORDER_ID} is cancelled. Anything else?", [(ORDER_ID,)]),
+        ("I will cancel it now.", [()]),
+        ("Your cancellation is complete.", [()]),
+        ("A sua encomenda foi cancelada.", [()]),
+        ("Cancelei a encomenda.", [()]),
+        ("Vou cancelar a encomenda.", [()]),
+        ("O cancelamento foi concluído.", [()]),
+    ],
+)
+def test_should_find_a_cancellation_claim_in_english_or_portuguese(
+    text: str, claims: list[tuple[str, ...]]
+) -> None:
+    assert list(cancellation_claims(text)) == claims
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I can cancel it for you once you approve.",
+        "Do you want it cancelled?",
+        "Your order was not cancelled.",
+        "It wasn't cancelled; nothing changed.",
+        "It has never been cancelled.",
+        "A encomenda não foi cancelada.",
+        "Please approve the cancellation request.",
+        "Quer confirmar o cancelamento?",
+    ],
+)
+def test_should_not_take_a_proposal_question_or_negation_for_a_claim(text: str) -> None:
+    assert list(cancellation_claims(text)) == []
+
+
+def test_should_ground_a_claim_only_with_a_cancelled_order() -> None:
+    claim = f"Order {ORDER_ID} was cancelled."
+
+    assert cancellation_claims_grounded(claim, {ORDER_ID}, any_cancelled=True)
+    assert not cancellation_claims_grounded(claim, {OTHER_ID}, any_cancelled=True)
+    assert not cancellation_claims_grounded(claim, set(), any_cancelled=True)
+    assert cancellation_claims_grounded("It was cancelled.", set(), any_cancelled=True)
+    assert not cancellation_claims_grounded("It was cancelled.", set(), any_cancelled=False)
+    assert cancellation_claims_grounded("Nothing changed.", set(), any_cancelled=False)

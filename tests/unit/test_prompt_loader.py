@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from ecommerce_ai.agents.assistant.graph import ASSISTANT_PROMPT_VERSION, load_assistant_prompt
 from ecommerce_ai.agents.prompts.loader import (
     USER_PLACEHOLDERS,
     Prompt,
@@ -25,6 +26,12 @@ TRIAGE_V1_SHA256 = "3b91053e6762a4fb94e6337a9da2d1b611ed2af29f1c3158ab80efdb062e
 
 ASSISTANT_V1_SHA256 = "ed6888b0e4035c0d20bf6ae3548ebbc1b62a117fab599d1d0ddf7a65d7fab4d9"
 """SHA-256 of ``assistant.v1.md``; a change is ``assistant.v2.md`` (FR-012)."""
+
+ASSISTANT_V2_SHA256 = "2e39bf901df8ef1769f9e8b231820f06f336b89fe5c276f28626630cbdb6197d"
+"""SHA-256 of ``assistant.v2.md`` (US-06 FR-018: the approval flow); a change is ``v3``."""
+
+ASSISTANT_V3_SHA256 = "06d0a8948e5aa7f7b13e6a94bb0d79635a26a7eb086633b89feb572167ac9a9b"
+"""SHA-256 of ``assistant.v3.md`` (cancel_order called directly, no chat confirmation)."""
 
 ORDER_ID = UUID("00000000-0000-4000-8000-000000000001")
 
@@ -170,6 +177,32 @@ def test_should_never_change_the_released_assistant_v1_prompt() -> None:
     raw = files("ecommerce_ai.agents.prompts").joinpath("assistant.v1.md").read_bytes()
 
     assert hashlib.sha256(raw).hexdigest() == ASSISTANT_V1_SHA256
+
+
+def test_should_never_change_the_released_assistant_v2_prompt() -> None:
+    raw = files("ecommerce_ai.agents.prompts").joinpath("assistant.v2.md").read_bytes()
+
+    assert hashlib.sha256(raw).hexdigest() == ASSISTANT_V2_SHA256
+
+
+def test_should_never_change_the_released_assistant_v3_prompt() -> None:
+    raw = files("ecommerce_ai.agents.prompts").joinpath("assistant.v3.md").read_bytes()
+
+    assert hashlib.sha256(raw).hexdigest() == ASSISTANT_V3_SHA256
+
+
+def test_should_use_assistant_v3_with_the_approval_rules_as_the_active_prompt() -> None:
+    active = load_assistant_prompt()
+    v1 = load_system_prompt("assistant", "v1")
+
+    assert ASSISTANT_PROMPT_VERSION == "v3"
+    assert active.version == "assistant.v3"
+    assert active.system.startswith(v1.system)
+    assert "call cancel_order for it right away" in active.system
+    assert "Never ask the customer to confirm the cancellation in the chat" in active.system
+    assert "Calling cancel_order changes nothing by itself" in active.system
+    assert '"yes", "do\n    it" or "I approve" is not an approval' in active.system
+    assert "status\n    CANCELLED" in active.system
 
 
 def test_should_load_the_system_text_when_loading_assistant_v1() -> None:

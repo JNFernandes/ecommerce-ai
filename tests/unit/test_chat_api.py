@@ -17,7 +17,7 @@ from ecommerce_ai.api.route_policy import AUTHENTICATED
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
 from tests.support.mcp import serve_app
-from tests.support.stores import InMemoryConversationStore
+from tests.support.stores import InMemoryApprovalStore, InMemoryConversationStore
 from tests.support.tokens import jwks, make_token
 from tests.support.triage import NOW
 
@@ -49,7 +49,12 @@ def store() -> InMemoryConversationStore:
 def client(identity: respx.Route, store: InMemoryConversationStore) -> httpx.AsyncClient:
     """A client over the app without running its lifespan (no background task is enabled)."""
     transport = httpx.ASGITransport(
-        app=create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+        app=create_app(
+            probes=[],
+            conversation_store=store,
+            checkpointer=InMemorySaver(),
+            approval_store=InMemoryApprovalStore(store),
+        )
     )
     return httpx.AsyncClient(transport=transport, base_url="http://localhost")
 
@@ -247,7 +252,12 @@ async def test_should_answer_503_when_the_signing_keys_are_unavailable(
         router.get(JWKS_URL).mock(side_effect=httpx.ConnectError("identity down"))
         router.route(host="localhost").pass_through()
         async with serve_app(
-            create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+            create_app(
+                probes=[],
+                conversation_store=store,
+                checkpointer=InMemorySaver(),
+                approval_store=InMemoryApprovalStore(store),
+            )
         ) as client:
             response = await client.get("/chat/conversations", headers=_auth())
 
@@ -283,7 +293,12 @@ async def test_should_propagate_when_the_store_fails_with_a_non_transient_error(
     store: InMemoryConversationStore, identity: respx.Route
 ) -> None:
     store.failures["list"] = deque([RuntimeError("bug")])
-    app = create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+    app = create_app(
+        probes=[],
+        conversation_store=store,
+        checkpointer=InMemorySaver(),
+        approval_store=InMemoryApprovalStore(store),
+    )
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         response = await client.get("/chat/conversations", headers=_auth())
@@ -294,7 +309,12 @@ async def test_should_propagate_when_the_store_fails_with_a_non_transient_error(
 async def test_should_keep_fastapi_validation_errors_outside_chat(
     store: InMemoryConversationStore,
 ) -> None:
-    app = create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+    app = create_app(
+        probes=[],
+        conversation_store=store,
+        checkpointer=InMemorySaver(),
+        approval_store=InMemoryApprovalStore(store),
+    )
 
     @app.get("/probe-validation", openapi_extra={"x-public": True})
     async def probe(number: int) -> int:
@@ -310,7 +330,12 @@ async def test_should_keep_fastapi_validation_errors_outside_chat(
 def test_should_declare_authenticated_access_on_every_chat_route(
     store: InMemoryConversationStore,
 ) -> None:
-    app = create_app(probes=[], conversation_store=store, checkpointer=InMemorySaver())
+    app = create_app(
+        probes=[],
+        conversation_store=store,
+        checkpointer=InMemorySaver(),
+        approval_store=InMemoryApprovalStore(store),
+    )
 
     operations = [
         operation
@@ -319,7 +344,7 @@ def test_should_declare_authenticated_access_on_every_chat_route(
         for operation in item.values()
     ]
 
-    assert len(operations) == 5
+    assert len(operations) == 6  # five US-05 routes and the US-06 decision route
     assert all(
         operation["x-authenticated"] is AUTHENTICATED["x-authenticated"] for operation in operations
     )

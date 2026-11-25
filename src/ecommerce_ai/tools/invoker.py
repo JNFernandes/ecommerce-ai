@@ -5,8 +5,10 @@ a per-tool ``asyncio.timeout``; ``failure_result`` maps any failure to the fixed
 message}`` result once, for both callers. ``ToolInvoker.invoke`` never raises: an unknown or
 non-allowlisted name and arguments that fail validation are *refused* (the handler never runs), a
 ``ToolFailure`` becomes its error result, and an upstream 401 is reported through
-``upstream_unauthenticated``. The caller must be bound (``bind_caller``) so handlers forward the
-caller's own token (ADR 0001). One ``tool_call`` log line per call: tool, outcome, duration.
+``upstream_unauthenticated``. A mutating tool is refused by ``invoke`` and runs only through
+``invoke_approved``, once, after the customer's approval (US-06, constitution III). The caller
+must be bound (``bind_caller``) so handlers forward the caller's own token (ADR 0001). One
+``tool_call`` log line per call: tool, outcome, duration.
 """
 
 import asyncio
@@ -112,12 +114,42 @@ class ToolInvoker:
         return definition
 
     async def invoke(self, name: str, arguments: Mapping[str, Any]) -> ToolInvocation:
-        """Run tool ``name`` with ``arguments``; never raises except on cancellation."""
+        """Run read-only tool ``name``; never raises except on cancellation.
+
+        A mutating tool is refused exactly like an unknown one: it only ever runs through
+        ``invoke_approved`` (constitution III).
+        """
         started = time.perf_counter()
         definition = self._definition(name)
-        if definition is None:
-            result = ToolErrorResult.for_code(ToolErrorCode.NOT_ALLOWED)
-            return self._finish(name, started, result, OUTCOME_UNKNOWN_TOOL, executed=False)
+        if definition is None or definition.mutating:
+            return self._unknown(name, started)
+        return await self._run(name, definition, arguments, started)
+
+    async def invoke_approved(self, name: str, arguments: Mapping[str, Any]) -> ToolInvocation:
+        """Run mutating tool ``name`` once, for a call the customer approved; never raises.
+
+        Only the chat's approval step calls this, with the arguments stored at proposal time. A
+        read-only or unknown name is refused; the call is never retried (the upstream ``POST``
+        is sent once), so a timeout is reported, not repeated.
+        """
+        started = time.perf_counter()
+        definition = self._definition(name)
+        if definition is None or not definition.mutating:
+            return self._unknown(name, started)
+        return await self._run(name, definition, arguments, started)
+
+    def _unknown(self, name: str, started: float) -> ToolInvocation:
+        result = ToolErrorResult.for_code(ToolErrorCode.NOT_ALLOWED)
+        return self._finish(name, started, result, OUTCOME_UNKNOWN_TOOL, executed=False)
+
+    async def _run(
+        self,
+        name: str,
+        definition: AnyToolDefinition,
+        arguments: Mapping[str, Any],
+        started: float,
+    ) -> ToolInvocation:
+        """Validate and run ``definition``, mapping every ending to a result."""
         try:
             output = await run_definition(definition, arguments)
         except ValidationError:

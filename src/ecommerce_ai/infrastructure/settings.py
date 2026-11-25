@@ -259,6 +259,18 @@ class Settings(BaseSettings):
         le=10_000,
         description="Most messages (user + assistant) one conversation may hold.",
     )
+    approval_ttl_seconds: int = Field(
+        default=600,
+        gt=0,
+        le=86_400,
+        description="Seconds a proposed mutating action stays approvable (ADR 0002).",
+    )
+    cancel_proposals_per_hour: int = Field(
+        default=5,
+        ge=1,
+        le=1000,
+        description="Most `cancel_order` proposals one user may get per rolling hour.",
+    )
 
     @field_validator("cors_allowed_origins", "kafka_brokers", mode="before")
     @classmethod

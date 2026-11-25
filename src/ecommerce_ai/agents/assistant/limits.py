@@ -8,22 +8,27 @@
   slot is taken before the stream opens and released when the run ends; the running task is
   attached so a delete can cancel it and wait for it. In process only (single instance until
   US-07 adds shared locks).
+- ``ProposalQuota``: the cancellation proposals one user may still get in the rolling hour
+  (``CANCEL_PROPOSALS_PER_HOUR``, FR-015), counted from the audit rows so it survives restarts.
 - ``ConversationFull`` / ``StreamActive``: the 409s answered before any stream opens.
 """
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Final
 from uuid import UUID
 
 from ecommerce_ai.agents.assistant.model import Usage
-from ecommerce_ai.agents.ports import TokenBudget
+from ecommerce_ai.agents.assistant.ports import ApprovalStore
+from ecommerce_ai.agents.ports import Clock, TokenBudget
 
 DEFAULT_MAX_MESSAGES: Final = 100
 DEFAULT_REQUEST_TOKEN_CAP: Final = 20_000
 DEFAULT_MAX_OUTPUT_TOKENS: Final = 1024
 MESSAGES_PER_EXCHANGE: Final = 2
+DEFAULT_PROPOSALS_PER_HOUR: Final = 5
+PROPOSAL_WINDOW: Final = timedelta(hours=1)
 """A post adds the user message and the assistant message."""
 
 
@@ -80,6 +85,22 @@ class RunAllowance:
             return
         self._settled = True
         await self._budget.settle(self._day, self._cap, self.usage.total)
+
+
+class ProposalQuota:
+    """Whether a user may get one more cancellation proposal in the rolling hour (FR-015)."""
+
+    def __init__(self, store: ApprovalStore, user_id: str, clock: Clock, per_hour: int) -> None:
+        """Count ``user_id``'s audit rows in ``store``; at most ``per_hour`` per hour."""
+        self._store = store
+        self._user_id = user_id
+        self._clock = clock
+        self._per_hour = per_hour
+
+    async def allows(self) -> bool:
+        """True while fewer than ``per_hour`` proposals were made in the last hour."""
+        since = self._clock.now() - PROPOSAL_WINDOW
+        return await self._store.proposals_since(self._user_id, since) < self._per_hour
 
 
 class ActiveStreams:

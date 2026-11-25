@@ -16,6 +16,7 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
 )
 from ecommerce_ai.agents.assistant.graph import ChatGraph
 from ecommerce_ai.agents.assistant.model import (
+    AnswerReplaced,
     AssistantText,
     ChatErrorCode,
     FinishReason,
@@ -309,9 +310,10 @@ async def test_should_replace_an_answer_that_breaks_a_rule_across_segments() -> 
 
     events, outcome = await collect_run(chat_graph(model), _conversation(), "Help")
 
-    assert events[-1] == Token(text=SAFE_MESSAGE)
+    assert events[-1] == AnswerReplaced(text=SAFE_MESSAGE)
     assert outcome.finish_reason is FinishReason.REPLACED
-    assert outcome.text.endswith(SAFE_MESSAGE)
+    assert outcome.text == SAFE_MESSAGE
+    assert outcome.violations == ("html",)
 
 
 async def test_should_replace_an_empty_answer_after_tools() -> None:

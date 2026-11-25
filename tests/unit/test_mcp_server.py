@@ -4,6 +4,7 @@ import io
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 from ecommerce_ai.api.middleware import RequestIdMiddleware
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.tools.envelope import ToolErrorCode, ToolFailure
+from ecommerce_ai.tools.mutating.policy import ApprovalPolicy, Exposure
 from ecommerce_ai.tools.registry import (
     AllowlistEntry,
     AnyToolDefinition,
@@ -176,3 +178,27 @@ async def test_should_log_tool_outcome_duration_and_request_id_without_token_whe
     ]
     assert all(isinstance(c["duration_ms"], float) for c in calls)
     assert TOKEN not in log_output.getvalue()
+
+
+async def test_should_never_serve_a_chat_only_mutating_tool_over_mcp() -> None:
+    mutating = replace(
+        _tool("mutate", _echo),
+        mutating=True,
+        read_only=False,
+        approval=ApprovalPolicy(target_argument="text", ttl_seconds=600, proposals_per_hour=5),
+        exposure=frozenset({Exposure.CHAT}),
+    )
+    registry = ToolRegistry.build([_tool("echo", _echo), mutating])
+    mcp_app = build_mcp_app(build_mcp_server(registry.exposed(Exposure.MCP)))
+    transport = httpx.ASGITransport(app=RequestIdMiddleware(mcp_app))
+    async with (
+        mcp_app.router.lifespan_context(mcp_app),
+        httpx.AsyncClient(transport=transport, base_url="http://localhost") as client,
+    ):
+        listed = await post_rpc(client, tools_list_request(), TOKEN)
+        called = await post_rpc(client, tools_call_request("mutate", {"text": "x"}), TOKEN)
+
+    tools = rpc_result(listed)["tools"]
+    assert isinstance(tools, list)
+    assert [tool["name"] for tool in tools] == ["echo"]
+    assert rpc_error(called)["code"] == -32602

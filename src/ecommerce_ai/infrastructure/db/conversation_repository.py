@@ -196,15 +196,7 @@ class ConversationRepository:
         now: datetime,
     ) -> StoredMessage:
         """Store the assistant message of a run (``LookupError`` for an unknown conversation)."""
-        values: dict[str, object] = {
-            "role": MessageRole.ASSISTANT.value,
-            "content": content,
-            "finish_reason": finish_reason.value,
-            "prompt_version": prompt_version,
-            "model_id": model_id,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-        }
+        values = assistant_values(content, finish_reason, prompt_version, model_id, usage)
         return await self._add(user_id, conversation_id, message_id, values, now)
 
     async def _add(
@@ -217,17 +209,51 @@ class ConversationRepository:
     ) -> StoredMessage:
         stamp = now.astimezone(UTC)
         async with self._engine.begin() as connection:
-            await _touch(connection, user_id, conversation_id, stamp)
-            row = (
-                await connection.execute(
-                    insert(chat_messages)
-                    .values(
-                        id=message_id, conversation_id=conversation_id, created_at=stamp, **values
-                    )
-                    .returning(chat_messages)
-                )
-            ).one()
-        return _message(row._mapping)
+            return await insert_message(
+                connection, user_id, conversation_id, message_id, values, stamp
+            )
+
+
+def assistant_values(
+    content: str,
+    finish_reason: FinishReason,
+    prompt_version: str,
+    model_id: str | None,
+    usage: Usage,
+) -> dict[str, object]:
+    """Column values of an assistant message."""
+    return {
+        "role": MessageRole.ASSISTANT.value,
+        "content": content,
+        "finish_reason": finish_reason.value,
+        "prompt_version": prompt_version,
+        "model_id": model_id,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+    }
+
+
+async def insert_message(
+    connection: AsyncConnection,
+    user_id: str,
+    conversation_id: UUID,
+    message_id: UUID,
+    values: dict[str, object],
+    now: datetime,
+) -> StoredMessage:
+    """Insert a message in the caller's transaction and bump the conversation's ``updated_at``.
+
+    ``LookupError`` when the user has no such conversation.
+    """
+    await _touch(connection, user_id, conversation_id, now)
+    row = (
+        await connection.execute(
+            insert(chat_messages)
+            .values(id=message_id, conversation_id=conversation_id, created_at=now, **values)
+            .returning(chat_messages)
+        )
+    ).one()
+    return _message(row._mapping)
 
 
 async def _touch(

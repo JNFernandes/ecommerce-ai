@@ -1,0 +1,17 @@
+{
+  "_source": "Vendored from ecommerce-orders README.md (Endpoints) and docs/us-02-cancel-order.md (REST Endpoint), commit 7674ee78f7b4e892d0c5b2775c03aec6d43727b4 (2026-11-23). Refresh it when Orders changes the endpoint; tests/contract/test_chat_tool_schemas.py checks cancel_order against it.",
+  "method": "POST",
+  "path": "/orders/:orderId/cancel",
+  "gatewayPrefix": "/api",
+  "pathParameters": {"orderId": "uuid"},
+  "responses": {
+    "200": {"orderId": "8107b8fe-b0ca-497d-8f41-e55010fbfa4d", "status": "CANCELLED"},
+    "404": {"statusCode": 404, "message": "Order not found", "error": "Not Found"},
+    "409": {
+      "statusCode": 409,
+      "message": "cannot cancel order with status CONFIRMED; only a PENDING order can be cancelled",
+      "error": "Conflict"
+    },
+    "400": {"statusCode": 400, "message": "Validation failed (uuid is expected)", "error": "Bad Request"}
+  }
+}

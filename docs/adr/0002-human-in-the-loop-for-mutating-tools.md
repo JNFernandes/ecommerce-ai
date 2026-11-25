@@ -25,3 +25,13 @@ no call. The triage worker never calls a mutating tool: its `suggestedAction` is
 - Approval flows add a round trip to the UI and need eval cases (missing-interrupt cases block the
   merge, ADR 0004).
 - New mutating tools inherit this rule automatically; there is no opt-out.
+
+## Status note (US-06, 2026-11-25)
+
+Implemented for `cancel_order`, the only mutating tool, which is chat-only (never on `/mcp`). The
+`approval` node pauses with `interrupt()` on the PostgreSQL checkpointer; only
+`POST /chat/conversations/{id}/approvals/{approvalId}` from the token's subject decides, once and
+before `expiresAt` (`APPROVAL_TTL_SECONDS`); the call then runs with the arguments stored at
+proposal time, after a fresh re-read. Reject, expiry, withdrawal (conversation deleted) and
+another user's decision make no call. Every proposal has an append-only audit row
+(`chat_actions`) with its decision and outcome. Approval eval cases arrive with US-09.

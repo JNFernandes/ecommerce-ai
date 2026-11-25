@@ -152,3 +152,119 @@ def test_should_use_the_environment_for_the_url_and_conversation(
         (chat_smoke.DEFAULT_CHAT_URL, "secret-token", "Where is it?", None),
         (URL, "secret-token", "Again", CONVERSATION),
     ]
+
+
+APPROVAL_ID = "9b1e6c2d-3a4f-4b5c-8d6e-7f8a9b0c1d2e"
+ORDER = "3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b"
+
+
+def _end(finish_reason: str) -> tuple[str, object]:
+    return (
+        "message.end",
+        {
+            "messageId": "m-1",
+            "finishReason": finish_reason,
+            "promptVersion": "assistant.v2",
+            "modelId": "claude-test",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        },
+    )
+
+
+PAUSED = _stream(
+    ("message.start", {"conversationId": CONVERSATION, "messageId": "m-1"}),
+    ("tool.call", {"callId": "t1", "name": "cancel_order", "arguments": {"orderId": ORDER}}),
+    (
+        "approval.required",
+        {
+            "approvalId": APPROVAL_ID,
+            "action": "cancel_order",
+            "orderId": ORDER,
+            "summary": {"status": "PENDING", "totalAmount": 59.9, "currency": "EUR"},
+            "expiresAt": "2026-11-25T10:12:00Z",
+        },
+    ),
+    _end("awaiting_approval"),
+)
+
+
+def _resolved(decision: str, outcome: str) -> str:
+    return _stream(
+        ("message.start", {"conversationId": CONVERSATION, "messageId": "m-2"}),
+        (
+            "approval.resolved",
+            {"approvalId": APPROVAL_ID, "decision": decision, "outcome": outcome},
+        ),
+        ("token", {"text": "Done."}),
+        _end("completed"),
+    )
+
+
+class FakeApprovalChat(FakeChat):
+    """Pauses on an approval, then answers the decision route with ``continuation``."""
+
+    def __init__(self, continuation: str) -> None:
+        super().__init__(PAUSED)
+        self.continuation = continuation
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(f"/approvals/{APPROVAL_ID}"):
+            self.requests.append(request)
+            return httpx.Response(
+                200, text=self.continuation, headers={"content-type": "text/event-stream"}
+            )
+        return super().__call__(request)
+
+
+@pytest.mark.parametrize(
+    ("answer", "decision", "outcome"),
+    [("y", "approve", "cancelled"), ("YES ", "approve", "cancelled"), ("n", "reject", "rejected")],
+)
+async def test_should_print_the_card_ask_and_post_the_decision(
+    answer: str, decision: str, outcome: str
+) -> None:
+    fake = FakeApprovalChat(_resolved(decision, outcome))
+    prompts: list[str] = []
+
+    def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        return answer
+
+    out = io.StringIO()
+    code = await smoke(
+        URL, "secret-token", "Cancel it", CONVERSATION, httpx.MockTransport(fake), out, ask
+    )
+
+    output = out.getvalue()
+    assert code == 0
+    assert prompts == ["Approve this action? [y/N] "]
+    assert (
+        f"[approval] cancel_order order {ORDER}: PENDING, total 59.9 EUR,"
+        " expires 2026-11-25T10:12:00Z"
+    ) in output
+    assert "[end] awaiting_approval" in output
+    decided = fake.requests[-1]
+    assert decided.url.path == f"/chat/conversations/{CONVERSATION}/approvals/{APPROVAL_ID}"
+    assert json.loads(decided.content) == {"decision": decision}
+    assert f"[approval] {decision}: {outcome}" in output
+    assert output.rstrip().endswith("[end] completed (claude-test, 1 in / 1 out)")
+
+
+async def test_should_print_an_unknown_total_and_fail_when_the_decision_is_refused() -> None:
+    paused = PAUSED.replace('"totalAmount": 59.9, "currency": "EUR"', '"totalAmount": null')
+    fake = FakeApprovalChat("")
+    fake.stream = paused
+
+    def refused(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/approvals/" + APPROVAL_ID):
+            return httpx.Response(410, json={"code": "APPROVAL_EXPIRED"})
+        return fake(request)
+
+    out = io.StringIO()
+    code = await smoke(
+        URL, "t", "Cancel it", CONVERSATION, httpx.MockTransport(refused), out, lambda _: ""
+    )
+
+    assert code == 1
+    assert "total unknown" in out.getvalue()
+    assert "[http 410]" in out.getvalue()

@@ -6,6 +6,7 @@ open for disconnect tests. ``chat_graph`` / ``collect_run`` build and run the re
 """
 
 import asyncio
+import contextlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -14,20 +15,25 @@ from fastapi import FastAPI
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import JsonValue
 
-from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent
+from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent, load_assistant_prompt
 from ecommerce_ai.agents.assistant.model import RunOutcome
 from ecommerce_ai.agents.assistant.ports import (
+    ApprovalStore,
     ChatModel,
     Checkpointer,
-    ConversationStore,
     ToolOutcome,
     ToolRunner,
     ToolSpec,
 )
-from ecommerce_ai.agents.ports import TokenBudget
-from ecommerce_ai.agents.prompts.loader import load_system_prompt
+from ecommerce_ai.agents.ports import Clock, TokenBudget
+from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
+from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
-from tests.support.stores import InMemoryConversationStore, InMemoryTokenBudget
+from tests.support.stores import (
+    InMemoryApprovalStore,
+    InMemoryConversationStore,
+    InMemoryTokenBudget,
+)
 
 UNLIMITED_BUDGET = 10**9
 """A daily budget no test reaches."""
@@ -73,6 +79,11 @@ class FakeToolRunner:
     gate: asyncio.Event | None = None
     invalid_arguments: frozenset[str] = frozenset()
     calls: list[ToolCallRecord] = field(default_factory=list)
+    mutating: frozenset[str] = frozenset()
+    """Names that run only through ``run_approved`` (and are refused by ``run``)."""
+    approved_calls: list[ToolCallRecord] = field(default_factory=list)
+    approved_tokens: list[str] = field(default_factory=list)
+    """The bound caller's token at each approved call (ADR 0001)."""
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """One spec per registered tool name."""
@@ -86,8 +97,8 @@ class FakeToolRunner:
 
         Unknown names and the tools listed in ``invalid_arguments`` are refused, never run.
         """
-        if name not in self.names or name in self.invalid_arguments:
-            unknown = name not in self.names
+        if name not in self.names or name in self.invalid_arguments or name in self.mutating:
+            unknown = name not in self.names or name in self.mutating
             return ToolOutcome(
                 ok=False,
                 payload={
@@ -103,6 +114,42 @@ class FakeToolRunner:
         if self.gate is not None:
             await self.gate.wait()
         result = self.results.get(name, envelope([]))
+        if isinstance(result, FakeToolError):
+            return ToolOutcome(
+                ok=False,
+                payload={"error": result.error, "message": result.message},
+                outcome=result.error,
+                refused=False,
+                upstream_unauthenticated=result.upstream_unauthenticated,
+                duration_ms=1.0,
+            )
+        return ToolOutcome(
+            ok=True,
+            payload=result,
+            outcome="ok",
+            refused=False,
+            upstream_unauthenticated=False,
+            duration_ms=1.0,
+        )
+
+    async def run_approved(self, name: str, arguments: Mapping[str, JsonValue]) -> ToolOutcome:
+        """Record an approved mutating call and return its scripted outcome.
+
+        Only names in ``mutating`` run; every other name is refused like the real invoker.
+        """
+        if name not in self.mutating:
+            return ToolOutcome(
+                ok=False,
+                payload={"error": "not_allowed", "message": "not allowed"},
+                outcome="unknown_tool",
+                refused=True,
+                upstream_unauthenticated=False,
+                duration_ms=0.0,
+            )
+        self.approved_calls.append(ToolCallRecord(name, dict(arguments)))
+        with contextlib.suppress(NoCallerError):  # direct calls in tests bind no caller
+            self.approved_tokens.append(current_caller().token.get_secret_value())
+        result = self.results.get(name, envelope({}))
         if isinstance(result, FakeToolError):
             return ToolOutcome(
                 ok=False,
@@ -146,7 +193,7 @@ def chat_graph(
     return ChatGraph(
         model=model,
         tools=tools or FakeToolRunner(),
-        prompt=load_system_prompt("assistant", "v1"),
+        prompt=load_assistant_prompt(),
         checkpointer=checkpointer or InMemorySaver(),
     )
 
@@ -154,16 +201,26 @@ def chat_graph(
 def chat_app(
     model: ChatModel | None,
     tools: ToolRunner | None = None,
-    store: ConversationStore | None = None,
+    store: InMemoryConversationStore | None = None,
     checkpointer: Checkpointer | None = None,
     budget: TokenBudget | None = None,
+    approvals: ApprovalStore | None = None,
+    clock: Clock | None = None,
+    settings: Settings | None = None,
 ) -> FastAPI:
-    """The app with the chat on fakes: in-memory store, saver and budget, fake tools, no probes."""
+    """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
+
+    Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used.
+    """
+    conversations = store or InMemoryConversationStore()
     return create_app(
+        settings=settings,
         probes=[],
-        conversation_store=store or InMemoryConversationStore(),
+        conversation_store=conversations,
         chat_model=model,
         tool_runner=tools or FakeToolRunner(),
         checkpointer=checkpointer or InMemorySaver(),
         token_budget=budget or InMemoryTokenBudget(UNLIMITED_BUDGET),
+        approval_store=approvals or InMemoryApprovalStore(conversations),
+        clock=clock,
     )

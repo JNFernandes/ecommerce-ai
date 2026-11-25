@@ -1,4 +1,4 @@
-"""SQLAlchemy Core tables of the triage intake, results, outbox, token budget and chat.
+"""SQLAlchemy Core tables of the triage intake, results, outbox, token budget, chat and approvals.
 
 The schema itself is created only by Alembic revisions (``migrations/versions``); these
 definitions are what the repositories query, and must match the latest revision.
@@ -24,10 +24,17 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-from ecommerce_ai.agents.assistant.model import FinishReason, MessageRole
+from ecommerce_ai.agents.assistant.model import (
+    ApprovalOutcome,
+    Decision,
+    FinishReason,
+    MessageRole,
+)
+from ecommerce_ai.agents.assistant.ports import ApprovalStatus
 from ecommerce_ai.agents.triage.model import (
     EXPLANATION_MAX_CHARS,
     MAX_REVISIONS,
@@ -234,6 +241,55 @@ chat_checkpoints = Table(
     Column("metadata", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
+
+chat_approvals = Table(
+    "chat_approvals",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column(
+        "conversation_id",
+        Uuid,
+        ForeignKey("chat_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("user_id", Text, nullable=False),
+    Column("action", String(32), nullable=False),
+    Column("arguments", JSONB, nullable=False),
+    Column("summary", JSONB, nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("proposed_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=True),
+    CheckConstraint(_one_of("status", ApprovalStatus), name="status"),
+    CheckConstraint("expires_at > proposed_at", name="expires_after_proposal"),
+    Index(
+        "ux_chat_approvals_conversation_id_pending",
+        "conversation_id",
+        unique=True,
+        postgresql_where=text("status = 'pending'"),
+    ),
+)
+"""Proposed mutating calls (US-06); at most one ``pending`` per conversation."""
+
+chat_actions = Table(
+    "chat_actions",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("approval_id", Uuid, nullable=False, unique=True),
+    Column("conversation_id", Uuid, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("action", String(32), nullable=False),
+    Column("order_id", Uuid, nullable=False),
+    Column("decision", String(16), nullable=True),
+    Column("outcome", String(24), nullable=True),
+    Column("request_id", String(64), nullable=True),
+    Column("proposed_at", DateTime(timezone=True), nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=True),
+    CheckConstraint(_one_of("decision", Decision), name="decision"),
+    CheckConstraint(_one_of("outcome", ApprovalOutcome), name="outcome"),
+    Index("ix_chat_actions_user_id_proposed_at", "user_id", "proposed_at"),
+)
+"""Append-only audit of every proposal and its decision (no foreign key; trigger-protected)."""
 
 chat_checkpoint_writes = Table(
     "chat_checkpoint_writes",

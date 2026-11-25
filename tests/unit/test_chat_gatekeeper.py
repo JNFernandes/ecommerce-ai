@@ -59,13 +59,13 @@ EVIDENCE = _evidence(UserTurn(text=f"Where is {OWN_ID}?"), _result(ORDER))
         ("The graphql API answered.", ChatRule.INTERNAL_NAME),
         ("It runs on localhost here.", ChatRule.INTERNAL_NAME),
         ("I used list_my_orders for that.", ChatRule.INTERNAL_NAME),
-        ("The status is PENDING.", ChatRule.INTERNAL_NAME),
+        ("The flag is ENABLED.", ChatRule.INTERNAL_NAME),
         ("It failed with a TimeoutError.", ChatRule.INTERNAL_NAME),
         ("Order 9b2e4f6a-1c3d-4e5f-8a7b-6c5d4e3f2a1b is fine.", ChatRule.UNGROUNDED_FACT),
         ("The total is 59.90 euros.", ChatRule.UNGROUNDED_FACT),
         ("It was placed on 2026-11-21.", ChatRule.UNGROUNDED_FACT),
         ("It was placed on November 22.", ChatRule.UNGROUNDED_FACT),
-        ("Your order was cancelled.", ChatRule.UNGROUNDED_FACT),
+        ("Your order was cancelled.", ChatRule.CANCELLATION_CLAIM),
         ("Your order is <b>here</b>.", ChatRule.HTML),
     ],
 )
@@ -129,7 +129,7 @@ def test_should_flag_a_rule_that_spans_two_segments_only_on_the_whole_answer() -
 
 
 def test_should_report_each_broken_rule_once() -> None:
-    rules = check_segment("We will refund 10 euros at https://x.example <b>now</b>.", EVIDENCE)
+    rules = check_segment("We will refund 75 euros at https://x.example <b>now</b>.", EVIDENCE)
 
     assert rules == (
         ChatRule.PROMISE,
@@ -137,3 +137,93 @@ def test_should_report_each_broken_rule_once() -> None:
         ChatRule.CONTACT_OR_URL,
         ChatRule.HTML,
     )
+
+
+OTHER_ID = "7d6c5b4a-3e2f-4a1b-9c8d-0e1f2a3b4c5d"
+
+
+def _named(name: str, data: JsonValue) -> ToolResultItem:
+    return ToolResultItem(call_id="toolu_09", name=name, ok=True, payload=envelope(data))
+
+
+def test_should_allow_a_cancellation_claim_when_cancel_order_confirmed_that_order() -> None:
+    evidence = _evidence(_named("cancel_order", {"orderId": ORDER_ID, "status": "CANCELLED"}))
+
+    assert check_answer(f"Order {ORDER_ID} was cancelled.", evidence) == ()
+    assert check_answer("Your order has been cancelled.", evidence) == ()
+
+
+def test_should_allow_a_cancellation_claim_when_a_read_shows_the_order_cancelled() -> None:
+    page: JsonValue = {
+        "items": [{"id": OTHER_ID, "status": "SHIPPED"}, {"id": ORDER_ID, "status": "CANCELLED"}]
+    }
+    evidence = _evidence(_named("list_my_orders", page))
+
+    assert check_segment(f"Order {ORDER_ID} was cancelled.", evidence) == ()
+
+
+def test_should_flag_a_cancellation_claim_about_another_order_than_the_cancelled_one() -> None:
+    evidence = _evidence(
+        UserTurn(text=f"Cancel {OTHER_ID}"),
+        _named("cancel_order", {"orderId": ORDER_ID, "status": "CANCELLED"}),
+        _named("get_order", {"orderId": OTHER_ID, "status": "PENDING"}),
+    )
+
+    assert check_segment(f"Order {OTHER_ID} was cancelled.", evidence) == (
+        ChatRule.CANCELLATION_CLAIM,
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _named("get_order", {"orderId": ORDER_ID, "status": "PENDING", "note": "cancelled"}),
+        _named("list_products", [{"name": "Gift", "status": "CANCELLED"}]),
+        ToolResultItem(
+            call_id="toolu_09",
+            name="cancel_order",
+            ok=False,
+            payload={"error": "rejected", "message": "Order was not cancelled; cancelled? no"},
+        ),
+    ],
+    ids=["pending-with-injected-word", "not-an-order-tool", "failed-result"],
+)
+def test_should_flag_a_cancellation_claim_without_a_cancelled_order(result: ToolResultItem) -> None:
+    rules = check_segment("Sua encomenda foi cancelada.", _evidence(result))
+
+    assert ChatRule.CANCELLATION_CLAIM in rules
+
+
+def test_should_pass_a_proposal_and_a_negated_claim_without_a_cancelled_order() -> None:
+    evidence = _evidence(_named("get_order", {"orderId": ORDER_ID, "status": "PENDING"}))
+
+    assert ChatRule.CANCELLATION_CLAIM not in check_answer("I can cancel it for you.", evidence)
+    assert ChatRule.CANCELLATION_CLAIM not in check_answer("It was not cancelled.", evidence)
+
+
+def test_should_flag_awaiting_approval_language_only_once_the_approval_is_resolved() -> None:
+    text = "Please approve or reject the request shown in the app to complete it."
+    open_run = _evidence(_result(ORDER))
+    resolved = ChatEvidence.from_transcript([_result(ORDER)], approval_resolved=True)
+
+    assert ChatRule.APPROVAL_LANGUAGE not in check_segment(text, open_run)
+    assert ChatRule.APPROVAL_LANGUAGE in check_segment(text, resolved)
+    assert ChatRule.APPROVAL_LANGUAGE in check_answer("Aguarda a sua aprovação.", resolved)
+    assert ChatRule.APPROVAL_LANGUAGE not in check_answer("Nothing was changed.", resolved)
+
+
+def test_should_take_the_status_of_a_refused_cancel_as_evidence() -> None:
+    refused = ToolResultItem(
+        call_id="toolu_09",
+        name="cancel_order",
+        ok=False,
+        payload={
+            "error": "not_cancellable",
+            "reason": "order_not_pending",
+            "message": "No approval was created.",
+            "data": {"orderId": OTHER_ID, "status": "CANCELLED"},
+        },
+    )
+    text = f"Order {OTHER_ID} is already CANCELLED, so it cannot be cancelled again."
+
+    assert check_answer(text, _evidence(UserTurn(text=f"Cancel {OTHER_ID}"), refused)) == ()

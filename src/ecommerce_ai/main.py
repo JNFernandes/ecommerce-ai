@@ -26,9 +26,10 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
-from ecommerce_ai.agents.assistant.graph import ChatGraph
+from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
 from ecommerce_ai.agents.assistant.limits import ChatLimits
 from ecommerce_ai.agents.assistant.ports import (
+    ApprovalStore,
     ChatModel,
     Checkpointer,
     ConversationStore,
@@ -36,10 +37,11 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
-from ecommerce_ai.agents.prompts.loader import load_prompt, load_system_prompt
+from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
 from ecommerce_ai.agents.triage.ports import (
+    Clock,
     SystemClock,
     TokenBudget,
     TriageCaseQueue,
@@ -54,6 +56,7 @@ from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
 from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.auth import TokenVerifier
+from ecommerce_ai.infrastructure.db.approval_repository import ApprovalRepository
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
@@ -86,6 +89,8 @@ from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from ecommerce_ai.messaging.triage_published import to_outbox_message
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
 from ecommerce_ai.tools.invoker import ToolInvoker
+from ecommerce_ai.tools.mutating.cancel_order import cancel_order_tool
+from ecommerce_ai.tools.mutating.policy import Exposure
 from ecommerce_ai.tools.notifications import list_my_notifications_tool
 from ecommerce_ai.tools.orders import get_order_tool, list_my_orders_tool
 from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
@@ -112,6 +117,21 @@ def build_tool_definitions(
         list_my_notifications_tool(
             notifications, timeout=timeout, max_bytes=max_bytes, text_limit=text_limit
         ),
+    ]
+
+
+def build_chat_tool_definitions(
+    settings: Settings, orders: RestClient
+) -> Sequence[AnyToolDefinition]:
+    """Return the chat-only tools: ``cancel_order`` on ``orders`` (based at ORDERS_BASE_URL)."""
+    return [
+        cancel_order_tool(
+            orders,
+            timeout=settings.tool_timeout_seconds,
+            max_bytes=settings.tool_max_response_bytes,
+            ttl_seconds=settings.approval_ttl_seconds,
+            proposals_per_hour=settings.cancel_proposals_per_hour,
+        )
     ]
 
 
@@ -222,12 +242,16 @@ def create_app(
     checkpointer: Checkpointer | None = None,
     tool_runner: ToolRunner | None = None,
     token_budget: TokenBudget | None = None,
+    approval_store: ApprovalStore | None = None,
+    clock: Clock | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
-    checkpointer, the chat's tool runner and the token budget replace the real ones in tests.
+    checkpointer, the chat's tool runner, the token budget, the approval store and the chat's
+    clock replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
+    ``/mcp`` serves only the MCP-exposed tools; the chat also gets ``cancel_order`` (US-06).
     """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
@@ -259,10 +283,15 @@ def create_app(
     notifications = _rest_client(
         notifications_http, "notifications", settings.notifications_base_url, settings
     )
+    orders_rest = _rest_client(orders_http, "orders", settings.orders_base_url, settings)
     registry = ToolRegistry.build(
-        build_tool_definitions(settings, orders, inventory, notifications)
+        [
+            *build_tool_definitions(settings, orders, inventory, notifications),
+            *build_chat_tool_definitions(settings, orders_rest),
+        ]
     )
-    mcp = mcp_endpoint(build_mcp_app(build_mcp_server(registry)), verifier)
+    mcp_registry = registry.exposed(Exposure.MCP)
+    mcp = mcp_endpoint(build_mcp_app(build_mcp_server(mcp_registry)), verifier)
 
     # Building the engine opens no connection; the consumer connects in its own task.
     engine = build_engine(settings)
@@ -301,18 +330,23 @@ def create_app(
         state=relay_state,
     )
     store = conversation_store or ConversationRepository(engine)
+    chat_clock = clock or SystemClock()
     chat_graph = ChatGraph(
         model=chat_model,
-        tools=tool_runner or InvokerToolRunner(ToolInvoker(registry)),
-        prompt=load_system_prompt("assistant", "v1"),
+        tools=tool_runner or InvokerToolRunner(ToolInvoker(registry.exposed(Exposure.CHAT))),
+        prompt=load_assistant_prompt(),
         checkpointer=checkpointer or PostgresCheckpointSaver(engine),
         max_tool_rounds=settings.chat_max_tool_rounds,
         max_retries=settings.llm_max_retries,
+        clock=chat_clock,
+        approval_ttl_seconds=settings.approval_ttl_seconds,
     )
     chat_service = ChatService(
         store,
         chat_graph,
-        SystemClock(),
+        chat_clock,
+        approvals=approval_store or ApprovalRepository(engine),
+        proposals_per_hour=settings.cancel_proposals_per_hour,
         budget=budget,
         limits=ChatLimits(
             max_messages=settings.chat_max_messages,

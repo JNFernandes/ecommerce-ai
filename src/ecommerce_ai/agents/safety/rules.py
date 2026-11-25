@@ -3,11 +3,12 @@
 Facts (amounts and numbers, UUIDs, ISO and written dates, order status words) must be found in the
 ``Evidence``. Ids and ISO dates are removed before the contact and internal-name checks, so their
 digits and letters never look like phone numbers or identifiers. Nothing here quotes the text it
-checks: callers turn a broken rule into their own fixed message.
+checks: callers turn a broken rule into their own fixed message. A cancellation claim (US-06) must
+name only orders the evidence holds as ``CANCELLED`` (``cancellation_claims_grounded``).
 """
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Final, Self
@@ -136,25 +137,42 @@ def scrub_ids_and_dates(text: str) -> str:
 
 
 class Evidence:
-    """Facts a text may state: UUIDs, ISO dates, numbers and status words of the source texts."""
+    """Facts a text may state: UUIDs, ISO dates, numbers and status words of the source texts.
 
-    def __init__(self, text: str, topics: frozenset[str]) -> None:
-        """Index the facts of ``text``; ``topics`` ground status words (``cancelled``...)."""
+    The parts of every ISO date and time (year, month, day, hour, minute, second) are numbers of
+    the evidence too, so a date or time written another way (``24/11/2026``, ``10:15``) is
+    grounded by the timestamp it comes from.
+    """
+
+    def __init__(self, text: str, topics: frozenset[str], facts: str = "") -> None:
+        """Index the facts of ``text`` and ``facts``; ``topics`` ground status words.
+
+        Status words (``cancelled``, ``shipped``...) are grounded only by ``text`` or ``topics``;
+        ``facts`` (e.g. the customer's own messages) adds only ids, dates and numbers.
+        """
         self.text = text
         self.topics = topics
-        self.uuids = {match.group().lower() for match in _UUID.finditer(text)}
-        without_uuids = _strip(_UUID, text)
+        source = f"{text}\n{facts}" if facts else text
+        self.uuids = {match.group().lower() for match in _UUID.finditer(source)}
+        without_uuids = _strip(_UUID, source)
         self.dates = _iso_dates(without_uuids)
         self.numbers = {
             number
             for match in _NUMBER.finditer(_strip(_ISO_DATE, without_uuids))
             if (number := _number(match.group())) is not None
+        } | {
+            number
+            for match in _ISO_DATE.finditer(without_uuids)
+            for part in re.findall(r"\d+", match.group())
+            if (number := _number(part)) is not None
         }
 
     @classmethod
-    def from_strings(cls, strings: Iterable[str], topics: Iterable[str] = ()) -> Self:
-        """Evidence made of ``strings`` (e.g. JSON leaves) and the event ``topics`` behind them."""
-        return cls("\n".join(strings), frozenset(topics))
+    def from_strings(
+        cls, strings: Iterable[str], topics: Iterable[str] = (), facts: Iterable[str] = ()
+    ) -> Self:
+        """Evidence of ``strings`` (e.g. JSON leaves), their ``topics`` and extra ``facts``."""
+        return cls("\n".join(strings), frozenset(topics), "\n".join(facts))
 
     def has_date(self, month: int, day: int | None, year: int | None) -> bool:
         """True when a date of the evidence matches every given part."""
@@ -233,3 +251,71 @@ def has_internal_name(text: str) -> bool:
 def has_html(text: str) -> bool:
     """True when ``text`` holds an HTML tag or comment."""
     return _HTML_TAG.search(text) is not None
+
+
+_CANCELLATION_CLAIM: Final = re.compile(
+    r"\bcancel(?:l)?ed\b"
+    r"|\bwill\s+(?:now\s+)?(?:be\s+)?cancel\w*"
+    r"|\bcancellation\s+(?:is|was|has\s+been)\s+(?:done|complete\w*|successful|confirmed|processed)"
+    r"|\bcancelad[oa]s?\b|\bcancel(?:ei|ou|amos|aram)\b"
+    r"|\b(?:vou|vamos|irei|iremos|vai|v[aã]o)\s+(?:ser\s+)?cancel\w*"
+    r"|\bcancelamento\s+(?:foi|est[aá])\s+(?:feito|conclu[ií]do|efetuado|confirmado|realizado)",
+    re.I,
+)
+_NEGATED: Final = re.compile(
+    r"(?:\bnot|\bcannot|n't|\bnever|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$", re.I
+)
+_MODAL: Final = re.compile(
+    r"\b(?:can|could|may|might|must|should|cannot)(?:\s+not|n't)?\s+(?:\w+\s+)?be\s+$", re.I
+)
+"""A possibility, not a claim: "only pending orders can be cancelled"."""
+_SENTENCE: Final = re.compile(r"[^.!?\n]+[.!?]*")
+
+
+def cancellation_claims(text: str) -> Iterator[tuple[str, ...]]:
+    """For each sentence of ``text`` saying an order is or will be cancelled: the ids it names.
+
+    English and Portuguese; questions, negated forms ("was not cancelled") and possibilities
+    ("can be cancelled") are no claims. An empty tuple is a claim that names no order.
+    """
+    for sentence in _SENTENCE.finditer(text):
+        part = sentence.group()
+        if part.rstrip().endswith("?"):
+            continue
+        claimed = any(
+            not _NEGATED.search(part[: match.start()]) and not _MODAL.search(part[: match.start()])
+            for match in _CANCELLATION_CLAIM.finditer(part)
+        )
+        if claimed:
+            yield tuple(uuids_in(part))
+
+
+_AWAITING_APPROVAL: Final = re.compile(
+    r"\b(?:approve|reject|confirm)\s+(?:or\s+(?:approve|reject)\s+)?(?:the|this|that)\s+"
+    r"(?:request|action|cancell?ation)"
+    r"|\b(?:awaiting|pending|waiting\s+for)\s+(?:your\s+)?(?:approval|confirmation|decision)"
+    r"|\bsent\s+(?:a|the)\s+cancell?ation\s+request"
+    r"|\bplease\s+(?:approve|confirm|reject)\b"
+    r"|\baguard\w*\s+(?:a\s+sua\s+)?(?:aprova|confirma)\w*"
+    r"|\b(?:aprove|aprovar|rejeite|rejeitar|confirme)\s+(?:o|a|este|esta)\s+(?:pedido|a[cç][aã]o|cancelamento)",
+    re.I,
+)
+
+
+def has_awaiting_approval_language(text: str) -> bool:
+    """True when ``text`` asks for, or waits on, an approval (EN/PT), e.g. "please approve"."""
+    return _AWAITING_APPROVAL.search(text) is not None
+
+
+def cancellation_claims_grounded(
+    text: str, cancelled_ids: Collection[str], *, any_cancelled: bool
+) -> bool:
+    """True when every cancellation claim of ``text`` is backed by a ``CANCELLED`` order (FR-012).
+
+    A claim naming ids needs each of them in ``cancelled_ids`` (lower-case); a claim naming none
+    needs ``any_cancelled``.
+    """
+    return all(
+        set(ids) <= set(cancelled_ids) if ids else any_cancelled
+        for ids in cancellation_claims(text)
+    )

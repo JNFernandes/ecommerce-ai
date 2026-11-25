@@ -13,10 +13,17 @@ from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
 from tests.support.inventory_stub import InventoryStub, sample_product, sample_products
-from tests.support.mcp import post_rpc, rpc_result, serve_app, tool_result, tools_call_request
+from tests.support.mcp import (
+    post_rpc,
+    rpc_error,
+    rpc_result,
+    serve_app,
+    tool_result,
+    tools_call_request,
+)
 from tests.support.mcp import tools_list_request as list_request
 from tests.support.notifications_stub import CUSTOMER_B, NotificationsStub, sample_notification
-from tests.support.orders_stub import ORDER_ID, OrdersStub, sample_order
+from tests.support.orders_stub import ORDER_ID, OrdersCancelStub, OrdersStub, sample_order
 from tests.support.tokens import CUSTOMER_ID, jwks, make_token
 
 JWKS_URL: str = Settings.model_fields["identity_jwks_url"].default
@@ -312,3 +319,39 @@ async def test_should_list_only_the_callers_notifications_over_mcp(
     (request,) = notifications.notifications.requests
     assert request.url.params["customerId"] == str(CUSTOMER_ID)
     assert request.headers["Authorization"] == f"Bearer {token}"
+
+
+READ_ONLY_TOOLS = {
+    "get_order",
+    "list_my_orders",
+    "list_products",
+    "get_product",
+    "list_my_notifications",
+}
+
+
+async def test_should_list_only_the_five_read_only_tools_and_never_cancel_order(
+    stub: OrdersStub, log_output: io.StringIO
+) -> None:
+    async with _serve(log_output) as client:
+        response = await post_rpc(client, list_request(), make_token())
+
+    tools = rpc_result(response)["tools"]
+    assert isinstance(tools, list)
+    assert {tool["name"] for tool in tools} == READ_ONLY_TOOLS
+
+
+async def test_should_answer_unknown_tool_and_never_call_orders_when_cancel_order_is_called(
+    log_output: io.StringIO,
+) -> None:
+    with respx.mock(assert_all_called=False) as router:
+        router.get(JWKS_URL).respond(json=jwks())
+        orders = OrdersStub(router)
+        cancel = OrdersCancelStub(router)
+        async with _serve(log_output) as client:
+            request = tools_call_request("cancel_order", {"orderId": ORDER_ID})
+            response = await post_rpc(client, request, make_token())
+
+    assert rpc_error(response)["code"] == -32602
+    assert cancel.call_count == 0
+    assert orders.requests == []

@@ -1,20 +1,26 @@
-"""respx stub of the Orders GraphQL endpoint behind the gateway.
+"""respx stubs of the Orders endpoints behind the gateway.
 
 ``OrdersStub`` answers ``POST {orders_graphql_url}`` with an order, a page, ``null``, a GraphQL
 error code, an HTTP status, an oversized body or a request that never ends, and records every
-request so tests can check the forwarded headers and variables.
+request so tests can check the forwarded headers and variables. ``OrdersCancelStub`` answers
+``POST {orders_base_url}/{orderId}/cancel`` (200 / 404 / 409 / hang) and counts the cancels.
 """
 
 import asyncio
 import json
+import re
 from collections.abc import Iterable, Mapping
 from typing import Final
+from urllib.parse import unquote
 
 import httpx
 import respx
 
 ORDERS_GRAPHQL_URL: Final = "http://localhost:8090/api/graphql"
 """Default ``orders_graphql_url`` setting."""
+
+ORDERS_BASE_URL: Final = "http://localhost:8090/api/orders"
+"""Default ``orders_base_url`` setting."""
 
 ORDER_ID: Final = "0b9a7c4e-2f1d-4e3b-8a6c-5d4e3f2a1b0c"
 """Order id used by ``sample_order``."""
@@ -102,3 +108,59 @@ class OrdersStub:
     def respond_sequence(self, *responses: httpx.Response | Exception) -> None:
         """Answer successive requests with ``responses`` (exceptions are raised)."""
         self.route.side_effect = list(responses)
+
+
+class OrdersCancelStub:
+    """Programmable ``POST {orders_base_url}/{orderId}/cancel``; records every cancel call.
+
+    Answers 200 ``{orderId, status: CANCELLED}`` until configured otherwise. Bypass tests assert
+    ``call_count == 0`` (SC-001).
+    """
+
+    def __init__(self, router: respx.MockRouter, base_url: str = ORDERS_BASE_URL) -> None:
+        """Register the route for any order id under ``base_url``."""
+        pattern = rf"^{re.escape(base_url.rstrip('/'))}/(?P<order_id>[^/]+)/cancel$"
+        self.route = router.post(url__regex=pattern)
+        self.respond_cancelled()
+
+    @property
+    def call_count(self) -> int:
+        """Number of cancel requests received."""
+        return self.route.call_count
+
+    @property
+    def requests(self) -> list[httpx.Request]:
+        """Every cancel request, in order."""
+        return [call.request for call in self.route.calls]
+
+    @property
+    def order_ids(self) -> list[str]:
+        """The (decoded) order id of every cancel request, in order."""
+        return [unquote(request.url.path.rsplit("/", 2)[-2]) for request in self.requests]
+
+    def respond_cancelled(self) -> None:
+        """Answer 200 with the cancelled order, echoing its id."""
+
+        def _cancelled(_request: httpx.Request, order_id: str) -> httpx.Response:
+            return httpx.Response(200, json={"orderId": unquote(order_id), "status": "CANCELLED"})
+
+        self.route.side_effect = _cancelled
+
+    def respond_status(self, status: int) -> None:
+        """Answer every cancel with ``status`` (404 unknown or not owned, 409 not PENDING)."""
+        self.route.side_effect = None
+        self.route.respond(status, json={"statusCode": status, "message": "upstream detail"})
+
+    def respond_json(self, body: Mapping[str, object]) -> None:
+        """Answer 200 with ``body`` (e.g. a malformed one)."""
+        self.route.side_effect = None
+        self.route.respond(200, json=dict(body))
+
+    def respond_hang(self) -> None:
+        """Never answer: the cancel waits until the caller's timeout cancels it."""
+
+        async def _hang(_request: httpx.Request, order_id: str) -> httpx.Response:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")  # pragma: no cover
+
+        self.route.side_effect = _hang

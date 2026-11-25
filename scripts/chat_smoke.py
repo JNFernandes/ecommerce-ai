@@ -6,6 +6,10 @@ tokens as they arrive, then the finish reason or the error code and message. The
 token comes from ``TOKEN`` and is never printed; ``CHAT_URL`` overrides the default
 ``http://localhost:8002/chat``. The conversation id is printed first so a follow-up can reuse it.
 The SSE stream is parsed with the standard library only (no SSE client dependency).
+
+When the answer pauses for an approval (US-06), the card is printed (action, order id, status,
+total and expiry) and ``y/n`` is asked; the decision is posted to the approval route and its
+continuation streamed the same way. Only an explicit ``y``/``yes`` approves.
 Usage: ``TOKEN=... uv run python scripts/chat_smoke.py "Where is my last order?"``.
 """
 
@@ -13,13 +17,15 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import TextIO
 
 import httpx
 
 DEFAULT_CHAT_URL = "http://localhost:8002/chat"
+AWAITING_APPROVAL = "awaiting_approval"
+APPROVE_ANSWERS = frozenset({"y", "yes"})
 TIMEOUT = httpx.Timeout(10.0, read=120.0)
 """Connect/write limits for the requests; a long read limit for a slow answer."""
 
@@ -78,14 +84,66 @@ def render(event: Event) -> str:
             return f"\n[end] {data.get('finishReason')} ({data.get('modelId')}, {tokens})\n"
         case "error":
             return f"\n[error] {data.get('code')}: {data.get('message')}\n"
+        case "approval.required":
+            summary = data.get("summary")
+            details = summary if isinstance(summary, dict) else {}
+            total = details.get("totalAmount")
+            amount = "unknown" if total is None else f"{total} {details.get('currency') or ''}"
+            return (
+                f"\n[approval] {data.get('action')} order {data.get('orderId')}:"
+                f" {details.get('status')}, total {amount.strip()},"
+                f" expires {data.get('expiresAt')}\n"
+            )
+        case "approval.resolved":
+            return f"[approval] {data.get('decision')}: {data.get('outcome')}\n"
         case _:
             return ""
 
 
+type Ask = Callable[[str], str]
+"""Reads one answer from the person running the smoke test (``input`` by default)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Ending:
+    """How one stream ended: its exit code and the approval it paused on, if any."""
+
+    code: int
+    approval_id: str | None = None
+
+
+async def _stream(
+    client: httpx.AsyncClient, path: str, body: dict[str, str], out: TextIO
+) -> Ending:
+    """POST ``body`` to ``path`` and print the streamed events until the terminal one."""
+    approval_id: str | None = None
+    async with client.stream("POST", path, json=body) as response:
+        if response.status_code != 200:
+            await response.aread()
+            out.write(f"[http {response.status_code}] {response.text}\n")
+            return Ending(1)
+        async for event in iter_events(response.aiter_lines()):
+            out.write(render(event))
+            out.flush()
+            if event.name == "approval.required":
+                approval_id = str(event.data.get("approvalId"))
+            if event.name == "error":
+                return Ending(1)
+            if event.name == "message.end":
+                paused = event.data.get("finishReason") == AWAITING_APPROVAL
+                return Ending(0, approval_id if paused else None)
+    out.write("\n[error] the stream ended without message.end\n")
+    return Ending(1)
+
+
 async def chat(
-    client: httpx.AsyncClient, question: str, conversation_id: str | None, out: TextIO
+    client: httpx.AsyncClient,
+    question: str,
+    conversation_id: str | None,
+    out: TextIO,
+    ask: Ask = input,
 ) -> int:
-    """Ask ``question``; return 0 after ``message.end``, 1 on any error."""
+    """Ask ``question``, then decide every approval with ``ask``; 0 after ``message.end``."""
     if conversation_id is None:
         created = await client.post("/conversations", json={})
         if created.status_code != 201:
@@ -93,19 +151,14 @@ async def chat(
             return 1
         conversation_id = str(created.json()["id"])
     out.write(f"conversation {conversation_id}\n")
-    path = f"/conversations/{conversation_id}/messages"
-    async with client.stream("POST", path, json={"content": question}) as response:
-        if response.status_code != 200:
-            await response.aread()
-            out.write(f"[http {response.status_code}] {response.text}\n")
-            return 1
-        async for event in iter_events(response.aiter_lines()):
-            out.write(render(event))
-            out.flush()
-            if event.name in {"message.end", "error"}:
-                return 0 if event.name == "message.end" else 1
-    out.write("\n[error] the stream ended without message.end\n")
-    return 1
+    base = f"/conversations/{conversation_id}"
+    ending = await _stream(client, f"{base}/messages", {"content": question}, out)
+    while ending.code == 0 and ending.approval_id is not None:
+        answer = ask("Approve this action? [y/N] ").strip().lower()
+        decision = "approve" if answer in APPROVE_ANSWERS else "reject"
+        path = f"{base}/approvals/{ending.approval_id}"
+        ending = await _stream(client, path, {"decision": decision}, out)
+    return ending.code
 
 
 async def smoke(
@@ -115,6 +168,7 @@ async def smoke(
     conversation_id: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     out: TextIO = sys.stdout,
+    ask: Ask = input,
 ) -> int:
     """Run :func:`chat` with a client on ``url`` that sends ``token`` as the bearer."""
     async with httpx.AsyncClient(
@@ -123,7 +177,7 @@ async def smoke(
         timeout=TIMEOUT,
         transport=transport,
     ) as client:
-        return await chat(client, question, conversation_id, out)
+        return await chat(client, question, conversation_id, out, ask)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

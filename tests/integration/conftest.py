@@ -78,6 +78,6 @@ async def _empty_tables(db_engine: AsyncEngine) -> None:
             text(
                 "TRUNCATE triage_results, outbox_events, llm_token_usage, triage_evidence,"
                 " triage_cases, inbound_dead_letters, chat_messages, chat_conversations,"
-                " chat_checkpoints, chat_checkpoint_writes"
+                " chat_checkpoints, chat_checkpoint_writes, chat_approvals, chat_actions"
             )
         )

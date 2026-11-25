@@ -101,9 +101,10 @@ async def test_should_stream_the_contract_sequence_and_store_both_messages() -> 
     assert end == {
         "messageId": start["messageId"],
         "finishReason": "completed",
-        "promptVersion": "assistant.v1",
+        "promptVersion": "assistant.v3",
         "modelId": MODEL_ID,
         "usage": {"inputTokens": 200, "outputTokens": 30},
+        "violations": [],
     }
     question, answer = store.messages[UUID(conversation_id)]
     assert (question.role, question.content) == (MessageRole.USER, "Where is my last order?")
@@ -111,7 +112,7 @@ async def test_should_stream_the_contract_sequence_and_store_both_messages() -> 
     assert str(answer.id) == start["messageId"]
     assert answer.content == "Your last order is SHIPPED."
     assert answer.finish_reason is FinishReason.COMPLETED
-    assert answer.prompt_version == "assistant.v1"
+    assert answer.prompt_version == "assistant.v3"
 
 
 async def test_should_answer_404_and_store_nothing_when_the_conversation_is_not_mine() -> None:
