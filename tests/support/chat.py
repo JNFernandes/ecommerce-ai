@@ -6,6 +6,7 @@ open for disconnect tests. ``chat_graph`` / ``collect_run`` build and run the re
 """
 
 import asyncio
+import contextlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -17,16 +18,22 @@ from pydantic import JsonValue
 from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent, load_assistant_prompt
 from ecommerce_ai.agents.assistant.model import RunOutcome
 from ecommerce_ai.agents.assistant.ports import (
+    ApprovalStore,
     ChatModel,
     Checkpointer,
-    ConversationStore,
     ToolOutcome,
     ToolRunner,
     ToolSpec,
 )
-from ecommerce_ai.agents.ports import TokenBudget
+from ecommerce_ai.agents.ports import Clock, TokenBudget
+from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
+from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
-from tests.support.stores import InMemoryConversationStore, InMemoryTokenBudget
+from tests.support.stores import (
+    InMemoryApprovalStore,
+    InMemoryConversationStore,
+    InMemoryTokenBudget,
+)
 
 UNLIMITED_BUDGET = 10**9
 """A daily budget no test reaches."""
@@ -75,6 +82,8 @@ class FakeToolRunner:
     mutating: frozenset[str] = frozenset()
     """Names that run only through ``run_approved`` (and are refused by ``run``)."""
     approved_calls: list[ToolCallRecord] = field(default_factory=list)
+    approved_tokens: list[str] = field(default_factory=list)
+    """The bound caller's token at each approved call (ADR 0001)."""
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """One spec per registered tool name."""
@@ -138,6 +147,8 @@ class FakeToolRunner:
                 duration_ms=0.0,
             )
         self.approved_calls.append(ToolCallRecord(name, dict(arguments)))
+        with contextlib.suppress(NoCallerError):  # direct calls in tests bind no caller
+            self.approved_tokens.append(current_caller().token.get_secret_value())
         result = self.results.get(name, envelope({}))
         if isinstance(result, FakeToolError):
             return ToolOutcome(
@@ -190,16 +201,26 @@ def chat_graph(
 def chat_app(
     model: ChatModel | None,
     tools: ToolRunner | None = None,
-    store: ConversationStore | None = None,
+    store: InMemoryConversationStore | None = None,
     checkpointer: Checkpointer | None = None,
     budget: TokenBudget | None = None,
+    approvals: ApprovalStore | None = None,
+    clock: Clock | None = None,
+    settings: Settings | None = None,
 ) -> FastAPI:
-    """The app with the chat on fakes: in-memory store, saver and budget, fake tools, no probes."""
+    """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
+
+    Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used.
+    """
+    conversations = store or InMemoryConversationStore()
     return create_app(
+        settings=settings,
         probes=[],
-        conversation_store=store or InMemoryConversationStore(),
+        conversation_store=conversations,
         chat_model=model,
         tool_runner=tools or FakeToolRunner(),
         checkpointer=checkpointer or InMemorySaver(),
         token_budget=budget or InMemoryTokenBudget(UNLIMITED_BUDGET),
+        approval_store=approvals or InMemoryApprovalStore(conversations),
+        clock=clock,
     )

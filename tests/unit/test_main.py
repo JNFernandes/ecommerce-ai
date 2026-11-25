@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ecommerce_ai import main
 from ecommerce_ai.agents.assistant.model import MessageRole
+from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
 from ecommerce_ai.agents.triage_intake.model import TriageCause, TriageStatus
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.health import DependencyStatus
@@ -39,13 +40,23 @@ from ecommerce_ai.messaging.kafka import (
     TopicPartition,
 )
 from ecommerce_ai.messaging.triage_published import to_outbox_message
-from ecommerce_ai.tools.registry import AnyToolDefinition, ToolDefinition, ToolRegistryError
+from ecommerce_ai.tools.invoker import ToolInvoker
+from ecommerce_ai.tools.mutating.policy import Exposure
+from ecommerce_ai.tools.registry import (
+    AnyToolDefinition,
+    ToolDefinition,
+    ToolRegistry,
+    ToolRegistryError,
+)
+from ecommerce_ai.tools.server import build_mcp_server
+from tests.support.chat import TOOL_NAMES
 from tests.support.kafka import FakeConsumer, FakeProducer
 from tests.support.mcp import serve_app
 from tests.support.polling import wait_until
 from tests.support.probes import FakeProbe
 from tests.support.sse import events_of, parse_sse
 from tests.support.stores import (
+    InMemoryApprovalStore,
     InMemoryConversationStore,
     InMemoryOutboxStore,
     InMemoryTriageCaseQueue,
@@ -430,6 +441,7 @@ async def test_should_end_chat_llm_unavailable_without_model_kafka_or_database()
         probes=[DATABASE_DOWN, kafka_down],
         conversation_store=store,
         checkpointer=InMemorySaver(),
+        approval_store=InMemoryApprovalStore(store),
     )
     headers = {"Authorization": f"Bearer {make_token(sub='user-1')}"}
     with respx.mock(assert_all_called=False) as router:
@@ -459,3 +471,40 @@ async def test_should_end_chat_llm_unavailable_without_model_kafka_or_database()
     stored = await store.get("user-1", UUID(conversation_id))
     assert stored is not None
     assert [message.role for message in stored.messages] == [MessageRole.USER]
+
+
+def test_should_build_cancel_order_for_the_chat_only_with_the_approval_settings() -> None:
+    settings = Settings(approval_ttl_seconds=120, cancel_proposals_per_hour=2)
+
+    (definition,) = main.build_chat_tool_definitions(settings, object())  # type: ignore[arg-type]  # no handler runs
+
+    assert definition.name == "cancel_order"
+    assert definition.mutating is True
+    assert definition.exposure == frozenset({Exposure.CHAT})
+    assert definition.approval is not None
+    assert (definition.approval.ttl_seconds, definition.approval.proposals_per_hour) == (120, 2)
+
+
+def test_should_give_the_chat_cancel_order_and_keep_it_off_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chat_tools: list[set[str]] = []
+    mcp_tools: list[set[str]] = []
+    real_runner = InvokerToolRunner
+    real_server = build_mcp_server
+
+    def record_runner(invoker: ToolInvoker) -> InvokerToolRunner:
+        chat_tools.append({definition.name for definition in invoker.registry})
+        return real_runner(invoker)
+
+    def record_server(registry: ToolRegistry) -> object:
+        mcp_tools.append({definition.name for definition in registry})
+        return real_server(registry)
+
+    monkeypatch.setattr(main, "InvokerToolRunner", record_runner)
+    monkeypatch.setattr(main, "build_mcp_server", record_server)
+
+    create_app(probes=[], checkpointer=InMemorySaver())
+
+    assert chat_tools == [{*TOOL_NAMES, "cancel_order"}]
+    assert mcp_tools == [set(TOOL_NAMES)]

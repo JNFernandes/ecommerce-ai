@@ -8,6 +8,11 @@ another user's id gives the same 404 (FR-003). A storage outage (``is_unavailabl
 authentication and before the body is validated (429 ``RATE_LIMITED`` with ``Retry-After``); a
 full conversation or one with an answer in progress is a 409 (research §16). Bodies over
 ``MAX_BODY_BYTES`` get 413 ``PAYLOAD_TOO_LARGE`` from ``api/body_limit.py`` before any route runs.
+
+US-06: ``POST .../approvals/{approvalId}`` is the only way to decide a proposed action
+(``ChatService.decide``); it is rate limited and streamed like ``/messages`` and answers 409
+``APPROVAL_ALREADY_DECIDED`` / ``STREAM_ACTIVE`` or 410 ``APPROVAL_EXPIRED`` before any stream.
+Posting a message while an approval is pending is a 409 ``APPROVAL_PENDING``.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -23,10 +28,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
+from ecommerce_ai.agents.assistant.approvals import (
+    ApprovalAlreadyDecided,
+    ApprovalExpired,
+    ApprovalPending,
+)
 from ecommerce_ai.agents.assistant.limits import ConversationFull, StreamActive
 from ecommerce_ai.agents.assistant.model import (
     Conversation,
     ConversationHistory,
+    Decision,
     FinishReason,
     MessageRole,
     StoredMessage,
@@ -63,6 +74,17 @@ class PostMessageRequest(BaseModel):
         if not 1 <= len(text) <= CONTENT_MAX_CHARS:
             raise ValueError("content must hold 1 to 2000 characters")
         return text
+
+
+class DecisionRequest(BaseModel):
+    """Body of `POST /chat/conversations/{id}/approvals/{approvalId}`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    decision: Decision = Field(
+        description="`approve` runs the proposed action once; `reject` changes nothing.",
+        examples=["approve"],
+    )
 
 
 class ChatHttpCode(StrEnum):
@@ -269,8 +291,23 @@ _STREAM: Final[dict[int | str, dict[str, object]]] = {
     200: {"content": {MEDIA_TYPE: {}}, "description": "The answer as Server-Sent Events."},
     409: {
         "model": ErrorBody,
-        "description": "`STREAM_ACTIVE` (an answer is in progress) or `CONVERSATION_FULL`.",
+        "description": (
+            "`STREAM_ACTIVE` (an answer is in progress), `CONVERSATION_FULL` or"
+            " `APPROVAL_PENDING` (decide the pending action first)."
+        ),
     },
+    429: {
+        "model": ErrorBody,
+        "description": "`RATE_LIMITED`; `Retry-After` gives the seconds to wait.",
+    },
+}
+_DECISION: Final[dict[int | str, dict[str, object]]] = {
+    200: {"content": {MEDIA_TYPE: {}}, "description": "The continuation as Server-Sent Events."},
+    409: {
+        "model": ErrorBody,
+        "description": "`APPROVAL_ALREADY_DECIDED` or `STREAM_ACTIVE`.",
+    },
+    410: {"model": ErrorBody, "description": "`APPROVAL_EXPIRED`: past `expiresAt`."},
     429: {
         "model": ErrorBody,
         "description": "`RATE_LIMITED`; `Retry-After` gives the seconds to wait.",
@@ -368,11 +405,12 @@ def build_chat_router(
     )
     async def get_conversation(caller: Caller, conversation_id: str) -> Response:
         parsed = _parse_id(conversation_id)
-        history = (
-            None if parsed is None else await guarded(store.get(caller.identity.subject, parsed))
-        )
-        if history is None:
+        subject = caller.identity.subject
+        history = None if parsed is None else await guarded(store.get(subject, parsed))
+        if parsed is None or history is None:
             return error_response(ChatHttpCode.NOT_FOUND)
+        # Reading touches the approval: an expired or orphaned one is closed (FR-010).
+        await guarded(service.pending_approval(subject, parsed))
         detail = ConversationDetailResponse.of_history(history)
         return JSONResponse(detail.model_dump(mode="json", by_alias=True))
 
@@ -410,16 +448,63 @@ def build_chat_router(
         caller: LimitedCaller, conversation_id: str, body: PostMessageRequest
     ) -> Response:
         parsed = _parse_id(conversation_id)
+        subject = caller.identity.subject
         try:
             run = (
                 None
                 if parsed is None
-                else await guarded(service.start(caller.identity.subject, parsed, body.content))
+                else await guarded(
+                    service.start(subject, parsed, body.content, request_id=caller.request_id)
+                )
             )
         except ConversationFull:
             return error_response(ChatHttpCode.CONVERSATION_FULL)
         except StreamActive:
             return error_response(ChatHttpCode.STREAM_ACTIVE)
+        except ApprovalPending:
+            return error_response(ChatHttpCode.APPROVAL_PENDING)
+        if run is None:
+            return error_response(ChatHttpCode.NOT_FOUND)
+        return sse_response(run.events(), keepalive_seconds, on_close=run.discard)
+
+    @router.post(
+        "/conversations/{conversation_id}/approvals/{approval_id}",
+        summary="Approve or reject a proposed action",
+        description=(
+            "Decide the pending approval of a conversation, once. `approve` re-reads the order"
+            " and cancels it with the caller's token only if it is still PENDING; `reject`"
+            " changes nothing. Streams Server-Sent Events: `message.start`, `approval.resolved`,"
+            " `tool.result`, `token` events, then exactly one `message.end` or `error`."
+        ),
+        responses=_ERRORS | _NOT_FOUND | _INVALID | _DECISION,
+        response_class=Response,
+        openapi_extra=AUTHENTICATED,
+    )
+    async def decide(
+        caller: LimitedCaller, conversation_id: str, approval_id: str, body: DecisionRequest
+    ) -> Response:
+        parsed = _parse_id(conversation_id)
+        approval = _parse_id(approval_id)
+        try:
+            run = (
+                None
+                if parsed is None or approval is None
+                else await guarded(
+                    service.decide(
+                        caller.identity.subject,
+                        parsed,
+                        approval,
+                        body.decision,
+                        request_id=caller.request_id,
+                    )
+                )
+            )
+        except StreamActive:
+            return error_response(ChatHttpCode.STREAM_ACTIVE)
+        except ApprovalAlreadyDecided:
+            return error_response(ChatHttpCode.APPROVAL_ALREADY_DECIDED)
+        except ApprovalExpired:
+            return error_response(ChatHttpCode.APPROVAL_EXPIRED)
         if run is None:
             return error_response(ChatHttpCode.NOT_FOUND)
         return sse_response(run.events(), keepalive_seconds, on_close=run.discard)

@@ -23,6 +23,17 @@ per-message cap, else ``BUDGET_EXCEEDED``). A call failing with ``ModelUnavailab
 segment was sent is retried (``call_with_retry``); once text was sent, it ends
 ``LLM_UNAVAILABLE``. After a cancelled run, ``record_interrupted`` puts what the customer saw into
 the transcript and closes calls left without a result, so the next request stays valid.
+
+Approvals (US-06, research §1, §2, §5): the ``tools`` node never runs a mutating call. It checks a
+``cancel_order`` call (``approvals.py``: valid id, nothing else pending, a fresh ``get_order`` read
+showing the caller's order ``PENDING``) and either answers a refusal result or puts a
+``PendingApproval`` in the state and routes to ``approval``. That node starts with
+``interrupt()``, so the run pauses there with no side effect; ``resume`` continues it with the
+decision. Only then, with the arguments stored in the state, the order is re-read and cancelled
+once (``ToolRunner.run_approved``); the node emits ``approval.resolved`` and ``tool.result``,
+answers the paused call and hands over to the model, which explains the outcome. When the model
+cannot answer after a decision, a fixed per-outcome text is the answer (ADR 0003).
+``close_approval`` ends a pause that can no longer be decided (expired, withdrawn, orphaned).
 """
 
 import asyncio
@@ -30,16 +41,34 @@ import math
 import operator
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Annotated, Final, Literal, TypedDict, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
+from langgraph.types import Command, interrupt
 from pydantic import JsonValue
 
+from ecommerce_ai.agents.assistant.approvals import (
+    APPROVAL_ACTIONS,
+    APPROVAL_OUTCOME_MESSAGES,
+    READ_TOOL,
+    TARGET_ARGUMENT,
+    Refusal,
+    outcome_after_reread,
+    outcome_of_cancel,
+    outcome_payload,
+    outcome_summary,
+    parse_target,
+    read_order,
+    refusal_payload,
+    refusal_summary,
+    summary_of,
+)
 from ecommerce_ai.agents.assistant.gatekeeper import (
     NO_ANSWER_MESSAGE,
     SAFE_MESSAGE,
@@ -50,9 +79,14 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
 )
 from ecommerce_ai.agents.assistant.limits import RunAllowance
 from ecommerce_ai.agents.assistant.model import (
+    ApprovalExecution,
+    ApprovalOutcome,
+    ApprovalResolved,
     AssistantText,
     ChatErrorCode,
+    Decision,
     FinishReason,
+    PendingApproval,
     RunOutcome,
     ThinkingItem,
     Token,
@@ -73,17 +107,20 @@ from ecommerce_ai.agents.assistant.ports import (
     Checkpointer,
     ModelTurnEnd,
     TextDelta,
+    ToolOutcome,
     ToolRunner,
     ToolUseRequest,
 )
 from ecommerce_ai.agents.assistant.segmenter import Segmenter
 from ecommerce_ai.agents.assistant.summaries import summarize
-from ecommerce_ai.agents.ports import ModelError, ModelUnavailable
+from ecommerce_ai.agents.ports import Clock, ModelError, ModelUnavailable, SystemClock
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
 from ecommerce_ai.infrastructure.retry import call_with_retry
 
-type GraphEvent = Token | ToolCall | ToolResult
-"""An event a node publishes while the graph runs."""
+type GraphEvent = Token | ToolCall | ToolResult | ApprovalResolved | ApprovalExecution
+"""An event a node publishes while the graph runs (``ApprovalExecution`` is never streamed)."""
+
+_GRAPH_EVENTS: Final = (Token, ToolCall, ToolResult, ApprovalResolved, ApprovalExecution)
 
 type StateUpdate = dict[str, object]
 """Fields a node changes; LangGraph merges them into the state."""
@@ -91,10 +128,23 @@ type StateUpdate = dict[str, object]
 _GUARD: Final = "guard_input"
 _AGENT: Final = "agent"
 _TOOLS: Final = "tools"
+_APPROVAL: Final = "approval"
 _GATEKEEPER: Final = "gatekeeper"
 _FINALIZE: Final = "finalize"
 _THINKING_BLOCKS: Final = frozenset({"thinking", "redacted_thinking"})
 DEFAULT_MAX_TOOL_ROUNDS: Final = 5
+DEFAULT_APPROVAL_TTL_SECONDS: Final = 600
+"""Seconds a proposal stays approvable (``APPROVAL_TTL_SECONDS``)."""
+
+
+_MODEL_FAILURES: Final = frozenset(
+    {ChatErrorCode.LLM_UNAVAILABLE.value, ChatErrorCode.BUDGET_EXCEEDED.value}
+)
+
+
+class ApprovalNotPaused(LookupError):
+    """``resume`` found no pause on that approval in the conversation's state."""
+
 
 ASSISTANT_PROMPT_VERSION: Final = "v2"
 """The active assistant prompt (US-06 adds the approval flow); ``assistant.v1`` stays unchanged."""
@@ -136,6 +186,40 @@ class _Turn:
     replaced: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _Checked:
+    """A checked ``cancel_order`` call: a proposal, or a refusal with its reason."""
+
+    proposal: PendingApproval | None = None
+    refusal: Refusal | None = None
+    status: str | None = None
+    stats: Sequence[dict[str, JsonValue]] = ()
+    unauthenticated: bool = False
+
+    @classmethod
+    def refused(
+        cls,
+        refusal: Refusal,
+        status: str | None = None,
+        stats: Sequence[dict[str, JsonValue]] = (),
+        *,
+        unauthenticated: bool = False,
+    ) -> "_Checked":
+        """A refused call (FR-003, FR-005): no approval."""
+        return cls(refusal=refusal, status=status, stats=stats, unauthenticated=unauthenticated)
+
+    def refusal_result(self, call: ToolCallItem) -> tuple[ToolResultItem, str]:
+        """The refused call's result for the model and its fixed ``tool.result`` summary."""
+        refusal = self.refusal or Refusal.UNAVAILABLE
+        result = ToolResultItem(
+            call_id=call.call_id,
+            name=call.name,
+            ok=False,
+            payload=refusal_payload(refusal, self.status),
+        )
+        return result, refusal_summary(refusal)
+
+
 class _BudgetSpent(Exception):
     """The run's allowance admits no further model call."""
 
@@ -169,6 +253,10 @@ class ChatState(TypedDict):
     usage: dict[str, int]
     model_id: str | None
     tool_stats: list[dict[str, JsonValue]]
+    pending_approval: dict[str, JsonValue] | None
+    """The ``PendingApproval`` the run is paused on, until decided or closed."""
+    execution: dict[str, JsonValue] | None
+    """The ``ApprovalExecution`` of the decision this run resumed from."""
 
 
 def _initial(text: str) -> ChatState:
@@ -181,6 +269,8 @@ def _initial(text: str) -> ChatState:
         "usage": Usage().model_dump(),
         "model_id": None,
         "tool_stats": [],
+        "pending_approval": None,
+        "execution": None,
     }
 
 
@@ -221,8 +311,32 @@ def _after_agent(state: ChatState) -> Literal["tools", "gatekeeper", "finalize"]
     return _TOOLS if state["pending_tool_calls"] else _GATEKEEPER
 
 
-def _after_tools(state: ChatState) -> Literal["agent", "finalize"]:
+def _after_tools(state: ChatState) -> Literal["agent", "approval", "finalize"]:
+    if state["outcome"] is not None:
+        return _FINALIZE
+    return _APPROVAL if state.get("pending_approval") is not None else _AGENT
+
+
+def _after_approval(state: ChatState) -> Literal["agent", "finalize"]:
     return _FINALIZE if state["outcome"] is not None else _AGENT
+
+
+def _resume_value(approval_id: UUID, decision: Decision) -> dict[str, str]:
+    """The value ``resume`` hands to the paused node: only an id and a decision (research §4)."""
+    return {"approval_id": str(approval_id), "decision": decision.value}
+
+
+def _decision_for(value: object, approval_id: UUID) -> Decision | None:
+    """The decision in a resume ``value``, or ``None`` unless it names ``approval_id``."""
+    if not isinstance(value, dict) or value.get("approval_id") != str(approval_id):
+        return None
+    raw = value.get("decision")
+    return Decision(raw) if isinstance(raw, str) and raw in Decision else None
+
+
+def _stat(name: str, outcome: ToolOutcome) -> dict[str, JsonValue]:
+    stat = ToolStat(name=name, outcome=outcome.outcome, duration_ms=outcome.duration_ms)
+    return stat.model_dump(mode="json")
 
 
 def _config(conversation_id: UUID) -> RunnableConfig:
@@ -251,8 +365,13 @@ class ChatGraph:
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
         sleep: Sleep = asyncio.sleep,
+        clock: Clock | None = None,
+        approval_ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
     ) -> None:
-        """Answer with ``model`` (``None``: every run ends ``LLM_UNAVAILABLE``) and ``tools``."""
+        """Answer with ``model`` (``None``: every run ends ``LLM_UNAVAILABLE``) and ``tools``.
+
+        ``clock`` stamps proposals, which stay approvable for ``approval_ttl_seconds``.
+        """
         self._model = model
         self._max_tool_rounds = max_tool_rounds
         self._max_retries = max_retries
@@ -260,6 +379,8 @@ class ChatGraph:
         self._tools = tools
         self._prompt = prompt
         self._checkpointer = checkpointer
+        self._clock = clock or SystemClock()
+        self._approval_ttl = timedelta(seconds=approval_ttl_seconds)
         self._compiled = self._compile()
 
     @property
@@ -272,12 +393,14 @@ class ChatGraph:
         graph.add_node(_GUARD, self._guard_input)
         graph.add_node(_AGENT, self._agent)
         graph.add_node(_TOOLS, self._run_tools)
+        graph.add_node(_APPROVAL, self._approval)
         graph.add_node(_GATEKEEPER, self._gatekeeper)
         graph.add_node(_FINALIZE, self._finalize)
         graph.add_edge(START, _GUARD)
         graph.add_edge(_GUARD, _AGENT)
         graph.add_conditional_edges(_AGENT, _after_agent)
         graph.add_conditional_edges(_TOOLS, _after_tools)
+        graph.add_conditional_edges(_APPROVAL, _after_approval)
         graph.add_edge(_GATEKEEPER, _FINALIZE)
         graph.add_edge(_FINALIZE, END)
         return graph.compile(checkpointer=self._checkpointer)
@@ -287,18 +410,52 @@ class ChatGraph:
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Answer ``text`` in the conversation: the events in order, then one ``RunOutcome``.
 
-        Every model call is admitted by ``allowance`` (``None``: no token limit).
+        Every model call is admitted by ``allowance`` (``None``: no token limit). A run that
+        pauses for an approval ends ``awaiting_approval`` with the outcome's ``proposal``.
         """
+        async for item in self._stream(_initial(text), conversation_id, allowance):
+            yield item
+
+    async def resume(
+        self,
+        conversation_id: UUID,
+        approval_id: UUID,
+        decision: Decision,
+        allowance: RunAllowance | None = None,
+    ) -> AsyncGenerator[GraphEvent | RunOutcome]:
+        """Continue the run paused on ``approval_id`` with the customer's recorded ``decision``.
+
+        Raises ``ApprovalNotPaused`` when the conversation is not paused on that approval.
+        """
+        snapshot = await self._compiled.aget_state(_config(conversation_id))
+        values = cast("ChatState", snapshot.values or {})
+        pending = values.get("pending_approval")
+        if (
+            pending is None
+            or _APPROVAL not in snapshot.next
+            or PendingApproval.model_validate(pending).approval_id != approval_id
+        ):
+            raise ApprovalNotPaused(str(approval_id))
+        command: Command[str] = Command(resume=_resume_value(approval_id, decision))
+        async for item in self._stream(command, conversation_id, allowance):
+            yield item
+
+    async def _stream(
+        self,
+        graph_input: ChatState | Command[str],
+        conversation_id: UUID,
+        allowance: RunAllowance | None,
+    ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         final: ChatState | None = None
         stream = self._compiled.astream(
-            _initial(text),
+            graph_input,
             _config(conversation_id),
             context=RunContext(allowance=allowance),
             stream_mode=["custom", "values"],
         )
         try:
             async for mode, chunk in stream:
-                if mode == "custom" and isinstance(chunk, Token | ToolCall | ToolResult):
+                if mode == "custom" and isinstance(chunk, _GRAPH_EVENTS):
                     yield chunk
                 elif mode == "values" and isinstance(chunk, dict):
                     final = cast("ChatState", chunk)
@@ -313,11 +470,18 @@ class ChatGraph:
         """Delete the stored state of the conversation (FR-004)."""
         await self._checkpointer.adelete_thread(str(conversation_id))
 
-    async def record_interrupted(self, conversation_id: UUID, sent: str) -> None:
+    async def record_interrupted(
+        self,
+        conversation_id: UUID,
+        sent: str,
+        results: Sequence[ToolResultItem] = (),
+    ) -> None:
         """After a cancelled run, keep the transcript what the customer saw (FR-014, US6).
 
-        Calls left without a result get a ``cancelled`` result, and the part of ``sent`` not yet
-        in the transcript (the turn that was streaming) is added as the assistant's text.
+        Calls left without a result get their entry of ``results`` (an approval executed before
+        the client went away) or a ``cancelled`` result; the part of ``sent`` not yet in the
+        transcript (the turn that was streaming) is added as the assistant's text. A pause on an
+        approval is ended.
         """
         config = _config(conversation_id)
         snapshot = await self._compiled.aget_state(config)
@@ -326,8 +490,10 @@ class ChatGraph:
             return
         transcript = load_transcript(values["transcript"])
         answered = {item.call_id for item in transcript if isinstance(item, ToolResultItem)}
+        known = {result.call_id: result for result in results}
         items: list[TranscriptItem] = [
-            ToolResultItem(
+            known.get(item.call_id)
+            or ToolResultItem(
                 call_id=item.call_id, name=item.name, ok=False, payload=_CANCELLED_RESULT
             )
             for item in transcript
@@ -337,20 +503,60 @@ class ChatGraph:
         rest = sent.removeprefix(committed) if sent.startswith(committed) else sent
         if rest:
             items.append(AssistantText(text=rest))
-        if items:
-            await self._compiled.aupdate_state(
-                config, {"transcript": dump_transcript(items)}, as_node=_FINALIZE
-            )
+        paused = values.get("pending_approval") is not None
+        if items or paused:
+            update: StateUpdate = {"transcript": dump_transcript(items), "pending_approval": None}
+            await self._compiled.aupdate_state(config, update, as_node=_FINALIZE)
+
+    async def close_approval(self, conversation_id: UUID, outcome: ApprovalOutcome) -> bool:
+        """End the pause of a conversation without a decision (research §6).
+
+        The paused call gets the fixed "nothing changed" result of ``outcome`` (or "could not be
+        confirmed" for ``failed``), so the transcript stays valid for the model. ``False`` when
+        the conversation was not paused.
+        """
+        config = _config(conversation_id)
+        snapshot = await self._compiled.aget_state(config)
+        values = cast("ChatState", snapshot.values or {})
+        raw = values.get("pending_approval")
+        if raw is None:
+            return False
+        pending = PendingApproval.model_validate(raw)
+        result = ToolResultItem(
+            call_id=pending.call_id, name=pending.action, ok=False, payload=outcome_payload(outcome)
+        )
+        update: StateUpdate = {"transcript": dump_transcript([result]), "pending_approval": None}
+        await self._compiled.aupdate_state(config, update, as_node=_FINALIZE)
+        return True
 
     def _outcome(self, state: ChatState) -> RunOutcome:
+        raw_execution = state.get("execution")
+        execution = (
+            None if raw_execution is None else ApprovalExecution.model_validate(raw_execution)
+        )
+        common = {
+            "text": "".join(state["answer_segments"]),
+            "usage": _usage(state),
+            "model_id": state["model_id"],
+            "tools": tuple(ToolStat.model_validate(stat) for stat in state["tool_stats"]),
+            "execution": execution,
+        }
+        pending = state.get("pending_approval")
+        if pending is not None and state["outcome"] is None:
+            return RunOutcome.model_validate(
+                common
+                | {
+                    "finish_reason": FinishReason.AWAITING_APPROVAL,
+                    "proposal": PendingApproval.model_validate(pending),
+                }
+            )
         ending = _ending(state["outcome"])
-        return RunOutcome(
-            finish_reason=ending if isinstance(ending, FinishReason) else None,
-            error=ending if isinstance(ending, ChatErrorCode) else None,
-            text="".join(state["answer_segments"]),
-            usage=_usage(state),
-            model_id=state["model_id"],
-            tools=tuple(ToolStat.model_validate(stat) for stat in state["tool_stats"]),
+        return RunOutcome.model_validate(
+            common
+            | {
+                "finish_reason": ending if isinstance(ending, FinishReason) else None,
+                "error": ending if isinstance(ending, ChatErrorCode) else None,
+            }
         )
 
     # Nodes ------------------------------------------------------------------------------------
@@ -364,6 +570,21 @@ class ChatGraph:
 
     async def _agent(self, state: ChatState, runtime: Runtime[RunContext]) -> StateUpdate:
         """One model turn: stream gatekept segments, collect tool calls, add usage."""
+        update = await self._model_turn(state, runtime)
+        failed = update.get("outcome") in _MODEL_FAILURES
+        if failed and state.get("execution") is not None and not update.get("answer_segments"):
+            return self._outcome_message(state, update)
+        return update
+
+    def _outcome_message(self, state: ChatState, failed: StateUpdate) -> StateUpdate:
+        """After a decision the model could not answer: the outcome's fixed text (ADR 0003)."""
+        execution = ApprovalExecution.model_validate(state["execution"])
+        message = APPROVAL_OUTCOME_MESSAGES[execution.outcome]
+        get_stream_writer()(Token(text=message))
+        usage = Usage.model_validate(failed.get("usage", state["usage"]))
+        return self._fixed_ending(state, [message], FinishReason.COMPLETED, usage, None)
+
+    async def _model_turn(self, state: ChatState, runtime: Runtime[RunContext]) -> StateUpdate:
         if self._model is None:
             return {"outcome": ChatErrorCode.LLM_UNAVAILABLE.value}
         model = self._model
@@ -485,42 +706,157 @@ class ChatGraph:
             turn.replaced = True
 
     async def _run_tools(self, state: ChatState) -> StateUpdate:
-        """Run every pending call; an upstream 401 ends the run ``TOOL_FAILED`` (FR-011)."""
+        """Run every pending call; an upstream 401 ends the run ``TOOL_FAILED`` (FR-011).
+
+        A ``cancel_order`` call never runs here: it becomes a checked proposal (routing to
+        ``approval``) or a refusal result (FR-003, FR-005).
+        """
         write = get_stream_writer()
-        results: list[TranscriptItem] = []
+        results: list[ToolResultItem] = []
         stats: list[dict[str, JsonValue]] = []
         unauthenticated = False
+        proposal: PendingApproval | None = None
         for raw in state["pending_tool_calls"]:
             call = ToolCallItem.model_validate(raw)
             write(ToolCall(call_id=call.call_id, name=call.name, arguments=call.arguments))
-            outcome = await self._tools.run(call.name, call.arguments)
-            write(
-                ToolResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    ok=outcome.ok,
-                    summary=summarize(call.name, outcome),
-                )
-            )
-            results.append(
-                ToolResultItem(
+            if call.name in APPROVAL_ACTIONS:
+                checked = await self._propose(call, already_pending=proposal is not None)
+                stats.extend(checked.stats)
+                unauthenticated = unauthenticated or checked.unauthenticated
+                if checked.proposal is not None:
+                    proposal = checked.proposal
+                    continue
+                result, summary = checked.refusal_result(call)
+            else:
+                outcome = await self._tools.run(call.name, call.arguments)
+                result = ToolResultItem(
                     call_id=call.call_id, name=call.name, ok=outcome.ok, payload=outcome.payload
                 )
+                summary = summarize(call.name, outcome)
+                stats.append(_stat(call.name, outcome))
+                unauthenticated = unauthenticated or outcome.upstream_unauthenticated
+            write(ToolResult(call_id=call.call_id, name=call.name, ok=result.ok, summary=summary))
+            results.append(result)
+        if unauthenticated and proposal is not None:
+            # The run ends TOOL_FAILED: no pause, and the call still gets its result.
+            results.append(
+                ToolResultItem(
+                    call_id=proposal.call_id,
+                    name=proposal.action,
+                    ok=False,
+                    payload=refusal_payload(Refusal.UNAVAILABLE),
+                )
             )
-            stat = ToolStat(
-                name=call.name, outcome=outcome.outcome, duration_ms=outcome.duration_ms
-            )
-            stats.append(stat.model_dump(mode="json"))
-            unauthenticated = unauthenticated or outcome.upstream_unauthenticated
+            proposal = None
         update: StateUpdate = {
             "transcript": dump_transcript(results),
             "pending_tool_calls": [],
             "rounds": state["rounds"] + 1,
             "tool_stats": [*state["tool_stats"], *stats],
+            "pending_approval": None if proposal is None else proposal.model_dump(mode="json"),
         }
         if unauthenticated:
             update["outcome"] = ChatErrorCode.TOOL_FAILED.value
         return update
+
+    async def _propose(self, call: ToolCallItem, *, already_pending: bool) -> "_Checked":
+        """Check a ``cancel_order`` call: a ``PendingApproval``, or the refusal the model gets."""
+        target = parse_target(call.arguments)
+        if target is None:
+            return _Checked.refused(Refusal.INVALID_ID)
+        if already_pending:
+            return _Checked.refused(Refusal.ALREADY_PENDING)
+        outcome = await self._tools.run(READ_TOOL, {TARGET_ARGUMENT: str(target)})
+        stats = [_stat(READ_TOOL, outcome)]
+        read = read_order(outcome)
+        if read.refusal is not None:
+            return _Checked.refused(
+                read.refusal, read.status, stats, unauthenticated=read.unauthenticated
+            )
+        now = self._clock.now()
+        proposal = PendingApproval(
+            approval_id=uuid4(),
+            action=call.name,
+            order_id=target,
+            arguments={TARGET_ARGUMENT: str(target)},
+            summary=summary_of(read),
+            call_id=call.call_id,
+            proposed_at=now,
+            expires_at=now + self._approval_ttl,
+        )
+        return _Checked(proposal=proposal, stats=stats)
+
+    async def _approval(self, state: ChatState) -> StateUpdate:
+        """Pause for the customer's decision, then carry it out (research §1, §5).
+
+        ``interrupt`` comes first: on resume the node runs again from the top, so nothing before
+        it may have a side effect. A resume value naming another approval is ignored (the node
+        pauses again). Only the arguments stored in the state are ever run.
+        """
+        raw = state.get("pending_approval")
+        if raw is None:  # pragma: no cover - routed here only with a pending approval
+            return {}
+        pending = PendingApproval.model_validate(raw)
+        payload = pending.required_event().data()
+        decision = _decision_for(interrupt(payload), pending.approval_id)
+        while decision is None:
+            decision = _decision_for(interrupt(payload), pending.approval_id)
+        stats: list[dict[str, JsonValue]] = []
+        unauthenticated = False
+        result_payload: dict[str, JsonValue] | None = None
+        if decision is Decision.REJECT:
+            outcome = ApprovalOutcome.REJECTED
+        else:
+            read_outcome = await self._tools.run(
+                READ_TOOL, {TARGET_ARGUMENT: str(pending.order_id)}
+            )
+            stats.append(_stat(READ_TOOL, read_outcome))
+            read = read_order(read_outcome)
+            unauthenticated = read.unauthenticated
+            blocked = outcome_after_reread(read)
+            if blocked is not None:
+                outcome = blocked
+            else:
+                cancel = await self._tools.run_approved(pending.action, pending.arguments)
+                stats.append(_stat(pending.action, cancel))
+                unauthenticated = cancel.upstream_unauthenticated
+                outcome = outcome_of_cancel(cancel)
+                if outcome is ApprovalOutcome.CANCELLED:
+                    result_payload = cancel.payload
+        cancelled = outcome is ApprovalOutcome.CANCELLED
+        result = ToolResultItem(
+            call_id=pending.call_id,
+            name=pending.action,
+            ok=cancelled,
+            payload=result_payload if result_payload is not None else outcome_payload(outcome),
+        )
+        execution = ApprovalExecution(
+            approval_id=pending.approval_id, decision=decision, outcome=outcome, result=result
+        )
+        write = get_stream_writer()
+        write(ApprovalResolved(approval_id=pending.approval_id, decision=decision, outcome=outcome))
+        write(
+            ToolResult(
+                call_id=pending.call_id,
+                name=pending.action,
+                ok=cancelled,
+                summary=outcome_summary(outcome),
+            )
+        )
+        write(execution)
+        # The decision starts a new answer: the per-run fields of the paused run are reset.
+        return {
+            "transcript": dump_transcript([result]),
+            "pending_approval": None,
+            "execution": execution.model_dump(mode="json"),
+            "rounds": 0,
+            "pending_tool_calls": [],
+            "answer_segments": [],
+            "outcome": ChatErrorCode.TOOL_FAILED.value if unauthenticated else None,
+            "usage": Usage().model_dump(),
+            "model_id": None,
+            "tool_stats": stats,
+        }
 
     def _fixed_ending(
         self,

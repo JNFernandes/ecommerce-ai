@@ -93,20 +93,20 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
 **Independent test**: scripted model + PENDING fake order: message → `approval.required` +
 `awaiting_approval`, zero cancel calls; `approve` → one cancel with the caller's token.
 
-- [ ] T012 [P] [US1] Tests in `tests/unit/test_approval_flow.py`: propose (event sequence, payload
+- [X] T012 [P] [US1] Tests in `tests/unit/test_approval_flow.py`: propose (event sequence, payload
   fields, summary from the fresh read not from model args, stored message finish reason, zero
   cancels); approve (re-read, one cancel with caller token and stored args, `message.start` →
   `approval.resolved` `cancelled` → `tool.result` ok → tokens → `message.end`); model down after
   cancel → fixed confirmation text
-- [ ] T013 [P] [US1] Tests in `tests/unit/test_approval_api.py`: decision route requires auth
+- [X] T013 [P] [US1] Tests in `tests/unit/test_approval_api.py`: decision route requires auth
   (`AUTHENTICATED`), body validation 422, 413, 429, 503, `STREAM_ACTIVE`, SSE framing via
   `tests/support/sse.py`
-- [ ] T014 [US1] Implement `src/ecommerce_ai/agents/assistant/approvals.py`: proposal checks
+- [X] T014 [US1] Implement `src/ecommerce_ai/agents/assistant/approvals.py`: proposal checks
   (valid id, read result owned and `PENDING`), summary builder `{status, totalAmount, currency?}`,
   outcome mapping (re-read not PENDING / Orders 409 → `not_cancellable`; timeout/5xx/401 →
   `failed`), fixed `APPROVAL_OUTCOME_MESSAGES` and refusal tool-result texts; unit tests in
   `tests/unit/test_approvals.py`
-- [ ] T015 [US1] In `src/ecommerce_ai/agents/assistant/graph.py`: add `pending_approval` to
+- [X] T015 [US1] In `src/ecommerce_ai/agents/assistant/graph.py`: add `pending_approval` to
   `ChatState`; `tools` node intercepts `cancel_order` (checks via T014, reads through `get_order`,
   sets `pending_approval` with `uuid4` id, call id, exact args, expiry from `Clock`; other tools of
   the turn run normally) and routes to new `approval` node; `approval` node starts with
@@ -114,17 +114,17 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   re-read + `run_approved` with state args, emit `approval.resolved` + `tool.result`, append the
   `ToolResultItem`, clear `pending_approval`, route to `agent`; add `ChatGraph.resume(thread,
   decision)` (`Command(resume=…)`)
-- [ ] T016 [US1] In `src/ecommerce_ai/agents/assistant/service.py`: `RunOutcome.proposal` → store
+- [X] T016 [US1] In `src/ecommerce_ai/agents/assistant/service.py`: `RunOutcome.proposal` → store
   via `ApprovalStore.create_proposal`, then emit `approval.required` and `message.end`
   `awaiting_approval`; add `ChatService.decide(caller, conversation_id, approval_id, decision)`
   (atomic `decide` before resuming, 0 rows → reload to pick 404/409/410, active-stream guard,
   `record_outcome`, model-down fallback text, `chat_run` log); once decided, the approval step
   (re-read, cancel, `approval.resolved`/`tool.result` checkpoint, `record_outcome`) runs shielded
   from client disconnect, so a started cancel always completes and records its outcome
-- [ ] T017 [US1] Add `POST /chat/conversations/{id}/approvals/{approvalId}` to
+- [X] T017 [US1] Add `POST /chat/conversations/{id}/approvals/{approvalId}` to
   `src/ecommerce_ai/api/chat.py` (`AUTHENTICATED`, body `{decision}`, rate limit and 16 KB body
   limit as `/messages`, SSE via `api/sse.py`, OpenAPI descriptions)
-- [ ] T018 [US1] Wire in `src/ecommerce_ai/main.py`: `cancel_order_tool` in the chat registry,
+- [X] T018 [US1] Wire in `src/ecommerce_ai/main.py`: `cancel_order_tool` in the chat registry,
   `ApprovalRepository` (new `create_app(approval_store=None)` parameter), settings TTL/limit; MCP
   server built from `registry.exposed(Exposure.MCP)`; `tests/support/chat.py::chat_app` accepts
   the approval store; tests in `tests/unit/test_main.py`
@@ -139,14 +139,14 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
 **Independent test**: propose → `reject` → zero cancels, "nothing changed" answer; advance clock
 past TTL → 410.
 
-- [ ] T019 [P] [US2] Tests in `tests/unit/test_approval_flow.py` (reject: `approval.resolved`
+- [X] T019 [P] [US2] Tests in `tests/unit/test_approval_flow.py` (reject: `approval.resolved`
   `rejected`, tool result "nothing changed", answer acknowledges, zero cancels) and
   `tests/unit/test_approval_api.py` (410 `APPROVAL_EXPIRED` + recorded `expired`; replay → 409
   `APPROVAL_ALREADY_DECIDED`; two concurrent approves → one cancel, one 409 (SC-002); new message
   after expiry → approval `expired`, message processed)
-- [ ] T020 [US2] Reject branch in the `approval` node (`graph.py`): no Orders call, fixed
+- [X] T020 [US2] Reject branch in the `approval` node (`graph.py`): no Orders call, fixed
   "not cancelled, nothing changed" `ToolResultItem`, outcome `rejected`
-- [ ] T021 [US2] Lazy expiry: `ChatGraph.close_approval(conversation_id, outcome)` in `graph.py`
+- [X] T021 [US2] Lazy expiry: `ChatGraph.close_approval(conversation_id, outcome)` in `graph.py`
   (`aupdate_state(..., as_node="finalize")`, appends a "no change" result, clears
   `pending_approval`); `service.py` closes expired or orphaned approvals on decision, new message,
   conversation read and delete (research §6); orphaned also covers a decided approval whose

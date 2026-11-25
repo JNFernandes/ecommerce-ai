@@ -354,8 +354,44 @@ class ToolStat(_Frozen):
     duration_ms: float = Field(ge=0)
 
 
+class PendingApproval(_Frozen):
+    """A checked ``cancel_order`` call the run paused on (graph state ``pending_approval``)."""
+
+    approval_id: UUID = Field(description="New id, sent in `approval.required`.")
+    action: str = Field(min_length=1, description="The intercepted mutating tool.")
+    order_id: UUID = Field(description="The target, parsed from the arguments.")
+    arguments: dict[str, JsonValue] = Field(description="Exact arguments; the only ones run.")
+    summary: ApprovalSummary = Field(description="Read from Orders when the call was checked.")
+    call_id: str = Field(min_length=1, description="The paused `tool_use` id.")
+    proposed_at: AwareDatetime
+    expires_at: AwareDatetime
+
+    def required_event(self) -> ApprovalRequired:
+        """The ``approval.required`` event of this proposal."""
+        return ApprovalRequired(
+            approval_id=self.approval_id,
+            action=self.action,
+            order_id=self.order_id,
+            summary=self.summary,
+            expires_at=self.expires_at,
+        )
+
+
+class ApprovalExecution(_Frozen):
+    """What the ``approval`` node did with a decision; never streamed as such."""
+
+    approval_id: UUID
+    decision: Decision
+    outcome: ApprovalOutcome
+    result: ToolResultItem = Field(description="The paused call's result, as the model sees it.")
+
+
 class RunOutcome(_Frozen):
-    """How one run ended: exactly one of ``finish_reason`` and ``error``."""
+    """How one run ended: exactly one of ``finish_reason`` and ``error``.
+
+    ``proposal`` is set when the run paused for an approval (``awaiting_approval``);
+    ``execution`` when it resumed from a decision.
+    """
 
     finish_reason: FinishReason | None = None
     error: ChatErrorCode | None = None
@@ -363,11 +399,15 @@ class RunOutcome(_Frozen):
     usage: Usage = Field(default_factory=Usage)
     model_id: str | None = None
     tools: tuple[ToolStat, ...] = ()
+    proposal: PendingApproval | None = None
+    execution: ApprovalExecution | None = None
 
     @model_validator(mode="after")
     def _one_ending(self) -> Self:
         if (self.finish_reason is None) == (self.error is None):
             raise ValueError("exactly one of finish_reason and error must be set")
+        if (self.proposal is not None) != (self.finish_reason is FinishReason.AWAITING_APPROVAL):
+            raise ValueError("a proposal goes with finish_reason awaiting_approval, and only it")
         return self
 
 
