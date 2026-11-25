@@ -21,3 +21,4 @@ Architectural decisions for `ecommerce-ai` are recorded here, as the project con
 | [0002](0002-human-in-the-loop-for-mutating-tools.md) | Human-in-the-loop approval for mutating tools | Accepted |
 | [0003](0003-fallback-and-cost-caps.md) | Deterministic fallbacks, timeouts and cost caps for LLM steps | Accepted |
 | [0004](0004-evals-as-release-gate.md) | Evals as a release gate | Accepted |
+| [0005](0005-layered-guardrails.md) | Layered, deterministic guardrails around the chat model | Accepted |

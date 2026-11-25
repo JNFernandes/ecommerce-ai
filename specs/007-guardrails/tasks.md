@@ -228,12 +228,12 @@ small limits, exceed each → documented 429/409/SSE error with scope and `Retry
 
 ## Phase 8: User Story 6 - Guard activity is auditable and documented (P3)
 
-- [ ] T034 [P] [US6] Tests in `tests/unit/test_guardrail_audit.py`: one row and one log line per
+- [X] T034 [P] [US6] Tests in `tests/unit/test_guardrail_audit.py`: one row and one log line per
   stage/action, no message text, tool data, canary or token in rows or logs (SC-007); audit
   failure still blocks/replaces
-- [ ] T035 [P] [US6] Write `docs/threat-model.md` (assets, trust boundaries, threats, mitigations
+- [X] T035 [P] [US6] Write `docs/threat-model.md` (assets, trust boundaries, threats, mitigations
   mapped to OWASP LLM01/02/06/07/08/10, residual risks)
-- [ ] T036 [P] [US6] Write `docs/adr/0005-layered-guardrails.md` from `docs/adr/template.md` and
+- [X] T036 [P] [US6] Write `docs/adr/0005-layered-guardrails.md` from `docs/adr/template.md` and
   add it to `docs/adr/README.md`
 
 ---
