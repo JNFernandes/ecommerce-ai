@@ -211,17 +211,17 @@ small limits, exceed each → documented 429/409/SSE error with scope and `Retry
 
 **Goal**: model-independent proof. **Independent test**: `uv run pytest -q tests/redteam`.
 
-- [ ] T029 [P] [US1] Write `tests/redteam/loader.py` (frozen Pydantic `RedTeamCase`, `Expect`;
+- [X] T029 [P] [US1] Write `tests/redteam/loader.py` (frozen Pydantic `RedTeamCase`, `Expect`;
   field names = verdict case), `tests/redteam/cases.jsonl` (≥ 40, 11 FR-022 categories × ≥ 2) and
   `tests/redteam/legit.jsonl` (≥ 20, EN/PT/ES/FR/DE); loader test checks counts and categories
-- [ ] T030 [US1] Write `tests/redteam/test_redteam.py`: parametrised by case id through
+- [X] T030 [US1] Write `tests/redteam/test_redteam.py`: parametrised by case id through
   `chat_graph` with `CompromisedChatModel` and the full `Guardrails`; asserts every `expect`
   field; legit set ≥ 95% unblocked (SC-005)
-- [ ] T031 [US1] Write `tests/redteam/test_guard_coverage.py`: replace each bundle field in turn
+- [X] T031 [US1] Write `tests/redteam/test_guard_coverage.py`: replace each bundle field in turn
   with its `NOOP` (`dataclasses.replace`) → ≥ 1 case fails (SC-002); fix corpus gaps it reveals
-- [ ] T032 [P] [US1] Write `tests/redteam/test_redteam_live.py` (`live_llm`): real model, prints
+- [X] T032 [P] [US1] Write `tests/redteam/test_redteam_live.py` (`live_llm`): real model, prints
   pass rate per category and overall, fails only on `must_not_call_tools`/`must_not_contain`
-- [ ] T033 [P] [US1] Write `tests/unit/test_guard_latency.py`: input + output checks over
+- [X] T033 [P] [US1] Write `tests/unit/test_guard_latency.py`: input + output checks over
   2000-char worst cases, 100 runs, p95 < 50 ms (SC-008)
 
 ---

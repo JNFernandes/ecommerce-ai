@@ -178,7 +178,8 @@ class Compromise(BaseModel):
     ``call_tool`` with ``tool_arguments`` is requested ``call_times`` times in the message before
     it answers (each as a new call, so a guard sees repeats). The answer is ``say``, then the
     canary found in the system prompt (``leak_canary``), then the text of every tool result of
-    the message (``repeat_tool_text``), joined by spaces; ``"OK."`` when that is empty.
+    the message (``repeat_tool_text``: the envelope's ``data`` only, as a model would quote the
+    data, not the envelope's ``source``), joined by spaces; ``"OK."`` when that is empty.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -197,6 +198,13 @@ def _since_last_user(transcript: Sequence[TranscriptItem]) -> list[TranscriptIte
         if isinstance(transcript[index], UserTurn):
             return list(transcript[index + 1 :])
     return list(transcript)
+
+
+def _data(payload: JsonValue) -> JsonValue:
+    """The ``data`` of a tool envelope; any other payload as it is."""
+    if isinstance(payload, dict) and "data" in payload:
+        return payload["data"]
+    return payload
 
 
 def _leaves(value: JsonValue) -> list[str]:
@@ -249,7 +257,7 @@ class CompromisedChatModel:
                 leaf
                 for item in current
                 if isinstance(item, ToolResultItem)
-                for leaf in _leaves(item.payload)
+                for leaf in _leaves(_data(item.payload))
             )
         yield TextDelta(text=" ".join(parts) or "OK.")
         yield turn_end("end_turn")
