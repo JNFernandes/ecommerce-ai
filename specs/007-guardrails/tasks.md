@@ -79,7 +79,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
   accept, conditional upsert `tokens + n ≤ cap` like `TokenBudgetRepository`, settle never below
   0); integration tests in `tests/integration/test_user_usage_repository.py` (concurrent reserves
   never exceed the cap)
-- [ ] T008 [P] Add in-memory `InMemoryGuardrailEventStore` and `InMemoryUserUsageStore`
+- [X] T008 [P] Add in-memory `InMemoryGuardrailEventStore` and `InMemoryUserUsageStore`
   (injectable failures) to `tests/support/stores.py`, and `CompromisedChatModel` to
   `tests/support/llm.py` (a `ChatModel` that obeys a `compromise` spec: calls the named tool with
   the given arguments, repeats injected tool text, extracts `cnry-[0-9a-f]{24}` from the system

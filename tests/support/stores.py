@@ -1,5 +1,6 @@
 """In-memory stores with injectable failures: triage cases, dead letters, the triage queue,
-the token budget, the outbox, the chat conversations and the approvals (with their audit rows).
+the token budget, the outbox, the chat conversations, the approvals (with their audit rows), the
+guard audit and the per-user usage (US-07).
 
 Every store keeps unit-of-work semantics: changes made inside a transaction or claim become
 visible only when the block exits normally and are discarded when it raises. Queue exceptions
@@ -8,10 +9,10 @@ in ``failures`` to make the next transactions (or writes) fail.
 
 import copy
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from pydantic import JsonValue
@@ -31,6 +32,12 @@ from ecommerce_ai.agents.assistant.ports import (
     ApprovalStatus,
     ConversationPage,
     ProposalMessage,
+)
+from ecommerce_ai.agents.guardrails.events import (
+    GuardAction,
+    GuardEvent,
+    GuardSeverity,
+    GuardStage,
 )
 from ecommerce_ai.agents.triage.model import CaseForTriage, TriageResult
 from ecommerce_ai.agents.triage_intake.model import (
@@ -741,3 +748,141 @@ class InMemoryApprovalStore:
         return sum(
             1 for a in self.actions.values() if a.user_id == user_id and a.proposed_at >= since
         )
+
+
+# Guardrails (US-07) ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StoredGuardEvent:
+    """One row of the in-memory guard audit."""
+
+    user_id: str
+    conversation_id: UUID | None
+    request_id: str | None
+    event: GuardEvent
+    created_at: datetime
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class InMemoryGuardrailEventStore:
+    """A ``GuardrailEventStore`` in memory, append-only like the table.
+
+    ``now`` stamps appended events. Queue exceptions in ``failures[method]`` (e.g. ``"append"``)
+    to make the next calls of that method raise; a failing ``append`` stores nothing.
+    """
+
+    def __init__(self, now: Callable[[], datetime] = _utc_now) -> None:
+        """Start without events."""
+        self.now = now
+        self.rows: list[StoredGuardEvent] = []
+        self.failures: dict[str, deque[BaseException]] = {}
+
+    def _fail(self, method: str) -> None:
+        queued = self.failures.get(method)
+        if queued:
+            raise queued.popleft()
+
+    @property
+    def events(self) -> list[GuardEvent]:
+        """Every stored event, oldest first."""
+        return [row.event for row in self.rows]
+
+    async def append(
+        self,
+        user_id: str,
+        conversation_id: UUID | None,
+        request_id: str | None,
+        events: Sequence[GuardEvent],
+    ) -> None:
+        """Store ``events``, all stamped with the same ``now``."""
+        self._fail("append")
+        created_at = self.now()
+        self.rows.extend(
+            StoredGuardEvent(user_id, conversation_id, request_id, event, created_at)
+            for event in events
+        )
+
+    async def count_blocks_since(
+        self, user_id: str, since: datetime, min_severity: GuardSeverity
+    ) -> int:
+        """Input ``blocked`` events of ``user_id`` at or after ``since`` with ≥ ``min_severity``."""
+        self._fail("count_blocks_since")
+        return sum(
+            1
+            for row in self.rows
+            if row.user_id == user_id
+            and row.created_at >= since
+            and row.event.stage is GuardStage.INPUT
+            and row.event.action is GuardAction.BLOCKED
+            and row.event.severity.rank >= min_severity.rank
+        )
+
+    async def latest_cooldown_at(self, user_id: str) -> datetime | None:
+        """Time of the user's newest ``cooldown`` event, ``None`` when there is none."""
+        self._fail("latest_cooldown_at")
+        times = [
+            row.created_at
+            for row in self.rows
+            if row.user_id == user_id and row.event.action is GuardAction.COOLDOWN
+        ]
+        return max(times, default=None)
+
+
+@dataclass
+class UserDayUsage:
+    """Messages and tokens of one user on one UTC day."""
+
+    messages: int = 0
+    tokens: int = 0
+
+
+class InMemoryUserUsageStore:
+    """A ``UserUsageStore`` in memory with the repository's conditional reserve.
+
+    Queue exceptions in ``failures[method]`` (e.g. ``"reserve"``) to make the next calls of that
+    method raise; nothing is changed by a failing call. ``settles`` records every settle call.
+    """
+
+    def __init__(self) -> None:
+        """Start with no usage."""
+        self.usage: dict[tuple[str, date], UserDayUsage] = {}
+        self.settles: list[tuple[str, date, int, int]] = []
+        self.failures: dict[str, deque[BaseException]] = {}
+
+    def _fail(self, method: str) -> None:
+        queued = self.failures.get(method)
+        if queued:
+            raise queued.popleft()
+
+    def of(self, user_id: str, day: date) -> UserDayUsage:
+        """The user's usage on ``day`` (zero when untouched)."""
+        return self.usage.get((user_id, day), UserDayUsage())
+
+    async def accept_message(self, user_id: str, day: date) -> int:
+        """Count one accepted message on ``day``; return the day's count including it."""
+        self._fail("accept_message")
+        usage = self.usage.setdefault((user_id, day), UserDayUsage())
+        usage.messages += 1
+        return usage.messages
+
+    async def reserve(self, user_id: str, day: date, tokens: int, cap: int) -> bool:
+        """Reserve ``tokens`` on ``day`` if the total stays ≤ ``cap``, else ``False``."""
+        self._fail("reserve")
+        usage = self.usage.get((user_id, day), UserDayUsage())
+        if usage.tokens + tokens > cap:
+            return False
+        usage.tokens += tokens
+        self.usage[(user_id, day)] = usage
+        return True
+
+    async def settle(self, user_id: str, day: date, reserved: int, actual: int) -> None:
+        """Replace a reservation with the actual spend (never below 0)."""
+        self._fail("settle")
+        self.settles.append((user_id, day, reserved, actual))
+        usage = self.usage.get((user_id, day))
+        if usage is not None:
+            usage.tokens = max(usage.tokens - reserved + actual, 0)
