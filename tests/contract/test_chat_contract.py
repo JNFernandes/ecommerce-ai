@@ -52,6 +52,9 @@ HTTP_STATUS: Final = {
     ChatHttpCode.VALIDATION_FAILED: 422,
     ChatHttpCode.RATE_LIMITED: 429,
     ChatHttpCode.UNAVAILABLE: 503,
+    ChatHttpCode.APPROVAL_PENDING: 409,
+    ChatHttpCode.APPROVAL_ALREADY_DECIDED: 409,
+    ChatHttpCode.APPROVAL_EXPIRED: 410,
 }
 
 _TAGGED: Final = re.compile(r"<!-- schema: (\w+) -->\s*```json\n(.*?)```", re.DOTALL)

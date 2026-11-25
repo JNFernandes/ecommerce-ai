@@ -9,10 +9,15 @@ from pydantic import ValidationError
 from ecommerce_ai.agents.assistant.model import (
     ERROR_MESSAGES,
     STREAM_EVENT_TYPES,
+    ApprovalOutcome,
+    ApprovalRequired,
+    ApprovalResolved,
+    ApprovalSummary,
     AssistantText,
     ChatErrorCode,
     Conversation,
     ConversationHistory,
+    Decision,
     FinishReason,
     MessageEnd,
     MessageRole,
@@ -46,7 +51,80 @@ def test_should_name_every_event_like_the_contract() -> None:
         "tool.result",
         "message.end",
         "error",
+        "approval.required",
+        "approval.resolved",
     ]
+
+
+APPROVAL_ID = UUID("9b1e6c2d-3a4f-4b5c-8d6e-7f8a9b0c1d2e")
+ORDER_ID = UUID("3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b")
+
+
+def test_should_serialize_an_approval_required_event_in_camel_case() -> None:
+    event = ApprovalRequired(
+        approval_id=APPROVAL_ID,
+        action="cancel_order",
+        order_id=ORDER_ID,
+        summary=ApprovalSummary(status="PENDING", total_amount=59.9),
+        expires_at=NOW,
+    )
+
+    assert event.data() == {
+        "approvalId": str(APPROVAL_ID),
+        "action": "cancel_order",
+        "orderId": str(ORDER_ID),
+        "summary": {"status": "PENDING", "totalAmount": 59.9, "currency": None},
+        "expiresAt": "2026-11-24T10:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(
+    ("decision", "outcome"),
+    [
+        (Decision.APPROVE, ApprovalOutcome.CANCELLED),
+        (Decision.APPROVE, ApprovalOutcome.NOT_CANCELLABLE),
+        (Decision.APPROVE, ApprovalOutcome.FAILED),
+        (Decision.REJECT, ApprovalOutcome.REJECTED),
+    ],
+)
+def test_should_accept_an_approval_resolved_event_when_outcome_matches_the_decision(
+    decision: Decision, outcome: ApprovalOutcome
+) -> None:
+    event = ApprovalResolved(approval_id=APPROVAL_ID, decision=decision, outcome=outcome)
+
+    assert event.data() == {
+        "approvalId": str(APPROVAL_ID),
+        "decision": decision.value,
+        "outcome": outcome.value,
+    }
+
+
+@pytest.mark.parametrize(
+    ("decision", "outcome"),
+    [
+        (Decision.APPROVE, ApprovalOutcome.REJECTED),
+        (Decision.REJECT, ApprovalOutcome.CANCELLED),
+        (Decision.APPROVE, ApprovalOutcome.EXPIRED),
+        (Decision.REJECT, ApprovalOutcome.WITHDRAWN),
+    ],
+)
+def test_should_reject_an_approval_resolved_event_when_outcome_does_not_fit(
+    decision: Decision, outcome: ApprovalOutcome
+) -> None:
+    with pytest.raises(ValidationError):
+        ApprovalResolved(approval_id=APPROVAL_ID, decision=decision, outcome=outcome)
+
+
+def test_should_send_awaiting_approval_in_message_end() -> None:
+    end = MessageEnd(
+        message_id=MESSAGE_ID,
+        finish_reason=FinishReason.AWAITING_APPROVAL,
+        prompt_version="assistant.v2",
+        model_id=None,
+        usage=Usage(),
+    )
+
+    assert end.data()["finishReason"] == "awaiting_approval"
 
 
 def test_should_serialize_event_data_in_camel_case() -> None:

@@ -1,6 +1,8 @@
 """Domain types of the chat assistant (data-model.md, contracts/chat-api.md).
 
 - ``FinishReason`` / ``ChatErrorCode`` (+ the fixed customer-safe message of each code, FR-009).
+- Approvals (US-06): ``Decision``, ``ApprovalOutcome``, ``ApprovalSummary`` and the
+  ``approval.required`` / ``approval.resolved`` events.
 - Transcript items (``UserTurn``, ``AssistantText``, ``ThinkingItem``, ``ToolCallItem``,
   ``ToolResultItem``): the
   graph state, stored as plain JSON by the checkpointer and re-validated on load (research §4).
@@ -34,12 +36,47 @@ class FinishReason(StrEnum):
     REPLACED = "replaced"
     TOOL_LIMIT = "tool_limit"
     CLIENT_DISCONNECTED = "client_disconnected"
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 SENT_FINISH_REASONS: Final = frozenset(
-    {FinishReason.COMPLETED, FinishReason.REPLACED, FinishReason.TOOL_LIMIT}
+    {
+        FinishReason.COMPLETED,
+        FinishReason.REPLACED,
+        FinishReason.TOOL_LIMIT,
+        FinishReason.AWAITING_APPROVAL,
+    }
 )
 """Finish reasons a ``message.end`` event may carry."""
+
+
+class Decision(StrEnum):
+    """The customer's answer to a proposed action (US-06); only the decision endpoint sets it."""
+
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
+class ApprovalOutcome(StrEnum):
+    """What finally happened to a proposed action (audit ``chat_actions.outcome``)."""
+
+    CANCELLED = "cancelled"
+    REJECTED = "rejected"
+    NOT_CANCELLABLE = "not_cancellable"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    WITHDRAWN = "withdrawn"
+
+
+RESOLVED_OUTCOMES: Final = frozenset(
+    {
+        ApprovalOutcome.CANCELLED,
+        ApprovalOutcome.REJECTED,
+        ApprovalOutcome.NOT_CANCELLABLE,
+        ApprovalOutcome.FAILED,
+    }
+)
+"""Outcomes of a decision, as an ``approval.resolved`` event may carry them."""
 
 
 class ChatErrorCode(StrEnum):
@@ -218,7 +255,9 @@ class MessageEnd(_Event):
 
     EVENT: ClassVar[str] = "message.end"
     message_id: UUID = Field(description="Id of the assistant message.")
-    finish_reason: FinishReason = Field(description="`completed`, `replaced` or `tool_limit`.")
+    finish_reason: FinishReason = Field(
+        description="`completed`, `replaced`, `tool_limit` or `awaiting_approval`."
+    )
     prompt_version: str = Field(min_length=1, description="System prompt version, e.g. v1.")
     model_id: str | None = Field(description="Model that answered; null when none did.")
     usage: Usage = Field(description="Tokens spent on the answer.")
@@ -243,9 +282,65 @@ class StreamError(_Event):
         return cls(code=code, message=ERROR_MESSAGES[code])
 
 
-type StreamEvent = MessageStart | Token | ToolCall | ToolResult | MessageEnd | StreamError
+class ApprovalSummary(_Camel):
+    """What the customer approves, read from Orders at proposal time (never from the model)."""
 
-STREAM_EVENT_TYPES: Final = (MessageStart, Token, ToolCall, ToolResult, MessageEnd, StreamError)
+    status: str = Field(min_length=1, description="Order status read just now, e.g. PENDING.")
+    total_amount: float | None = Field(description="Order total read just now; null if unknown.")
+    currency: str | None = Field(default=None, description="Currency, when Orders reports one.")
+
+
+class ApprovalRequired(_Event):
+    """The run paused: the customer must approve or reject this exact action (US-06)."""
+
+    EVENT: ClassVar[str] = "approval.required"
+    approval_id: UUID = Field(description="Id to post the decision for.")
+    action: str = Field(min_length=1, description="The proposed tool, e.g. `cancel_order`.")
+    order_id: UUID = Field(description="The order the action targets.")
+    summary: ApprovalSummary = Field(description="Status and total read from Orders just now.")
+    expires_at: AwareDatetime = Field(description="After this instant the approval is void.")
+
+
+class ApprovalResolved(_Event):
+    """First event after ``message.start`` on a decision stream: what the decision did."""
+
+    EVENT: ClassVar[str] = "approval.resolved"
+    approval_id: UUID = Field(description="The decided approval.")
+    decision: Decision = Field(description="`approve` or `reject`.")
+    outcome: ApprovalOutcome = Field(
+        description="`cancelled`, `rejected`, `not_cancellable` or `failed`."
+    )
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if self.outcome not in RESOLVED_OUTCOMES:
+            raise ValueError("outcome expired or withdrawn is never streamed")
+        if (self.decision is Decision.REJECT) != (self.outcome is ApprovalOutcome.REJECTED):
+            raise ValueError("outcome rejected goes with decision reject, and only with it")
+        return self
+
+
+type StreamEvent = (
+    MessageStart
+    | Token
+    | ToolCall
+    | ToolResult
+    | MessageEnd
+    | StreamError
+    | ApprovalRequired
+    | ApprovalResolved
+)
+
+STREAM_EVENT_TYPES: Final = (
+    MessageStart,
+    Token,
+    ToolCall,
+    ToolResult,
+    MessageEnd,
+    StreamError,
+    ApprovalRequired,
+    ApprovalResolved,
+)
 
 
 # Run outcome --------------------------------------------------------------------------------

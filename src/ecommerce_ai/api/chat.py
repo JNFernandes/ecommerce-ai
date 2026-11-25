@@ -75,9 +75,15 @@ class ChatHttpCode(StrEnum):
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
     RATE_LIMITED = "RATE_LIMITED"
     UNAVAILABLE = "UNAVAILABLE"
+    APPROVAL_PENDING = "APPROVAL_PENDING"
+    APPROVAL_ALREADY_DECIDED = "APPROVAL_ALREADY_DECIDED"
+    APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
 
 
 HTTP_MESSAGES: Final = {
+    ChatHttpCode.APPROVAL_PENDING: "Please approve or reject the pending action first.",
+    ChatHttpCode.APPROVAL_ALREADY_DECIDED: "This action has already been decided.",
+    ChatHttpCode.APPROVAL_EXPIRED: "This action has expired. Please ask again.",
     ChatHttpCode.NOT_FOUND: "Conversation not found.",
     ChatHttpCode.STREAM_ACTIVE: "An answer is already in progress in this conversation.",
     ChatHttpCode.CONVERSATION_FULL: "This conversation is full. Please start a new one.",
@@ -96,6 +102,9 @@ _STATUS: Final = {
     ChatHttpCode.PAYLOAD_TOO_LARGE: status.HTTP_413_CONTENT_TOO_LARGE,
     ChatHttpCode.RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
     ChatHttpCode.UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    ChatHttpCode.APPROVAL_PENDING: status.HTTP_409_CONFLICT,
+    ChatHttpCode.APPROVAL_ALREADY_DECIDED: status.HTTP_409_CONFLICT,
+    ChatHttpCode.APPROVAL_EXPIRED: status.HTTP_410_GONE,
 }
 
 

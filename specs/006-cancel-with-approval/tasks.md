@@ -75,7 +75,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   (unknown-tool result) and add `invoke_approved(name, arguments)` that runs only mutating tools,
   without retry; `agents/assistant/tool_runner.py` implements `run_approved`; tests in
   `tests/unit/test_tool_invoker.py` and `tests/unit/test_chat_tool_runner.py`
-- [ ] T010 [P] Add `ApprovalRequired`/`ApprovalResolved` stream events, `FinishReason.AWAITING_APPROVAL`
+- [X] T010 [P] Add `ApprovalRequired`/`ApprovalResolved` stream events, `FinishReason.AWAITING_APPROVAL`
   and `ChatHttpCode` `APPROVAL_PENDING`/`APPROVAL_ALREADY_DECIDED`/`APPROVAL_EXPIRED` to
   `src/ecommerce_ai/agents/assistant/model.py` (and `api/chat.py` codes); tests in
   `tests/unit/test_chat_models.py`

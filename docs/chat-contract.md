@@ -108,8 +108,9 @@ stored). The response is the event stream below:
 {"content": "Where is my last order?"}
 ```
 
-`finishReason` values: `completed`, `replaced`, `tool_limit`, and `client_disconnected` (stored
-only, when the client went away mid-answer; never sent in `message.end`).
+`finishReason` values: `completed`, `replaced`, `tool_limit`, `awaiting_approval` (the run paused
+for an approval, US-06), and `client_disconnected` (stored only, when the client went away
+mid-answer; never sent in `message.end`).
 
 ## Errors before the stream
 
@@ -130,6 +131,9 @@ message:
 | 422 | `VALIDATION_FAILED` | The request is not valid. | bad body, `limit` or `offset` |
 | 429 | `RATE_LIMITED` | You are sending messages too fast. Please wait a moment. | more than 10 posts in 60 s per user; `Retry-After: <seconds>` |
 | 503 | `UNAVAILABLE` | The assistant is unavailable right now. Please try again later. | the database is down |
+| 409 | `APPROVAL_PENDING` | Please approve or reject the pending action first. | a message posted while an approval is pending |
+| 409 | `APPROVAL_ALREADY_DECIDED` | This action has already been decided. | a decision for an approval no longer pending |
+| 410 | `APPROVAL_EXPIRED` | This action has expired. Please ask again. | a decision after `expiresAt` (`APPROVAL_TTL_SECONDS`, 600) |
 
 ## SSE events
 
@@ -184,6 +188,55 @@ data: {"code":"LLM_UNAVAILABLE","message":"The assistant is unavailable right no
 | `token` | `text` |
 | `message.end` | `messageId`, `finishReason`, `promptVersion`, `modelId` (`null` when no model answered), `usage` |
 | `error` | `code`, `message` |
+| `approval.required` | `approvalId`, `action`, `orderId`, `summary`, `expiresAt` |
+| `approval.resolved` | `approvalId`, `decision`, `outcome` |
+
+A proposed cancellation (US-06): the run pauses before any change, sends `approval.required` and
+ends with `finishReason` `awaiting_approval`. `summary` holds `status`, `totalAmount` (`null` when
+unknown) and `currency` (`null` unless Orders reports one), read from Orders just now:
+
+```text
+id: 1
+event: message.start
+data: {"conversationId":"9b1f0c2e-6a4d-4c3e-8f5a-2d7e1c0b9a11","messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b"}
+
+id: 2
+event: tool.call
+data: {"callId":"toolu_02","name":"cancel_order","arguments":{"orderId":"3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b"}}
+
+id: 3
+event: approval.required
+data: {"approvalId":"9b1e6c2d-3a4f-4b5c-8d6e-7f8a9b0c1d2e","action":"cancel_order","orderId":"3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b","summary":{"status":"PENDING","totalAmount":59.9,"currency":null},"expiresAt":"2026-11-25T10:12:00Z"}
+
+id: 4
+event: message.end
+data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"awaiting_approval","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":1900,"outputTokens":60}}
+```
+
+The decision stream starts with `approval.resolved`; `outcome` is `cancelled`, `rejected`,
+`not_cancellable` (the order is no longer `PENDING`) or `failed` (Orders could not confirm):
+
+```text
+id: 1
+event: message.start
+data: {"conversationId":"9b1f0c2e-6a4d-4c3e-8f5a-2d7e1c0b9a11","messageId":"d52b3c4d-5e6f-4a70-9b8c-0d1e2f3a4b5c"}
+
+id: 2
+event: approval.resolved
+data: {"approvalId":"9b1e6c2d-3a4f-4b5c-8d6e-7f8a9b0c1d2e","decision":"approve","outcome":"cancelled"}
+
+id: 3
+event: tool.result
+data: {"callId":"toolu_02","name":"cancel_order","ok":true,"summary":"Order cancelled"}
+
+id: 4
+event: token
+data: {"text":"Your order 3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b is now cancelled."}
+
+id: 5
+event: message.end
+data: {"messageId":"d52b3c4d-5e6f-4a70-9b8c-0d1e2f3a4b5c","finishReason":"completed","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":2100,"outputTokens":30}}
+```
 
 `token.text` has always passed the gatekeeper. When a segment or the whole answer breaks a rule,
 the rest is replaced by a fixed safe message and `finishReason` is `replaced`; past 5 tool rounds
