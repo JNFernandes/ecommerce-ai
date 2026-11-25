@@ -33,11 +33,13 @@ ALLOWLIST: Final[frozenset[AllowlistEntry]] = frozenset(
         AllowlistEntry("ecommerce-inventory", "GET", "/api/inventory/products", "listProducts"),
         AllowlistEntry("ecommerce-inventory", "GET", "/api/inventory/products/{id}", "getProduct"),
         AllowlistEntry("ecommerce-notifications", "GET", "/api/notifications", "listNotifications"),
+        AllowlistEntry("ecommerce-orders", "POST", "/api/orders/{orderId}/cancel", "cancelOrder"),
     }
 )
-"""Allowlisted platform operations, all reads (constitution 1.1.0): Orders GraphQL `order` and
-`orders`, Inventory products list and item, the caller's Notifications. For a REST route the
-operation is a label and the path is the route template."""
+"""Allowlisted platform operations (constitution II): reads of Orders GraphQL `order` and
+`orders`, Inventory products list and item, the caller's Notifications, and the one mutating
+Orders cancel, governed by constitution III. For a REST route the operation is a label and the
+path is the route template."""
 
 
 @dataclass(frozen=True, slots=True)

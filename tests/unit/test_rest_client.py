@@ -100,6 +100,21 @@ async def test_should_send_no_body_when_posting_without_one(
     assert route.calls.last.request.content == b""
 
 
+async def test_should_never_retry_a_post_when_upstream_fails_transiently(
+    router: respx.MockRouter,
+) -> None:
+    route = router.post(f"{BASE_URL}/orders/o-1/cancel").respond(503)
+    async with httpx.AsyncClient() as http:
+        transport = UpstreamTransport(http, "inventory", max_retries=3, backoff_base=0.001)
+        client = RestClient(transport, BASE_URL)
+
+        with pytest.raises(UpstreamError) as caught:
+            await client.post_json(["orders", "o-1", "cancel"], timeout=5.0, max_bytes=4096)
+
+    assert route.call_count == 1
+    assert caught.value.status == 503
+
+
 @pytest.mark.parametrize(
     ("response", "reason"),
     [

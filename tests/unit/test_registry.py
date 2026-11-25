@@ -43,13 +43,14 @@ def _definition(name: str = "echo") -> AnyToolDefinition:
     )
 
 
-def test_should_contain_only_read_operations_when_reading_the_allowlist() -> None:
+def test_should_contain_the_reads_and_only_the_order_cancel_when_reading_the_allowlist() -> None:
     assert {(e.service, e.method, e.path, e.operation) for e in ALLOWLIST} == {
         ("ecommerce-orders", "POST", "/api/graphql", "order"),
         ("ecommerce-orders", "POST", "/api/graphql", "orders"),
         ("ecommerce-inventory", "GET", "/api/inventory/products", "listProducts"),
         ("ecommerce-inventory", "GET", "/api/inventory/products/{id}", "getProduct"),
         ("ecommerce-notifications", "GET", "/api/notifications", "listNotifications"),
+        ("ecommerce-orders", "POST", "/api/orders/{orderId}/cancel", "cancelOrder"),
     }
 
 

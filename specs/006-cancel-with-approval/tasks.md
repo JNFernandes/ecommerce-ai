@@ -63,7 +63,7 @@ fail before the implementation. No network in unit tests: `ScriptedChatModel`, f
   `ToolDefinition` in `src/ecommerce_ai/tools/registry.py` with `mutating` (False), `approval`
   (None), `exposure` (`{MCP, CHAT}`); `ToolRegistry.build` fails on mutating without policy or
   with `MCP` exposure; add `exposed(Exposure)`; tests in `tests/unit/test_registry.py`
-- [ ] T008 Create `src/ecommerce_ai/tools/mutating/cancel_order.py::cancel_order_tool` (after T002,
+- [X] T008 Create `src/ecommerce_ai/tools/mutating/cancel_order.py::cancel_order_tool` (after T002,
   T007): input `{orderId: UUID}`, `POST {ORDERS_BASE_URL}/{orderId}/cancel` with the caller's
   token, output `{orderId, status}`, mutating, chat-only exposure; `ALLOWLIST` entry
   `ecommerce-orders POST /api/orders/{orderId}/cancel cancelOrder` in `tools/registry.py`; tests

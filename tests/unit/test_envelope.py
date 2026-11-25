@@ -77,4 +77,5 @@ def test_should_have_exactly_the_contract_codes_when_listing_error_codes() -> No
         "not_allowed",
         "invalid_input",
         "upstream_error",
+        "conflict",
     }

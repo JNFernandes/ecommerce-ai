@@ -53,11 +53,17 @@ class RestClient:
     ) -> dict[str, object]:
         """``POST`` ``body`` (JSON, or nothing) to ``segments`` and return the JSON object answered.
 
-        Same caller token, error mapping and size limit as ``get_json``. Raises
+        Same caller token, error mapping and size limit as ``get_json``, but never retried: a
+        ``POST`` may change state, so a timeout or 5xx is reported, not repeated. Raises
         ``Unauthenticated``, ``Forbidden``, ``NotFound`` or ``UpstreamError``.
         """
         answer = await self._transport.request(
-            "POST", self.url_for(segments), json=body, timeout=timeout, max_bytes=max_bytes
+            "POST",
+            self.url_for(segments),
+            json=body,
+            timeout=timeout,
+            max_bytes=max_bytes,
+            max_retries=0,
         )
         return self._decode(answer)
 

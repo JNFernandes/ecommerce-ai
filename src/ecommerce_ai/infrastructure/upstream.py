@@ -40,10 +40,14 @@ class NotFound(Exception):
 class UpstreamError(Exception):
     """The upstream failed or answered something unusable; ``retryable`` marks transient ones."""
 
-    def __init__(self, reason: str, *, retryable: bool) -> None:
-        """Keep ``reason`` free of upstream bodies, URLs and tokens."""
+    def __init__(self, reason: str, *, retryable: bool, status: int | None = None) -> None:
+        """Keep ``reason`` free of upstream bodies, URLs and tokens.
+
+        ``status`` is the HTTP status that caused it, when there was one (e.g. 409).
+        """
         super().__init__(reason)
         self.retryable = retryable
+        self.status = status
 
 
 def _is_retryable(error: Exception) -> bool:
@@ -85,11 +89,13 @@ class UpstreamTransport:
         json: Mapping[str, object] | None = None,
         timeout: float,
         max_bytes: int,
+        max_retries: int | None = None,
     ) -> bytes:
         """Send the request and return the 200 body.
 
-        ``timeout`` is the whole call's budget, retries included. Raises ``Unauthenticated``,
-        ``Forbidden``, ``NotFound`` or ``UpstreamError``.
+        ``timeout`` is the whole call's budget, retries included; ``max_retries`` overrides the
+        transport's retries for this call (``0`` for a non-idempotent request). Raises
+        ``Unauthenticated``, ``Forbidden``, ``NotFound`` or ``UpstreamError``.
         """
         caller = current_caller()
         headers = {
@@ -107,7 +113,7 @@ class UpstreamTransport:
             return await call_with_retry(
                 attempt,
                 deadline=self._clock() + timeout,
-                max_retries=self._max_retries,
+                max_retries=self._max_retries if max_retries is None else max_retries,
                 backoff_base=self._backoff_base,
                 attempt_timeout=timeout,
                 is_retryable=_is_retryable,
@@ -174,9 +180,9 @@ class UpstreamTransport:
         if status == httpx.codes.NOT_FOUND:
             raise NotFound(f"{service} has no such resource")
         if status >= httpx.codes.INTERNAL_SERVER_ERROR:
-            raise UpstreamError(f"{service} answered {status}", retryable=True)
+            raise UpstreamError(f"{service} answered {status}", retryable=True, status=status)
         if status != httpx.codes.OK:
-            raise UpstreamError(f"{service} answered {status}", retryable=False)
+            raise UpstreamError(f"{service} answered {status}", retryable=False, status=status)
         content_type = response.headers.get("content-type", "")
         if content_type.split(";", 1)[0].strip().lower() == PROBLEM_CONTENT_TYPE:
             raise UpstreamError(f"{service} answered a problem", retryable=False)

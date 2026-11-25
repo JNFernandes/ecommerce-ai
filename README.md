@@ -54,7 +54,7 @@ service cannot starve the others. Results are
 `{source, trust: "untrusted_data", data, truncated}` (`source`: `ecommerce-orders`, `inventory`
 or `notifications`), with free text cut to `TOOL_TEXT_MAX_CHARS`;
 errors are `isError` results with a fixed `{error, message}` (`not_found`, `not_allowed`,
-`invalid_input`, `upstream_error`). Each call has a `TOOL_TIMEOUT_SECONDS` budget, retries
+`invalid_input`, `upstream_error`; `conflict` only from the chat-only `cancel_order`). Each call has a `TOOL_TIMEOUT_SECONDS` budget, retries
 included, and reads at most `TOOL_MAX_RESPONSE_BYTES`. Tool schemas are pinned in
 `tests/contract/snapshots/tools.json`. Examples: `specs/001-mcp-foundation/quickstart.md`,
 `specs/002-inventory-notifications-tools/quickstart.md`.
