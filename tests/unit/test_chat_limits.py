@@ -148,8 +148,7 @@ async def test_should_answer_409_stream_active_without_disturbing_the_first_stre
 async def test_should_answer_429_with_retry_after_before_validation_when_posting_too_fast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("CHAT_RATE_LIMIT_MESSAGES", "2")
-    monkeypatch.setenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("USER_MESSAGES_PER_MINUTE", "2")
     store = InMemoryConversationStore()
     async with _client(None, store) as client:
         conversation_id = await _conversation(client)

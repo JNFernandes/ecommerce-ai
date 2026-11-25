@@ -26,7 +26,7 @@ so it runs after them although it is P1; US6 (audit proof, docs) last.
 
 ## Phase 1: Setup
 
-- [ ] T001 [P] Add to `src/ecommerce_ai/infrastructure/settings.py`: `USER_DAILY_TOKEN_BUDGET`
+- [X] T001 [P] Add to `src/ecommerce_ai/infrastructure/settings.py`: `USER_DAILY_TOKEN_BUDGET`
   (25000, ≥ 1, validator: ≤ `DAILY_TOKEN_BUDGET`), `USER_MESSAGES_PER_MINUTE` (10, ≥ 1),
   `USER_MESSAGES_PER_DAY` (200, ≥ 1), `TOOL_RESULT_MAX_CHARS` (8000, 500..100000),
   `GUARD_VIOLATION_THRESHOLD` (5, ≥ 1), `GUARD_VIOLATION_WINDOW_SECONDS` (600, > 0),

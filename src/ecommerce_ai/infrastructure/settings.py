@@ -244,12 +244,6 @@ class Settings(BaseSettings):
     chat_request_token_cap: int = Field(
         default=20_000, gt=0, description="Most LLM tokens one chat message may spend."
     )
-    chat_rate_limit_messages: int = Field(
-        default=10, gt=0, le=1000, description="Chat messages one user may post per window."
-    )
-    chat_rate_limit_window_seconds: float = Field(
-        default=60.0, gt=0, le=3600, description="Sliding window of the chat rate limit."
-    )
     chat_max_tool_rounds: int = Field(
         default=5, gt=0, le=20, description="Most model→tool rounds in one chat answer."
     )
@@ -270,6 +264,39 @@ class Settings(BaseSettings):
         ge=1,
         le=1000,
         description="Most `cancel_order` proposals one user may get per rolling hour.",
+    )
+
+    user_daily_token_budget: int = Field(
+        default=25_000,
+        ge=1,
+        description="Most LLM tokens one user may spend per UTC day (<= `DAILY_TOKEN_BUDGET`).",
+    )
+    user_messages_per_minute: int = Field(
+        default=10, ge=1, description="Chat posts and decisions one user may send per minute."
+    )
+    user_messages_per_day: int = Field(
+        default=200, ge=1, description="Chat messages one user may post per UTC day."
+    )
+    tool_result_max_chars: int = Field(
+        default=8000,
+        ge=500,
+        le=100_000,
+        description="Longest tool result the chat model sees; longer results are cut.",
+    )
+    guard_violation_threshold: int = Field(
+        default=5,
+        ge=1,
+        description="Blocked inputs (severity >= medium) in the window that start a cooldown.",
+    )
+    guard_violation_window_seconds: float = Field(
+        default=600.0, gt=0, description="Window over which blocked inputs are counted."
+    )
+    guard_cooldown_seconds: float = Field(
+        default=600.0, gt=0, description="How long a user's chat stays refused after a cooldown."
+    )
+    guard_llm_classifier: bool = Field(
+        default=False,
+        description="Reserved for a future LLM-based input classifier; it has no effect yet.",
     )
 
     @field_validator("cors_allowed_origins", "kafka_brokers", mode="before")
@@ -355,4 +382,7 @@ class Settings(BaseSettings):
             raise ValueError("llm_max_output_tokens must not exceed case_token_cap")
         if self.llm_max_output_tokens > self.chat_request_token_cap:
             raise ValueError("llm_max_output_tokens must not exceed chat_request_token_cap")
+        # A zero global budget disables the LLM, so any user budget is moot then.
+        if 0 < self.daily_token_budget < self.user_daily_token_budget:
+            raise ValueError("user_daily_token_budget must not exceed daily_token_budget")
         return self

@@ -401,8 +401,6 @@ def test_should_use_chat_defaults_when_the_environment_is_empty() -> None:
 
     assert settings.chat_keepalive_seconds == 15.0
     assert settings.chat_request_token_cap == 20_000
-    assert settings.chat_rate_limit_messages == 10
-    assert settings.chat_rate_limit_window_seconds == 60.0
     assert settings.chat_max_tool_rounds == 5
     assert settings.chat_max_messages == 100
 
@@ -410,8 +408,6 @@ def test_should_use_chat_defaults_when_the_environment_is_empty() -> None:
 def test_should_read_chat_settings_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHAT_KEEPALIVE_SECONDS", "2.5")
     monkeypatch.setenv("CHAT_REQUEST_TOKEN_CAP", "5000")
-    monkeypatch.setenv("CHAT_RATE_LIMIT_MESSAGES", "3")
-    monkeypatch.setenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "30")
     monkeypatch.setenv("CHAT_MAX_TOOL_ROUNDS", "2")
     monkeypatch.setenv("CHAT_MAX_MESSAGES", "10")
 
@@ -419,8 +415,6 @@ def test_should_read_chat_settings_from_the_environment(monkeypatch: pytest.Monk
 
     assert settings.chat_keepalive_seconds == 2.5
     assert settings.chat_request_token_cap == 5000
-    assert settings.chat_rate_limit_messages == 3
-    assert settings.chat_rate_limit_window_seconds == 30.0
     assert settings.chat_max_tool_rounds == 2
     assert settings.chat_max_messages == 10
 
@@ -431,8 +425,6 @@ def test_should_read_chat_settings_from_the_environment(monkeypatch: pytest.Monk
         ("CHAT_KEEPALIVE_SECONDS", "0"),
         ("CHAT_KEEPALIVE_SECONDS", "301"),
         ("CHAT_REQUEST_TOKEN_CAP", "0"),
-        ("CHAT_RATE_LIMIT_MESSAGES", "0"),
-        ("CHAT_RATE_LIMIT_WINDOW_SECONDS", "0"),
         ("CHAT_MAX_TOOL_ROUNDS", "0"),
         ("CHAT_MAX_TOOL_ROUNDS", "21"),
         ("CHAT_MAX_MESSAGES", "1"),
@@ -492,3 +484,80 @@ def test_should_reject_an_output_limit_above_the_chat_request_cap_when_both_are_
 
     with pytest.raises(ValidationError, match="must not exceed chat_request_token_cap"):
         Settings()
+
+
+def test_should_use_guardrail_defaults_when_the_environment_is_empty() -> None:
+    settings = Settings()
+
+    assert settings.user_daily_token_budget == 25_000
+    assert settings.user_messages_per_minute == 10
+    assert settings.user_messages_per_day == 200
+    assert settings.tool_result_max_chars == 8000
+    assert settings.guard_violation_threshold == 5
+    assert settings.guard_violation_window_seconds == 600.0
+    assert settings.guard_cooldown_seconds == 600.0
+    assert settings.guard_llm_classifier is False
+
+
+def test_should_read_guardrail_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("USER_DAILY_TOKEN_BUDGET", "1000")
+    monkeypatch.setenv("USER_MESSAGES_PER_MINUTE", "3")
+    monkeypatch.setenv("USER_MESSAGES_PER_DAY", "7")
+    monkeypatch.setenv("TOOL_RESULT_MAX_CHARS", "500")
+    monkeypatch.setenv("GUARD_VIOLATION_THRESHOLD", "2")
+    monkeypatch.setenv("GUARD_VIOLATION_WINDOW_SECONDS", "30")
+    monkeypatch.setenv("GUARD_COOLDOWN_SECONDS", "45")
+    monkeypatch.setenv("GUARD_LLM_CLASSIFIER", "true")
+
+    settings = Settings()
+
+    assert settings.user_daily_token_budget == 1000
+    assert settings.user_messages_per_minute == 3
+    assert settings.user_messages_per_day == 7
+    assert settings.tool_result_max_chars == 500
+    assert settings.guard_violation_threshold == 2
+    assert settings.guard_violation_window_seconds == 30.0
+    assert settings.guard_cooldown_seconds == 45.0
+    assert settings.guard_llm_classifier is True
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("USER_DAILY_TOKEN_BUDGET", "0"),
+        ("USER_MESSAGES_PER_MINUTE", "0"),
+        ("USER_MESSAGES_PER_DAY", "0"),
+        ("TOOL_RESULT_MAX_CHARS", "499"),
+        ("TOOL_RESULT_MAX_CHARS", "100001"),
+        ("GUARD_VIOLATION_THRESHOLD", "0"),
+        ("GUARD_VIOLATION_WINDOW_SECONDS", "0"),
+        ("GUARD_COOLDOWN_SECONDS", "0"),
+    ],
+)
+def test_should_reject_an_invalid_guardrail_setting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=variable.lower()):
+        Settings()
+
+
+def test_should_reject_a_user_budget_above_the_daily_budget_when_both_are_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAILY_TOKEN_BUDGET", "10000")
+    monkeypatch.setenv("USER_DAILY_TOKEN_BUDGET", "10001")
+
+    with pytest.raises(ValidationError, match="user_daily_token_budget must not exceed"):
+        Settings()
+
+
+def test_should_accept_any_user_budget_when_the_daily_budget_disables_the_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAILY_TOKEN_BUDGET", "0")
+
+    assert Settings().user_daily_token_budget == 25_000

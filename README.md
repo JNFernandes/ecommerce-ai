@@ -145,7 +145,7 @@ contacts or internal names, no ids, amounts or dates absent from tool results or
 own words, no HTML); a violating sentence and the rest of the answer are replaced by a fixed safe
 message (`finishReason: replaced`). More than `CHAT_MAX_TOOL_ROUNDS` tool rounds ends with
 `tool_limit`. Limits: one stream per conversation (`409 STREAM_ACTIVE`), `CHAT_MAX_MESSAGES` per
-conversation (`409 CONVERSATION_FULL`), `CHAT_RATE_LIMIT_MESSAGES` per `CHAT_RATE_LIMIT_WINDOW_SECONDS`
+conversation (`409 CONVERSATION_FULL`), `USER_MESSAGES_PER_MINUTE` per minute
 per user (`429` + `Retry-After`), `CHAT_REQUEST_TOKEN_CAP` per message out of the shared
 `DAILY_TOKEN_BUDGET` (`error BUDGET_EXCEEDED`). Without a model every answer ends
 `error LLM_UNAVAILABLE` (the user message is kept). A client that disconnects cancels the run;
@@ -286,7 +286,7 @@ use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL
 | `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Relay wait when nothing is due |
 | `CHAT_KEEPALIVE_SECONDS` | `15` | Stream silence before a `: keep-alive` comment |
 | `CHAT_REQUEST_TOKEN_CAP` | `20000` | Most tokens one chat message may spend (`≥ LLM_MAX_OUTPUT_TOKENS`) |
-| `CHAT_RATE_LIMIT_MESSAGES` / `_WINDOW_SECONDS` | `10` / `60` | Posts per user per sliding window |
+| `USER_MESSAGES_PER_MINUTE` | `10` | Posts and decisions per user per minute (sliding window) |
 | `CHAT_MAX_TOOL_ROUNDS` | `5` | Model → tool rounds per answer |
 | `CHAT_MAX_MESSAGES` | `100` | Messages (user + assistant) per conversation |
 | `APPROVAL_TTL_SECONDS` | `600` | Seconds a proposed cancellation stays approvable (`> 0`) |

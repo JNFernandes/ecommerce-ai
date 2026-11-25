@@ -19,6 +19,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
+from typing import Final
 
 import httpx
 import structlog
@@ -97,6 +98,9 @@ from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 from ecommerce_ai.tools.server import build_mcp_app, build_mcp_server
 
 logger = structlog.get_logger(__name__)
+
+RATE_WINDOW_SECONDS: Final = 60.0
+"""Window of the per-user minute limit (`USER_MESSAGES_PER_MINUTE`)."""
 
 
 def build_tool_definitions(
@@ -361,9 +365,7 @@ def create_app(
         clock=lambda: datetime.now(UTC),
         is_unavailable=is_transient_db_error,
         keepalive_seconds=settings.chat_keepalive_seconds,
-        limiter=SlidingWindowLimiter(
-            settings.chat_rate_limit_messages, settings.chat_rate_limit_window_seconds
-        ),
+        limiter=SlidingWindowLimiter(settings.user_messages_per_minute, RATE_WINDOW_SECONDS),
     )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 
