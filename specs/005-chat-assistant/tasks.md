@@ -265,7 +265,7 @@ message needs an existing conversation; both are P1 and together form the MVP.
 - [X] T045 [P] Write `docs/chat-contract.md` from `contracts/chat-api.md` (every route, event,
   code and HTTP error with a JSON example); `tests/contract/test_chat_contract.py` checks event
   names, error codes and payload fields against the `StreamEvent`/schema models
-- [ ] T046 [P] Update `README.md`, `CLAUDE.md` (layering: `agents/assistant`, `agents/safety`,
+- [X] T046 [P] Update `README.md`, `CLAUDE.md` (layering: `agents/assistant`, `agents/safety`,
   `tools/invoker.py`, `api/chat.py`/`sse.py`/`auth.py`/`rate_limit.py`, new tables, CHAT_*
   settings, `/chat` routes) and `.env.example`; mark US-09 `TODO(EVAL_SUITE)` for assistant evals
 - [ ] T047 Run quickstart.md steps 1Ã¢â‚¬â€œ2 locally and the full gate; mark tasks complete
