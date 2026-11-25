@@ -57,12 +57,14 @@ from ecommerce_ai.agents.assistant.limits import (
     RunAllowance,
 )
 from ecommerce_ai.agents.assistant.model import (
+    AnswerReplaced,
     ApprovalExecution,
     ApprovalOutcome,
     ChatErrorCode,
     Decision,
     FinishReason,
     MessageEnd,
+    MessageReplaced,
     MessageStart,
     RunOutcome,
     StreamError,
@@ -192,6 +194,10 @@ class ChatRun:
                         continue
                     if isinstance(item, ApprovalExecution):
                         await self._executed(item)
+                        continue
+                    if isinstance(item, AnswerReplaced):
+                        sent = [item.text]  # what the customer now sees
+                        yield MessageReplaced(message_id=self.message_id, text=item.text)
                         continue
                     if isinstance(item, Token):
                         sent.append(item.text)

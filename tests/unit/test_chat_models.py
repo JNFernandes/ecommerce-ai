@@ -49,6 +49,7 @@ def test_should_name_every_event_like_the_contract() -> None:
         "token",
         "tool.call",
         "tool.result",
+        "message.replaced",
         "message.end",
         "error",
         "approval.required",

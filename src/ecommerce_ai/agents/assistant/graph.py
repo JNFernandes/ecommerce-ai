@@ -80,6 +80,7 @@ from ecommerce_ai.agents.assistant.gatekeeper import (
 )
 from ecommerce_ai.agents.assistant.limits import ProposalQuota, RunAllowance
 from ecommerce_ai.agents.assistant.model import (
+    AnswerReplaced,
     ApprovalExecution,
     ApprovalOutcome,
     ApprovalResolved,
@@ -118,10 +119,19 @@ from ecommerce_ai.agents.ports import Clock, ModelError, ModelUnavailable, Syste
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
 from ecommerce_ai.infrastructure.retry import call_with_retry
 
-type GraphEvent = Token | ToolCall | ToolResult | ApprovalResolved | ApprovalExecution
+type GraphEvent = (
+    Token | ToolCall | ToolResult | ApprovalResolved | ApprovalExecution | AnswerReplaced
+)
 """An event a node publishes while the graph runs (``ApprovalExecution`` is never streamed)."""
 
-_GRAPH_EVENTS: Final = (Token, ToolCall, ToolResult, ApprovalResolved, ApprovalExecution)
+_GRAPH_EVENTS: Final = (
+    Token,
+    ToolCall,
+    ToolResult,
+    ApprovalResolved,
+    ApprovalExecution,
+    AnswerReplaced,
+)
 
 type StateUpdate = dict[str, object]
 """Fields a node changes; LangGraph merges them into the state."""
@@ -943,7 +953,13 @@ class ChatGraph:
         }
 
     async def _gatekeeper(self, state: ChatState) -> StateUpdate:
-        """Check the whole answer; an unsafe or empty one ends ``replaced`` (FR-015, FR-016)."""
+        """Check the whole answer; an unsafe or empty one ends ``replaced`` (FR-015, FR-016).
+
+        Each segment already passed ``check_segment`` before it was sent, so only a rule spanning
+        segments fails here, on text the customer has seen: ``AnswerReplaced`` makes the stream
+        send ``message.replaced`` and the message keeps only the fixed text. An empty answer
+        showed nothing, so its fixed text is a plain ``token``.
+        """
         answer = "".join(state["answer_segments"])
         if answer.strip():
             evidence = ChatEvidence.from_transcript(
@@ -955,14 +971,17 @@ class ChatGraph:
                 return {}
             violations = [*(state.get("violations") or []), *(rule.value for rule in rules)]
             message = _replacement(state)
+            get_stream_writer()(AnswerReplaced(text=message))
+            segments = [message]
         else:
             violations = list(state.get("violations") or [])
             message = NO_ANSWER_MESSAGE
-        get_stream_writer()(Token(text=message))
+            get_stream_writer()(Token(text=message))
+            segments = [*state["answer_segments"], message]
         return {
             "outcome": FinishReason.REPLACED.value,
             "transcript": dump_transcript([AssistantText(text=message)]),
-            "answer_segments": [*state["answer_segments"], message],
+            "answer_segments": segments,
             "violations": violations,
         }
 

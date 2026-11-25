@@ -8,6 +8,7 @@ of the rules a replaced answer broke, never its text.
 import io
 import json
 from collections.abc import Iterator
+from uuid import UUID
 
 import pytest
 import respx
@@ -126,3 +127,37 @@ async def test_should_report_only_the_rule_names_of_a_replaced_answer() -> None:
     (run,) = [line for line in lines if line["event"] == "chat_run"]
     assert run["violations"] == ["promise", "ungrounded_fact"]
     assert "99.5" not in stream.getvalue()
+
+
+async def test_should_send_message_replaced_when_only_the_whole_answer_breaks_a_rule() -> None:
+    harness = ApprovalHarness()
+    harness.script(text_turn("Your order is <b\n", "class=x>ready."))
+    async with harness.client() as client:
+        conversation_id = await harness.conversation(client)
+        response = await harness.post(client, conversation_id, "Is it ready?")
+
+    events = sse(response)
+    assert [event.event for event in events] == [
+        "message.start",
+        "token",
+        "token",
+        "message.replaced",
+        "message.end",
+    ]
+    end = data(events, "message.end")
+    assert data(events, "message.replaced") == {"messageId": end["messageId"], "text": SAFE_MESSAGE}
+    assert (end["finishReason"], end["violations"]) == ("replaced", ["html"])
+    (_, stored) = harness.store.messages[UUID(conversation_id)]
+    assert stored.content == SAFE_MESSAGE
+
+
+async def test_should_not_send_message_replaced_when_a_segment_is_stopped_before_sending() -> None:
+    harness = ApprovalHarness()
+    harness.script(text_turn("We will refund you."))
+    async with harness.client() as client:
+        conversation_id = await harness.conversation(client)
+        response = await harness.post(client, conversation_id, "Refund?")
+
+    events = sse(response)
+    assert "message.replaced" not in [event.event for event in events]
+    assert _text(events) == SAFE_MESSAGE

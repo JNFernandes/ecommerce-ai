@@ -213,6 +213,30 @@ event: message.end
 data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"completed","promptVersion":"assistant.v1","modelId":"claude-opus-5-5","usage":{"inputTokens":1830,"outputTokens":42},"violations":[]}
 ```
 
+An answer whose whole text broke a rule after it was streamed (`violations` names the rules):
+
+```text
+id: 1
+event: message.start
+data: {"conversationId":"9b1f0c2e-6a4d-4c3e-8f5a-2d7e1c0b9a11","messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b"}
+
+id: 2
+event: token
+data: {"text":"Your order is <b"}
+
+id: 3
+event: token
+data: {"text":" class=x>ready."}
+
+id: 4
+event: message.replaced
+data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","text":"Sorry, I can't give you a reliable answer to that. Please ask me about your orders, products or notifications."}
+
+id: 5
+event: message.end
+data: {"messageId":"c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b","finishReason":"replaced","promptVersion":"assistant.v3","modelId":"claude-opus-5-5","usage":{"inputTokens":900,"outputTokens":12},"violations":["html"]}
+```
+
 A failed answer (the `error` event replaces `message.end`; no assistant message is stored, the
 user message is):
 
@@ -232,6 +256,7 @@ data: {"code":"LLM_UNAVAILABLE","message":"The assistant is unavailable right no
 | `tool.call` | `callId`, `name`, `arguments` (never the token) |
 | `tool.result` | `callId`, `name`, `ok`, `summary` |
 | `token` | `text` |
+| `message.replaced` | `messageId`, `text` (the full text the message now holds) |
 | `message.end` | `messageId`, `finishReason`, `promptVersion`, `modelId` (`null` when no model answered), `usage`, `violations` (names of the gatekeeper rules a replaced answer broke, e.g. ungrounded_fact; never text; else empty) |
 | `error` | `code`, `message` |
 | `approval.required` | `approvalId`, `action`, `orderId`, `summary`, `expiresAt` |
@@ -284,8 +309,12 @@ event: message.end
 data: {"messageId":"d52b3c4d-5e6f-4a70-9b8c-0d1e2f3a4b5c","finishReason":"completed","promptVersion":"assistant.v2","modelId":"claude-opus-5-5","usage":{"inputTokens":2100,"outputTokens":30},"violations":[]}
 ```
 
-`token.text` has always passed the gatekeeper. When a segment or the whole answer breaks a rule,
-the rest is replaced by a fixed safe message and `finishReason` is `replaced`; past 5 tool rounds
+`token.text` has always passed the gatekeeper. When a segment breaks a rule, it is never sent: a
+fixed safe message is sent instead and the stream stops reading the model. When only the whole
+answer breaks a rule (one that spans segments, so the customer already saw the text),
+`message.replaced` comes before `message.end`: the client shows its `text` in place of everything
+the message showed so far, and the stored message holds only that text. Either way `finishReason`
+is `replaced`; past 5 tool rounds
 (`CHAT_MAX_TOOL_ROUNDS`) the answer ends with a fixed message and `tool_limit`.
 
 `tool.result.summary` is a fixed phrase, never upstream data: `<n> orders found` /

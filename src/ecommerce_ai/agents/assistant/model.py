@@ -327,11 +327,26 @@ class ApprovalResolved(_Event):
         return self
 
 
+class MessageReplaced(_Event):
+    """The answer already shown failed the whole-answer check: show ``text`` instead of it."""
+
+    EVENT: ClassVar[str] = "message.replaced"
+    message_id: UUID = Field(description="Id of the assistant message to replace.")
+    text: str = Field(description="The full text the message now holds (a fixed message).")
+
+
+class AnswerReplaced(_Frozen):
+    """Graph-internal: the streamed answer became ``text`` (sent as ``message.replaced``)."""
+
+    text: str
+
+
 type StreamEvent = (
     MessageStart
     | Token
     | ToolCall
     | ToolResult
+    | MessageReplaced
     | MessageEnd
     | StreamError
     | ApprovalRequired
@@ -343,6 +358,7 @@ STREAM_EVENT_TYPES: Final = (
     Token,
     ToolCall,
     ToolResult,
+    MessageReplaced,
     MessageEnd,
     StreamError,
     ApprovalRequired,
