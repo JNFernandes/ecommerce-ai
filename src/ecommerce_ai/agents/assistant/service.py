@@ -20,6 +20,10 @@ completes and its outcome is recorded. Expiry is lazy (research §6): a decision
 read closes an expired approval, an orphaned pause (no stored approval) and a decided approval whose
 outcome was never recorded (a crash: ``failed``).
 
+Deleting a conversation withdraws its pending approval first (``expired`` once past its expiry);
+the audit row stays. One ``chat_approval`` log line is written per proposal and per decision (with
+its outcome): ids, action, decision, outcome and the user hash, never text, totals or tokens.
+
 When the run stops early (the client went away, or a delete cancelled it), a shielded
 ``finish_disconnected`` stores the text already sent as ``client_disconnected`` and puts it in
 the graph's transcript (US6). On every ending the allowance is settled and the conversation's
@@ -83,6 +87,21 @@ _logger = structlog.get_logger(__name__)
 def user_hash(subject: str) -> str:
     """A short SHA-256 prefix of the token subject, for logs (never the raw subject)."""
     return hashlib.sha256(subject.encode()).hexdigest()[:USER_HASH_CHARS]
+
+
+def _log_approval(
+    user_id: str, approval: Approval, decision: Decision | None, outcome: ApprovalOutcome | None
+) -> None:
+    """One ``chat_approval`` line (FR-017): a proposal, or a decision with its outcome."""
+    _logger.info(
+        "chat_approval",
+        conversation_id=str(approval.conversation_id),
+        approval_id=str(approval.id),
+        action=approval.action,
+        decision=None if decision is None else decision.value,
+        outcome=None if outcome is None else outcome.value,
+        user_hash=user_hash(user_id),
+    )
 
 
 def _internal(outcome: RunOutcome | None) -> RunOutcome:
@@ -277,8 +296,10 @@ class ChatRun:
     async def _record_outcome(self, outcome: ApprovalOutcome) -> None:
         if self._approvals is None or self._decided is None:
             return
+        approval = self._decided.approval
+        _log_approval(self.user_id, approval, self._decided.decision, outcome)
         try:
-            await self._approvals.record_outcome(self._decided.approval.id, outcome)
+            await self._approvals.record_outcome(approval.id, outcome)
         except Exception as error:
             _logger.error("chat_record_outcome_failed", error_type=type(error).__name__)
 
@@ -344,6 +365,7 @@ class ChatRun:
             # The pause is orphaned; the next touch of the conversation closes it.
             _logger.error("chat_store_failed", error_type=type(error).__name__)
             return _internal(outcome)
+        _log_approval(self.user_id, approval, None, None)
         return outcome
 
     async def _store_answer(self, outcome: RunOutcome) -> RunOutcome:
@@ -539,6 +561,25 @@ class ChatService:
             return None
         return pending
 
+    async def _withdraw(self, user_id: str, conversation_id: UUID) -> None:
+        """Close what the conversation still has open before it is deleted (filtered by user)."""
+        approvals = self._approvals
+        if approvals is None:
+            return
+        stale = await approvals.awaiting_outcome(user_id, conversation_id)
+        if stale is not None:
+            await approvals.record_outcome(stale.id, ApprovalOutcome.FAILED)
+        pending = await approvals.pending_for(user_id, conversation_id)
+        if pending is None:
+            return
+        now = self._clock.now()
+        if pending.is_expired(now):
+            await approvals.close(pending.id, ApprovalStatus.EXPIRED, ApprovalOutcome.EXPIRED, now)
+        else:
+            await approvals.close(
+                pending.id, ApprovalStatus.WITHDRAWN, ApprovalOutcome.WITHDRAWN, now
+            )
+
     async def _expire(self, approval: Approval, now: datetime) -> None:
         approvals = self._approvals
         assert approvals is not None  # noqa: S101  # only called with a store
@@ -548,13 +589,15 @@ class ChatService:
     async def delete(self, user_id: str, conversation_id: UUID) -> bool:
         """Delete the conversation, its messages and its graph state; ``False`` when unknown.
 
-        An answer in progress is cancelled and awaited first (US6).
+        An answer in progress is cancelled and awaited first (US6); a pending approval is then
+        withdrawn (``expired`` once past its expiry), its audit row kept (FR-016).
         """
         if self.streams.is_active(conversation_id):
             # Only the owner may cancel: a foreign id stays indistinguishable from unknown.
             if await self._store.count_messages(user_id, conversation_id) is None:
                 return False
             await self.streams.cancel(conversation_id)
+        await self._withdraw(user_id, conversation_id)
         if not await self._store.delete(user_id, conversation_id):
             return False
         await self._graph.forget(conversation_id)

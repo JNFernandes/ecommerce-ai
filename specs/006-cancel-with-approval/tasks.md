@@ -202,15 +202,15 @@ finishReason `completed`.
 **Goal**: pending approvals survive restarts; every proposal has an audit row with its outcome.
 **Independent test**: propose on one app, approve on a new app over the same stores → cancel.
 
-- [ ] T028 [P] [US5] Tests in `tests/unit/test_approval_flow.py`: restart between proposal and
+- [X] T028 [P] [US5] Tests in `tests/unit/test_approval_flow.py`: restart between proposal and
   approval (new `chat_app` on the same stores and saver); audit rows for approve, reject, expire,
   withdraw (delete conversation); conversation detail `pendingApproval` object or `null`
-- [ ] T029 [P] [US5] Integration test in `tests/integration/test_checkpoint_saver.py`:
+- [X] T029 [P] [US5] Integration test in `tests/integration/test_checkpoint_saver.py`:
   `PostgresCheckpointSaver` interrupt → new graph instance → `Command(resume=…)` continues
   (adjust `infrastructure/db/checkpoint_saver.py` if pending writes for interrupts are missing)
-- [ ] T030 [US5] `pendingApproval` in the conversation detail schema in `api/chat.py` (expiry
+- [X] T030 [US5] `pendingApproval` in the conversation detail schema in `api/chat.py` (expiry
   checked lazily on read); delete marks `withdrawn` before `forget` in `service.py`
-- [ ] T031 [US5] One `chat_approval` log line per proposal and per decision (request id,
+- [X] T031 [US5] One `chat_approval` log line per proposal and per decision (request id,
   conversation id, approval id, action, decision, outcome, user hash; never text, totals or
   tokens) in `service.py`; tests in `tests/unit/test_chat_logging.py`
 
@@ -220,7 +220,7 @@ finishReason `completed`.
 
 **Goal**: the frontend builds the approval flow from the contract; the smoke client drives it.
 
-- [ ] T032 [P] [US6] Merge `contracts/chat-approvals.md` into `docs/chat-contract.md` (events,
+- [X] T032 [P] [US6] Merge `contracts/chat-approvals.md` into `docs/chat-contract.md` (events,
   finish reason, endpoint, codes, `pendingApproval`, JSON examples); extend
   `tests/contract/test_chat_contract.py` to check them against the models
 - [ ] T033 [P] [US6] `scripts/chat_smoke.py`: on `approval.required` print action, order id,

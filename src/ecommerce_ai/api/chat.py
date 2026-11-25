@@ -35,6 +35,7 @@ from ecommerce_ai.agents.assistant.approvals import (
 )
 from ecommerce_ai.agents.assistant.limits import ConversationFull, StreamActive
 from ecommerce_ai.agents.assistant.model import (
+    ApprovalRequired,
     Conversation,
     ConversationHistory,
     Decision,
@@ -43,7 +44,7 @@ from ecommerce_ai.agents.assistant.model import (
     StoredMessage,
     Usage,
 )
-from ecommerce_ai.agents.assistant.ports import ConversationStore
+from ecommerce_ai.agents.assistant.ports import Approval, ConversationStore
 from ecommerce_ai.agents.assistant.service import ChatService
 from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.api.route_policy import AUTHENTICATED
@@ -209,16 +210,27 @@ class MessageResponse(_Camel):
 
 
 class ConversationDetailResponse(ConversationResponse):
-    """A conversation with its messages, oldest first."""
+    """A conversation with its messages, oldest first, and its pending approval."""
 
     messages: tuple[MessageResponse, ...] = Field(description="Messages, oldest first.")
+    pending_approval: ApprovalRequired | None = Field(
+        description=(
+            "The action waiting for the caller's decision (same object as `approval.required`),"
+            " or `null`. An expired approval is closed when read and shows as `null`."
+        )
+    )
 
     @classmethod
-    def of_history(cls, history: ConversationHistory) -> "ConversationDetailResponse":
-        """The response of ``history``."""
+    def of_history(
+        cls, history: ConversationHistory, pending: Approval | None = None
+    ) -> "ConversationDetailResponse":
+        """The response of ``history`` with its ``pending`` approval."""
         return cls.model_validate(
             history.conversation.model_dump()
-            | {"messages": tuple(MessageResponse.of(m) for m in history.messages)}
+            | {
+                "messages": tuple(MessageResponse.of(m) for m in history.messages),
+                "pending_approval": None if pending is None else pending.required_event(),
+            }
         )
 
 
@@ -398,7 +410,10 @@ def build_chat_router(
     @router.get(
         "/conversations/{conversation_id}",
         summary="Read a conversation",
-        description="One conversation of the caller with its messages, oldest first.",
+        description=(
+            "One conversation of the caller with its messages, oldest first, and the action"
+            " waiting for its decision (`pendingApproval`, or `null`)."
+        ),
         responses=_ERRORS | _NOT_FOUND,
         response_model=ConversationDetailResponse,
         openapi_extra=AUTHENTICATED,
@@ -410,8 +425,8 @@ def build_chat_router(
         if parsed is None or history is None:
             return error_response(ChatHttpCode.NOT_FOUND)
         # Reading touches the approval: an expired or orphaned one is closed (FR-010).
-        await guarded(service.pending_approval(subject, parsed))
-        detail = ConversationDetailResponse.of_history(history)
+        pending = await guarded(service.pending_approval(subject, parsed))
+        detail = ConversationDetailResponse.of_history(history, pending)
         return JSONResponse(detail.model_dump(mode="json", by_alias=True))
 
     @router.delete(

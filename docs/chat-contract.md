@@ -1,4 +1,4 @@
-# Chat API and SSE contract (US-05)
+# Chat API and SSE contract (US-05, US-06)
 
 Frozen contract for the frontend. Base path `/chat` on the service; through the gateway
 (ecommerce-infra) every path is prefixed with `/api/ai`, e.g. `POST /api/ai/chat/conversations`.
@@ -28,6 +28,7 @@ same as `POST /mcp`, identical for every bad token:
 | GET | `/chat/conversations/{id}` | 200 `ConversationDetail` (messages oldest first) | 401 403 404 503 |
 | DELETE | `/chat/conversations/{id}` | 204, no body (an answer in progress is cancelled first) | 401 403 404 503 |
 | POST | `/chat/conversations/{id}/messages` | 200 `text/event-stream` | 401 403 404 409 413 422 429 503 |
+| POST | `/chat/conversations/{id}/approvals/{approvalId}` | 200 `text/event-stream` | 401 403 404 409 410 413 422 429 503 |
 
 Create a conversation (`title` optional, ≤ 200 characters, trimmed; blank means none):
 
@@ -66,7 +67,10 @@ List (newest activity first):
 ```
 
 Read one with its history. `finishReason`, `promptVersion`, `modelId` and `usage` are `null` on
-user messages; an assistant message holds exactly the text the customer received:
+user messages; an assistant message holds exactly the text the customer received.
+`pendingApproval` is the action waiting for the caller's decision (the same object as the
+`approval.required` event) or `null`; an approval past `expiresAt` is closed when read and shows
+as `null`:
 
 <!-- schema: ConversationDetailResponse -->
 ```json
@@ -96,7 +100,39 @@ user messages; an assistant message holds exactly the text the customer received
       "modelId": "claude-opus-5-5",
       "usage": {"inputTokens": 1830, "outputTokens": 42}
     }
-  ]
+  ],
+  "pendingApproval": null
+}
+```
+
+A conversation paused on a proposed cancellation:
+
+<!-- schema: ConversationDetailResponse -->
+```json
+{
+  "id": "9b1f0c2e-6a4d-4c3e-8f5a-2d7e1c0b9a11",
+  "title": null,
+  "createdAt": "2026-11-25T10:00:00Z",
+  "updatedAt": "2026-11-25T10:02:00Z",
+  "messages": [
+    {
+      "id": "c41a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+      "role": "assistant",
+      "content": "I can cancel it for you once you approve.",
+      "createdAt": "2026-11-25T10:02:00Z",
+      "finishReason": "awaiting_approval",
+      "promptVersion": "assistant.v2",
+      "modelId": "claude-opus-5-5",
+      "usage": {"inputTokens": 1900, "outputTokens": 60}
+    }
+  ],
+  "pendingApproval": {
+    "approvalId": "9b1e6c2d-3a4f-4b5c-8d6e-7f8a9b0c1d2e",
+    "action": "cancel_order",
+    "orderId": "3f2a9c1e-7b4d-4e5f-8a6b-1c2d3e4f5a6b",
+    "summary": {"status": "PENDING", "totalAmount": 59.9, "currency": null},
+    "expiresAt": "2026-11-25T10:12:00Z"
+  }
 }
 ```
 
@@ -106,6 +142,16 @@ stored). The response is the event stream below:
 <!-- schema: PostMessageRequest -->
 ```json
 {"content": "Where is my last order?"}
+```
+
+Decide a pending approval, once (US-06). `approve` re-reads the order and cancels it with the
+caller's token only if it is still `PENDING`; `reject` changes nothing. A message posted while an
+approval is pending gets 409 `APPROVAL_PENDING`: typing "yes" never approves. The response is the
+decision stream below:
+
+<!-- schema: DecisionRequest -->
+```json
+{"decision": "approve"}
 ```
 
 `finishReason` values: `completed`, `replaced`, `tool_limit`, `awaiting_approval` (the run paused
@@ -245,7 +291,13 @@ the rest is replaced by a fixed safe message and `finishReason` is `replaced`; p
 `tool.result.summary` is a fixed phrase, never upstream data: `<n> orders found` /
 `No orders found` (list tools: orders, products, notifications), `Order found` /
 `Order not found` (lookups: order, product), `Orders unavailable` (any other failure),
-`Request refused` (unknown tool or invalid arguments, never run).
+`Request refused` (unknown tool or invalid arguments, never run). For `cancel_order`:
+`Order cancelled`, `Cancellation rejected, nothing changed`, `Order cannot be cancelled`,
+`Cancellation could not be confirmed`, `Cancellation expired, nothing changed`,
+`Cancellation withdrawn, nothing changed`, and, when no approval was created, `Order not found`,
+`Approval already pending`, `Too many cancellation requests` (5 proposals per hour,
+`CANCEL_PROPOSALS_PER_HOUR`) or `Orders unavailable`. The `/mcp` endpoint never offers
+`cancel_order`.
 
 ### Terminal error codes
 

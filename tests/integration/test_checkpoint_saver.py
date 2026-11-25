@@ -1,5 +1,6 @@
 """``PostgresCheckpointSaver`` on PostgreSQL: the saver API, newest-only retention, a graph run
-resumed by a second saver instance, and conversation delete removing the rows (FR-004, FR-014)."""
+resumed by a second saver instance (also from an approval pause, US-06 FR-013), and conversation
+delete removing the rows (FR-004, FR-014)."""
 
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -9,10 +10,26 @@ from langgraph.checkpoint.base import Checkpoint, CheckpointMetadata, empty_chec
 from sqlalchemy import Table, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from ecommerce_ai.agents.assistant.model import AssistantText, UserTurn
+from ecommerce_ai.agents.assistant.model import (
+    ApprovalOutcome,
+    ApprovalResolved,
+    AssistantText,
+    Decision,
+    FinishReason,
+    RunOutcome,
+    ToolResultItem,
+    UserTurn,
+)
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.db.tables import chat_checkpoint_writes, chat_checkpoints
+from tests.support.approvals import (
+    CANCEL_CALL_ID,
+    ORDER_ID,
+    ApprovalHarness,
+    cancel_turn,
+    cancelled,
+)
 from tests.support.chat import chat_graph, collect_run
 from tests.support.llm import ScriptedChatModel, text_turn
 
@@ -176,3 +193,39 @@ async def test_should_remove_checkpoint_rows_when_the_conversation_is_deleted(
 
     assert await _count(db_engine, chat_checkpoints, str(conversation_id)) == 0
     assert await _count(db_engine, chat_checkpoint_writes, str(conversation_id)) == 0
+
+
+async def test_should_resume_an_approval_pause_with_a_new_saver_instance(
+    db_engine: AsyncEngine,
+) -> None:
+    conversation_id = uuid4()
+    harness = ApprovalHarness()
+    first = ScriptedChatModel([cancel_turn()])
+    _, paused = await collect_run(
+        chat_graph(first, harness.tools, PostgresCheckpointSaver(db_engine)),
+        conversation_id,
+        "Cancel my order",
+    )
+    assert paused.finish_reason is FinishReason.AWAITING_APPROVAL
+    assert paused.proposal is not None
+    assert harness.tools.approved_calls == []
+
+    second = ScriptedChatModel([text_turn("Your order has been cancelled.")])
+    restarted = chat_graph(second, harness.tools, PostgresCheckpointSaver(db_engine))
+    items = [
+        item
+        async for item in restarted.resume(
+            conversation_id, paused.proposal.approval_id, Decision.APPROVE
+        )
+    ]
+
+    resolved = [item for item in items if isinstance(item, ApprovalResolved)]
+    assert [r.outcome for r in resolved] == [ApprovalOutcome.CANCELLED]
+    outcome = items[-1]
+    assert isinstance(outcome, RunOutcome)
+    assert outcome.finish_reason is FinishReason.COMPLETED
+    assert [call.arguments for call in harness.tools.approved_calls] == [{"orderId": ORDER_ID}]
+    (request,) = second.requests
+    assert request.transcript[-1] == ToolResultItem(
+        call_id=CANCEL_CALL_ID, name="cancel_order", ok=True, payload=cancelled()
+    )

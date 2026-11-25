@@ -27,11 +27,13 @@ from tests.support.approvals import (
     CANCEL_CALL_ID,
     ORDER_ID,
     OTHER_ORDER_ID,
+    OTHER_TOKEN,
     OWNER,
     TOKEN,
     ApprovalHarness,
     cancel_turn,
     data,
+    headers,
     names,
     order,
     sse,
@@ -513,3 +515,81 @@ async def test_should_cancel_once_and_record_it_when_the_client_leaves_during_th
     assert isinstance(events[-1], MessageEnd)
     assert events[-1].finish_reason is FinishReason.COMPLETED
     assert len(harness.tools.approved_calls) == 1
+
+
+# Restarts and audit (US5) -----------------------------------------------------------------------
+
+
+async def test_should_cancel_after_a_restart_between_the_proposal_and_the_approval(
+    harness: ApprovalHarness,
+) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+    harness.script(text_turn("Your order has been cancelled."))
+    async with harness.client() as restarted:  # a new app over the same stores and saver
+        response = await harness.decide(restarted, conversation_id, approval_id)
+
+    events = sse(response)
+    assert data(events, "approval.resolved")["outcome"] == "cancelled"
+    assert data(events, "message.end")["finishReason"] == "completed"
+    assert [c.arguments for c in harness.tools.approved_calls] == [{"orderId": ORDER_ID}]
+    assert harness.action(approval_id).outcome is ApprovalOutcome.CANCELLED
+
+
+@pytest.mark.parametrize(
+    ("expired", "outcome"),
+    [(False, ApprovalOutcome.WITHDRAWN), (True, ApprovalOutcome.EXPIRED)],
+    ids=["withdrawn", "expired"],
+)
+async def test_should_keep_the_audit_row_when_the_conversation_is_deleted(
+    harness: ApprovalHarness, expired: bool, outcome: ApprovalOutcome
+) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        if expired:
+            harness.clock.advance(601)
+        response = await client.delete(f"/chat/conversations/{conversation_id}", headers=headers())
+
+    assert response.status_code == 204
+    assert harness.approvals.approvals == []
+    action = harness.action(approval_id)
+    assert (action.decision, action.outcome) == (None, outcome)
+    assert harness.tools.approved_calls == []
+
+
+async def test_should_not_withdraw_another_users_approval_when_they_try_to_delete(
+    harness: ApprovalHarness,
+) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        response = await client.delete(
+            f"/chat/conversations/{conversation_id}", headers=headers(OTHER_TOKEN)
+        )
+
+    assert response.status_code == 404
+    assert harness.approvals.approvals[0].status is ApprovalStatus.PENDING
+    assert harness.action(approval_id).outcome is None
+
+
+async def test_should_show_the_pending_approval_in_the_conversation_detail_until_decided(
+    harness: ApprovalHarness,
+) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, events = await harness.propose(client)
+        paused = await client.get(f"/chat/conversations/{conversation_id}", headers=headers())
+        harness.script(text_turn("Okay, nothing was changed."))
+        await harness.decide(client, conversation_id, approval_id, "reject")
+        decided = await client.get(f"/chat/conversations/{conversation_id}", headers=headers())
+
+    assert paused.json()["pendingApproval"] == data(events, "approval.required")
+    assert decided.json()["pendingApproval"] is None
+
+
+async def test_should_show_no_pending_approval_once_it_expired(harness: ApprovalHarness) -> None:
+    async with harness.client() as client:
+        conversation_id, approval_id, _ = await harness.propose(client)
+        harness.clock.advance(600)
+        detail = await client.get(f"/chat/conversations/{conversation_id}", headers=headers())
+
+    assert detail.json()["pendingApproval"] is None
+    assert harness.action(approval_id).outcome is ApprovalOutcome.EXPIRED

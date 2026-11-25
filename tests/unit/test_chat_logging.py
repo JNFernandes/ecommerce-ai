@@ -1,5 +1,5 @@
-"""One ``chat_run`` log line per answer, without content, arguments, results or the token
-(FR-026, research §17)."""
+"""One ``chat_run`` log line per answer and one ``chat_approval`` line per proposal and decision,
+without content, arguments, results, totals or the token (FR-026, research §17; US-06 FR-017)."""
 
 import hashlib
 import io
@@ -12,6 +12,16 @@ import respx
 
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.settings import Settings
+from tests.support.approvals import (
+    ORDER_ID,
+    OWNER,
+    ApprovalHarness,
+    cancel_turn,
+    data,
+    headers,
+    sse,
+)
+from tests.support.approvals import TOKEN as APPROVAL_TOKEN
 from tests.support.chat import FakeToolRunner, chat_app, envelope
 from tests.support.llm import MODEL_ID, ScriptedChatModel, text_turn, tool_turn
 from tests.support.stores import InMemoryConversationStore
@@ -69,4 +79,47 @@ async def test_should_log_one_chat_run_line_with_counts_and_no_content() -> None
     assert run["prompt_version"] == "assistant.v2"
     assert run["model_id"] == MODEL_ID
     for secret in (QUESTION, ANSWER, "blue teapot", ARGUMENT, RESULT_VALUE, TOKEN, SUBJECT):
+        assert secret not in output
+
+
+async def test_should_log_one_chat_approval_line_per_proposal_and_per_decision() -> None:
+    harness = ApprovalHarness()
+    harness.tools.results["get_order"] = envelope(
+        {"orderId": ORDER_ID, "status": "PENDING", "totalAmount": 873.45, "note": RESULT_VALUE}
+    )
+    harness.script(cancel_turn(), text_turn(ANSWER))
+    stream = io.StringIO()
+    async with harness.client() as client:
+        configure_logging("INFO", stream)
+        created = await client.post("/chat/conversations", json={}, headers=headers())
+        conversation_id = created.json()["id"]
+        proposed = await client.post(
+            f"/chat/conversations/{conversation_id}/messages",
+            json={"content": QUESTION},
+            headers=headers() | {"X-Request-Id": "req-propose"},
+        )
+        approval_id = data(sse(proposed), "approval.required")["approvalId"]
+        await client.post(
+            f"/chat/conversations/{conversation_id}/approvals/{approval_id}",
+            json={"decision": "approve"},
+            headers=headers() | {"X-Request-Id": "req-decide"},
+        )
+
+    output = stream.getvalue()
+    lines = [json.loads(line) for line in output.splitlines()]
+    approvals = [line for line in lines if line["event"] == "chat_approval"]
+    common = {
+        "conversation_id": conversation_id,
+        "approval_id": approval_id,
+        "action": "cancel_order",
+        "user_hash": hashlib.sha256(OWNER.encode()).hexdigest()[:16],
+    }
+    assert [
+        {key: line[key] for key in (*common, "request_id", "decision", "outcome")}
+        for line in approvals
+    ] == [
+        common | {"request_id": "req-propose", "decision": None, "outcome": None},
+        common | {"request_id": "req-decide", "decision": "approve", "outcome": "cancelled"},
+    ]
+    for secret in (QUESTION, ANSWER, "873.45", RESULT_VALUE, APPROVAL_TOKEN, OWNER):
         assert secret not in output

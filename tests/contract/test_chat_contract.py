@@ -2,7 +2,8 @@
 
 Every ``<!-- schema: Name -->`` JSON example validates against that model and uses exactly the
 field names it dumps; every SSE example frame validates against its event model; the event
-table, both code tables and the finish reasons list exactly what the code defines.
+table, both code tables, the finish reasons, the routes and the ``cancel_order`` summaries list
+exactly what the code defines.
 """
 
 import json
@@ -13,22 +14,27 @@ from typing import Final
 import pytest
 from pydantic import BaseModel
 
+from ecommerce_ai.agents.assistant.approvals import Refusal, outcome_summary, refusal_summary
 from ecommerce_ai.agents.assistant.model import (
     ERROR_MESSAGES,
     STREAM_EVENT_TYPES,
+    ApprovalOutcome,
     ChatErrorCode,
     FinishReason,
 )
 from ecommerce_ai.api.chat import (
     HTTP_MESSAGES,
+    PREFIX,
     ChatHttpCode,
     ConversationDetailResponse,
     ConversationListResponse,
     ConversationResponse,
     CreateConversationRequest,
+    DecisionRequest,
     ErrorBody,
     PostMessageRequest,
 )
+from tests.support.chat import chat_app
 
 DOC: Final = (Path(__file__).parents[2] / "docs" / "chat-contract.md").read_text(encoding="utf-8")
 
@@ -39,6 +45,7 @@ SCHEMAS: Final[dict[str, type[BaseModel]]] = {
         ConversationListResponse,
         ConversationResponse,
         CreateConversationRequest,
+        DecisionRequest,
         ErrorBody,
         PostMessageRequest,
     )
@@ -150,3 +157,27 @@ def test_should_list_every_finish_reason() -> None:
 
     assert reasons is not None
     assert set(re.findall(r"`(\w+)`", reasons.group(1))) == {r.value for r in FinishReason}
+
+
+def test_should_list_exactly_the_chat_routes_of_the_app() -> None:
+    documented = {
+        (cells[0], re.sub(r"\?.*", "", cells[1].strip("`")).replace("{id}", "{conversation_id}"))
+        for cells in _table_rows(r"GET|POST|DELETE")
+    }
+    paths = chat_app(None).openapi()["paths"]
+    app_routes = {
+        (method.upper(), path.replace("{approval_id}", "{approvalId}"))
+        for path, operations in paths.items()
+        if path.startswith(PREFIX + "/")
+        for method in operations
+    }
+
+    assert documented == app_routes
+
+
+def test_should_document_every_cancel_order_summary() -> None:
+    phrases = {outcome_summary(outcome) for outcome in ApprovalOutcome} | {
+        refusal_summary(refusal) for refusal in Refusal
+    }
+
+    assert all(f"`{phrase}`" in DOC for phrase in phrases)
