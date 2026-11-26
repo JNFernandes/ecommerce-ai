@@ -17,6 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from ecommerce_ai.agents.triage.model import CaseForTriage, SuggestedAction
 
+CANARY_SLOT: Final = "{canary}"
+"""Where the assistant prompt (v4+) holds the run's canary."""
+
 USER_PLACEHOLDERS: Final = ("cause", "default_action", "allowed_actions", "evidence", "feedback")
 """Placeholders the user template must contain, each exactly by name."""
 
@@ -115,6 +118,13 @@ class SystemPrompt(BaseModel):
 
     version: str = Field(min_length=1, description="Reported as `promptVersion`, e.g. v1.")
     system: str = Field(min_length=1, description="System part: role and rules.")
+
+    def render(self, canary: str | None) -> str:
+        """The system text for one run: its ``{canary}`` slot (US-07, v4+) filled in.
+
+        Without a canary the slot reads ``none``; a prompt without the slot is returned as is.
+        """
+        return self.system.replace(CANARY_SLOT, canary or "none")
 
 
 def parse_system_prompt(version: str, text: str) -> SystemPrompt:

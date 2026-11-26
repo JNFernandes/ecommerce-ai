@@ -18,7 +18,8 @@ import argparse
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Final
 
 import httpx
 import structlog
@@ -26,6 +27,7 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
+from ecommerce_ai.agents.assistant.approvals import APPROVAL_ACTIONS, TARGET_ARGUMENT
 from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
 from ecommerce_ai.agents.assistant.limits import ChatLimits
 from ecommerce_ai.agents.assistant.ports import (
@@ -36,7 +38,15 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolRunner,
 )
 from ecommerce_ai.agents.assistant.service import ChatService
+from ecommerce_ai.agents.assistant.tool_results import ToolResultSanitizer
 from ecommerce_ai.agents.assistant.tool_runner import InvokerToolRunner
+from ecommerce_ai.agents.guardrails import Guardrails
+from ecommerce_ai.agents.guardrails.canary import new_canary
+from ecommerce_ai.agents.guardrails.events import GuardrailEventStore, UserUsageStore
+from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_input_rules
+from ecommerce_ai.agents.guardrails.output_checks import LeakChecks
+from ecommerce_ai.agents.guardrails.quotas import QuotaLimits, UserQuotas
+from ecommerce_ai.agents.guardrails.tool_guard import CallGuard
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -54,18 +64,19 @@ from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
-from ecommerce_ai.api.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.approval_repository import ApprovalRepository
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
 from ecommerce_ai.infrastructure.db.conversation_repository import ConversationRepository
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
+from ecommerce_ai.infrastructure.db.guardrail_event_repository import GuardrailEventRepository
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
 from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
+from ecommerce_ai.infrastructure.db.user_usage_repository import UserUsageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
@@ -73,6 +84,7 @@ from ecommerce_ai.infrastructure.llm.anthropic_chat_model import build_anthropic
 from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport
@@ -97,6 +109,9 @@ from ecommerce_ai.tools.registry import AnyToolDefinition, ToolRegistry
 from ecommerce_ai.tools.server import build_mcp_app, build_mcp_server
 
 logger = structlog.get_logger(__name__)
+
+RATE_WINDOW_SECONDS: Final = 60.0
+"""Window of the per-user minute limit (`USER_MESSAGES_PER_MINUTE`)."""
 
 
 def build_tool_definitions(
@@ -230,6 +245,18 @@ def build_triage_worker(
     )
 
 
+def build_guardrails(settings: Settings) -> Guardrails:
+    """The chat's US-07 guards; an invalid input rules file raises, so the build fails."""
+    input_guard = RuleInputGuard(load_input_rules())
+    return Guardrails(
+        input_guard=input_guard,
+        tool_result_guard=ToolResultSanitizer(settings.tool_result_max_chars, input_guard),
+        output_checks=LeakChecks(),
+        tool_guard=CallGuard(dict.fromkeys(APPROVAL_ACTIONS, TARGET_ARGUMENT)),
+        canary_factory=new_canary,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     probes: Sequence[DependencyProbe] | None = None,
@@ -244,10 +271,14 @@ def create_app(
     token_budget: TokenBudget | None = None,
     approval_store: ApprovalStore | None = None,
     clock: Clock | None = None,
+    guard_store: GuardrailEventStore | None = None,
+    guardrails: Guardrails | None = None,
+    user_usage_store: UserUsageStore | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
-    checkpointer, the chat's tool runner, the token budget, the approval store and the chat's
-    clock replace the real ones in tests.
+    checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
+    clock, the guard audit store, the chat's guardrails and the per-user usage store replace the
+    real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
@@ -329,17 +360,35 @@ def create_app(
         backoff_max_seconds=settings.outbox_backoff_max_seconds,
         state=relay_state,
     )
-    store = conversation_store or ConversationRepository(engine)
+    chat_registry = registry.exposed(Exposure.CHAT)
+    store = conversation_store or ConversationRepository(
+        engine, tuple(tool.name for tool in chat_registry)
+    )
     chat_clock = clock or SystemClock()
     chat_graph = ChatGraph(
         model=chat_model,
-        tools=tool_runner or InvokerToolRunner(ToolInvoker(registry.exposed(Exposure.CHAT))),
+        tools=tool_runner or InvokerToolRunner(ToolInvoker(chat_registry)),
         prompt=load_assistant_prompt(),
         checkpointer=checkpointer or PostgresCheckpointSaver(engine),
         max_tool_rounds=settings.chat_max_tool_rounds,
         max_retries=settings.llm_max_retries,
         clock=chat_clock,
         approval_ttl_seconds=settings.approval_ttl_seconds,
+        guardrails=guardrails or build_guardrails(settings),
+    )
+    guard_events = guard_store or GuardrailEventRepository(engine)
+    user_usage = user_usage_store or UserUsageRepository(engine)
+    quotas = UserQuotas(
+        SlidingWindowLimiter(settings.user_messages_per_minute, RATE_WINDOW_SECONDS),
+        user_usage,
+        guard_events,
+        chat_clock,
+        QuotaLimits(
+            messages_per_day=settings.user_messages_per_day,
+            violation_threshold=settings.guard_violation_threshold,
+            violation_window=timedelta(seconds=settings.guard_violation_window_seconds),
+            cooldown=timedelta(seconds=settings.guard_cooldown_seconds),
+        ),
     )
     chat_service = ChatService(
         store,
@@ -347,6 +396,10 @@ def create_app(
         chat_clock,
         approvals=approval_store or ApprovalRepository(engine),
         proposals_per_hour=settings.cancel_proposals_per_hour,
+        guard_store=guard_events,
+        quotas=quotas,
+        user_usage=user_usage,
+        user_daily_tokens=settings.user_daily_token_budget,
         budget=budget,
         limits=ChatLimits(
             max_messages=settings.chat_max_messages,
@@ -361,9 +414,7 @@ def create_app(
         clock=lambda: datetime.now(UTC),
         is_unavailable=is_transient_db_error,
         keepalive_seconds=settings.chat_keepalive_seconds,
-        limiter=SlidingWindowLimiter(
-            settings.chat_rate_limit_messages, settings.chat_rate_limit_window_seconds
-        ),
+        quotas=quotas,
     )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 

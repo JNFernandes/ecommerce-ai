@@ -10,7 +10,9 @@ from uuid import UUID
 import pytest
 
 from ecommerce_ai.agents.assistant.graph import ASSISTANT_PROMPT_VERSION, load_assistant_prompt
+from ecommerce_ai.agents.guardrails.canary import new_canary
 from ecommerce_ai.agents.prompts.loader import (
+    CANARY_SLOT,
     USER_PLACEHOLDERS,
     Prompt,
     load_prompt,
@@ -32,6 +34,9 @@ ASSISTANT_V2_SHA256 = "2e39bf901df8ef1769f9e8b231820f06f336b89fe5c276f28626630cb
 
 ASSISTANT_V3_SHA256 = "06d0a8948e5aa7f7b13e6a94bb0d79635a26a7eb086633b89feb572167ac9a9b"
 """SHA-256 of ``assistant.v3.md`` (cancel_order called directly, no chat confirmation)."""
+
+ASSISTANT_V4_SHA256 = "c7e54765b8f17c44917797625ff297e74408a2f5d38ee4b27e62ca24a0fc5967"
+"""SHA-256 of ``assistant.v4.md`` (US-07: canary slot, truncation note); a change is ``v5``."""
 
 ORDER_ID = UUID("00000000-0000-4000-8000-000000000001")
 
@@ -191,13 +196,46 @@ def test_should_never_change_the_released_assistant_v3_prompt() -> None:
     assert hashlib.sha256(raw).hexdigest() == ASSISTANT_V3_SHA256
 
 
-def test_should_use_assistant_v3_with_the_approval_rules_as_the_active_prompt() -> None:
+def test_should_never_change_the_released_assistant_v4_prompt() -> None:
+    raw = files("ecommerce_ai.agents.prompts").joinpath("assistant.v4.md").read_bytes()
+
+    assert hashlib.sha256(raw).hexdigest() == ASSISTANT_V4_SHA256
+
+
+def test_should_keep_v3_and_add_the_canary_and_truncation_note_in_assistant_v4() -> None:
+    v3 = load_system_prompt("assistant", "v3").system
+    v4 = load_system_prompt("assistant", "v4").system
+
+    assert v4.count(CANARY_SLOT) == 1
+    assert "…[truncated N chars]" in v4
+    assert CANARY_SLOT not in v3
+    assert v4.endswith(v3.split("The rules below always apply.", 1)[1])
+
+
+def test_should_render_the_canary_into_the_slot_when_rendering_v4() -> None:
+    v4 = load_system_prompt("assistant", "v4")
+    canary = new_canary()
+
+    rendered = v4.render(canary)
+
+    assert canary in rendered
+    assert CANARY_SLOT not in rendered
+    assert v4.render(None) == v4.system.replace(CANARY_SLOT, "none")
+
+
+def test_should_return_the_text_unchanged_when_a_prompt_has_no_canary_slot() -> None:
+    v3 = load_system_prompt("assistant", "v3")
+
+    assert v3.render(new_canary()) == v3.system
+
+
+def test_should_use_assistant_v4_with_the_approval_rules_as_the_active_prompt() -> None:
     active = load_assistant_prompt()
     v1 = load_system_prompt("assistant", "v1")
 
-    assert ASSISTANT_PROMPT_VERSION == "v3"
-    assert active.version == "assistant.v3"
-    assert active.system.startswith(v1.system)
+    assert ASSISTANT_PROMPT_VERSION == "v4"
+    assert active.version == "assistant.v4"
+    assert active.system.startswith(v1.system.split("The rules below always apply.", 1)[0])
     assert "call cancel_order for it right away" in active.system
     assert "Never ask the customer to confirm the cancellation in the chat" in active.system
     assert "Calling cancel_order changes nothing by itself" in active.system

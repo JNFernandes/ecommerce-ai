@@ -32,6 +32,14 @@ from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.approvals import CANCEL_ACTION, READ_TOOL
 from ecommerce_ai.agents.assistant.model import ToolResultItem, TranscriptItem, UserTurn
+from ecommerce_ai.agents.guardrails import NOOP_OUTPUT_CHECKS, OutputChecks, OutputContext
+from ecommerce_ai.agents.guardrails.events import (
+    GuardAction,
+    GuardEvent,
+    GuardSeverity,
+    GuardStage,
+)
+from ecommerce_ai.agents.guardrails.output_checks import extract_ids
 from ecommerce_ai.agents.safety.rules import (
     Evidence,
     cancellation_claims_grounded,
@@ -56,6 +64,11 @@ NO_ANSWER_MESSAGE: Final = (
 )
 """Sent when the model gave no text at all (finishReason ``replaced``)."""
 
+BLOCKED_REFUSAL: Final = (
+    "I can't help with that request. I can help with your orders, products and notifications."
+)
+"""Sent instead of an answer when the input guard blocks the message (finishReason ``blocked``)."""
+
 TOOL_LIMIT_MESSAGE: Final = (
     "Sorry, I could not finish looking that up. Please ask a simpler question."
 )
@@ -72,10 +85,69 @@ class ChatRule(StrEnum):
     HTML = "html"
     CANCELLATION_CLAIM = "cancellation_claim"
     APPROVAL_LANGUAGE = "approval_language"
+    CANARY = "canary"
+    TOKEN_LIKE = "token_like"  # noqa: S105  # a rule name, not a token
+    SECRET_LIKE = "secret_like"  # noqa: S105  # a rule name, not a secret
+    FOREIGN_ID = "foreign_id"
+    PROMPT_LEAK = "prompt_leak"
+
+
+_HIGH: Final = frozenset(
+    {ChatRule.CANARY, ChatRule.TOKEN_LIKE, ChatRule.SECRET_LIKE, ChatRule.PROMPT_LEAK}
+)
+_MEDIUM: Final = frozenset(
+    {ChatRule.FOREIGN_ID, ChatRule.INTERNAL_NAME, ChatRule.CANCELLATION_CLAIM}
+)
+
+
+def rule_severity(rule: ChatRule) -> GuardSeverity:
+    """How serious breaking ``rule`` is: leaks are ``high``, data exposure ``medium``."""
+    if rule in _HIGH:
+        return GuardSeverity.HIGH
+    return GuardSeverity.MEDIUM if rule in _MEDIUM else GuardSeverity.LOW
+
+
+def replaced_events(rules: Iterable[str]) -> tuple[GuardEvent, ...]:
+    """One output ``replaced`` event per distinct broken rule (US-07 FR-019)."""
+    return tuple(
+        GuardEvent(
+            stage=GuardStage.OUTPUT,
+            rule=rule,
+            action=GuardAction.REPLACED,
+            severity=rule_severity(ChatRule(rule)),
+        )
+        for rule in dict.fromkeys(rules)
+    )
+
+
+INTERNAL_TABLES: Final = frozenset(
+    {
+        "alembic_version",
+        "chat_actions",
+        "chat_approvals",
+        "chat_checkpoint_writes",
+        "chat_checkpoints",
+        "chat_conversations",
+        "chat_messages",
+        "chat_user_usage",
+        "guardrail_events",
+        "inbound_dead_letters",
+        "llm_token_usage",
+        "outbox_events",
+        "triage_cases",
+        "triage_evidence",
+        "triage_results",
+    }
+)
+"""The service's table names (``infrastructure/db/tables.py``; a test keeps them equal)."""
 
 
 _ALWAYS_INTERNAL: Final = re.compile(
     r"\becommerce-[a-z0-9-]*|\bgraphql\b|\blocalhost\b|"
+    r"\b[a-z0-9.-]+:5436\b|\bai:8002\b|\bpostgres-ai\b|"
+    r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.internal\b|"
+    + "|".join(rf"\b{re.escape(name)}\b" for name in sorted(INTERNAL_TABLES))
+    + "|"
     + "|".join(re.escape(topic) for topic in TRIAGE_TOPICS),
     re.I,
 )
@@ -99,12 +171,17 @@ class ChatEvidence:
         cancelled: Iterable[str | None] = (),
         *,
         approval_resolved: bool = False,
+        output_checks: OutputChecks = NOOP_OUTPUT_CHECKS,
+        output_context: OutputContext | None = None,
     ) -> None:
         """Index the tool ``data`` leaves and the facts of the customer's own messages.
 
         ``cancelled`` holds the id of each order the order tools showed ``CANCELLED`` (``None``
         when the order had no id); ``approval_resolved`` marks a run resumed from a decision.
+        ``output_checks`` (US-07 leak checks) compare the text with ``output_context``.
         """
+        self.output_checks = output_checks
+        self.output_context = output_context or OutputContext()
         strings = list(data)
         customer = list(customer_texts)
         self.facts = Evidence.from_strings(strings, _CLAIM_RULED, customer)
@@ -119,16 +196,41 @@ class ChatEvidence:
 
     @classmethod
     def from_transcript(
-        cls, transcript: Iterable[TranscriptItem], *, approval_resolved: bool = False
+        cls,
+        transcript: Iterable[TranscriptItem],
+        *,
+        approval_resolved: bool = False,
+        output_checks: OutputChecks = NOOP_OUTPUT_CHECKS,
+        canary: str | None = None,
+        system_prompt: str = "",
     ) -> Self:
-        """Evidence of every trusted tool result and every customer message of the state."""
+        """Evidence of every trusted tool result and every customer message of the state.
+
+        The leak checks also get the run's ``canary``, its rendered ``system_prompt`` and the ids
+        seen in the conversation (``seen_ids``).
+        """
         items = list(transcript)
         return cls(
             (leaf for item in items for leaf in _data_leaves(item)),
             (item.text for item in items if isinstance(item, UserTurn)),
             (order for item in items for order in _cancelled_orders(item)),
             approval_resolved=approval_resolved,
+            output_checks=output_checks,
+            output_context=OutputContext(
+                canary=canary, seen_ids=seen_ids(items), system_prompt=system_prompt
+            ),
         )
+
+
+def seen_ids(transcript: Iterable[TranscriptItem]) -> frozenset[str]:
+    """The UUIDs the customer typed or any tool result returned in the conversation (FR-008)."""
+    texts: list[str] = []
+    for item in transcript:
+        if isinstance(item, UserTurn):
+            texts.append(item.text)
+        elif isinstance(item, ToolResultItem):
+            texts.extend(json_leaves(item.payload))
+    return extract_ids(texts)
 
 
 def _data_leaves(item: TranscriptItem) -> Iterator[str]:
@@ -193,13 +295,15 @@ def _broken_rules(text: str, evidence: ChatEvidence) -> Iterator[ChatRule]:
         yield ChatRule.CANCELLATION_CLAIM
     if evidence.approval_resolved and has_awaiting_approval_language(text):
         yield ChatRule.APPROVAL_LANGUAGE
+    for event in evidence.output_checks.check(text, evidence.output_context):
+        yield ChatRule(event.rule)
 
 
 def check_segment(text: str, evidence: ChatEvidence) -> tuple[ChatRule, ...]:
     """The rules one segment breaks, once each; empty when it may be sent."""
-    return tuple(_broken_rules(text, evidence))
+    return tuple(dict.fromkeys(_broken_rules(text, evidence)))
 
 
 def check_answer(text: str, evidence: ChatEvidence) -> tuple[ChatRule, ...]:
     """The rules the whole answer breaks (a rule may span segments); empty when it is safe."""
-    return tuple(_broken_rules(text, evidence))
+    return tuple(dict.fromkeys(_broken_rules(text, evidence)))

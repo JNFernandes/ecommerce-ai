@@ -1,0 +1,173 @@
+{
+  "version": "v1",
+  "rules": [
+    {
+      "name": "instruction_override",
+      "category": "instruction_override",
+      "severity": "high",
+      "patterns": [
+        "\\b(ignore|disregard|forget|override|bypass|skip|drop)\\b.{0,40}\\b(previous|prior|above|earlier|preceding|all|your|the|system|any|those|these)\\b.{0,30}\\b(instructions?|rules?|prompts?|directives?|guidelines?|constraints?|guardrails?)\\b",
+        "\\bfrom now on,? you (will|must|are|shall)\\b.{0,60}\\b(ignore|obey|only|no longer|without)\\b",
+        "\\bnew (system )?(instructions|rules)\\s*:",
+        "\\b(ignore|ignora|ignorar|ignorem|esquece|esqueca|esquecer|desconsidere|desconsidera)\\b.{0,40}\\b(instrucoes|instrucao|regras|ordens|diretrizes|prompt)\\b",
+        "\\b(ignora|ignorar|ignore|ignoren|olvida|olvidar|olvide|descarta)\\b.{0,40}\\b(instrucciones|instruccion|reglas|ordenes|indicaciones|directrices)\\b",
+        "\\b(ignore|ignorez|ignorer|oublie|oubliez|oublier)\\b.{0,40}\\b(instructions?|regles|consignes|directives)\\b",
+        "\\b(ignoriere|ignorier|ignorieren|vergiss|vergesst|vergessen|missachte|missachten)\\b.{0,40}\\b(anweisungen|anweisung|regeln|vorgaben|instruktionen|richtlinien)\\b"
+      ]
+    },
+    {
+      "name": "fake_role_header",
+      "category": "instruction_override",
+      "severity": "high",
+      "patterns": [
+        "(^|\\n)\\s*\\[?(system|developer|admin|administrator|operator|sistema|systeme|entwickler)\\]?\\s*:",
+        "<\\s*/?\\s*(system|tool_result|instructions?)\\b",
+        "\\[\\s*/?\\s*(inst|system)\\s*\\]"
+      ]
+    },
+    {
+      "name": "roleplay_jailbreak",
+      "category": "roleplay_jailbreak",
+      "severity": "high",
+      "patterns": [
+        "\\bdo anything now\\b",
+        "\\bjailbr[eo]a?k",
+        "\\b(developer|god|admin|unrestricted|debug|sudo|dan) mode\\b",
+        "\\b(pretend|act|behave|roleplay|role-play|imagine)\\b.{0,40}\\b(no|without|unrestricted|unfiltered|uncensored|evil|any) (rules|limits|restrictions|filters|guidelines)\\b",
+        "\\byou are (now )?(no longer|not) (an?|the|my) (assistant|ai|bot|shop assistant)\\b",
+        "\\b(without|ignoring) (any |all |your )?(restrictions|filters|safety|guardrails|rules|limits)\\b",
+        "\\b(pretend|act as if|imagine) (you are|you're|to be) (an? )?(different|unrestricted|unfiltered|evil|other) (ai|assistant|model|bot)\\b",
+        "\\bmodo (desenvolvedor|deus|admin|administrador|irrestrito|sem restricoes|dan)\\b",
+        "\\bsem (nenhuma |quaisquer )?(regras|restricoes|limites|filtros)\\b",
+        "\\b(finja|finge|faz de conta|age como|aja como)\\b.{0,40}\\b(outra ia|outro assistente|sem regras|sem restricoes)\\b",
+        "\\bmodo (desarrollador|dios|administrador|sin restricciones|dan)\\b",
+        "\\bsin (ninguna |ningun )?(reglas|restricciones|limites|filtros)\\b",
+        "\\b(finge|finja|actua como|haz de cuenta)\\b.{0,40}\\b(otra ia|otro asistente|sin reglas|sin restricciones)\\b",
+        "\\bmode (developpeur|dieu|administrateur|sans restrictions?|dan)\\b",
+        "\\bsans (aucune |aucun )?(regles?|restrictions?|limites?|filtres?)\\b",
+        "\\b(fais semblant|faites semblant|joue le role|agis comme)\\b.{0,40}\\b(une autre ia|un autre assistant|sans regles|sans restrictions)\\b",
+        "\\b(entwicklermodus|gottmodus|admin-?modus|dan-?modus)\\b",
+        "\\bohne (jegliche |irgendwelche |alle )?(regeln|einschrankungen|grenzen|filter)\\b",
+        "\\b(tu so als|stell dir vor,? du bist|spiel die rolle)\\b",
+        "\\byou are (now )?(dan|stan|dude|aim|mongo tom|evil ?bot|chaos ?gpt)\\b",
+        "\\b(act|pretend|behave|play|roleplay|role-play) (as|like|to be) (dan|stan|dude|aim)\\b",
+        "\\b(grandma|grandmother|grandpa|grandfather|avo|avó|abuela|abuelo|grand-mere|oma|opa)\\b.{0,60}\\b(read|tell|told|recite|say|said)\\b.{0,40}\\b(api[\\s_-]*keys?|passwords?|secrets?|tokens?|credentials|prompt)\\b"
+      ]
+    },
+    {
+      "name": "prompt_extraction",
+      "category": "extraction",
+      "severity": "high",
+      "patterns": [
+        "\\bsystem[\\s_-]*(prompt|message|instructions?)\\b",
+        "\\b(print|show|reveal|repeat|display|output|tell|give|leak|dump|write|share|recite|list|what (is|are|were))\\b.{0,40}\\b(your|the|initial|hidden|original|secret|developer|first)\\b.{0,20}\\b(prompt|instructions|rules you were given)\\b",
+        "\\b(verbatim|word for word)\\b.{0,40}\\b(prompt|instructions|above)\\b",
+        "\\b(everything|text|all) (above|before) (this|my) (message|line)\\b",
+        "\\b(prompt|instrucoes|mensagem|regras) (do|de) sistema\\b",
+        "\\b(instrucoes|regras) (iniciais|ocultas|secretas|originais)\\b",
+        "\\b(mostra|mostre|mostrar|revela|revele|revelar|repete|repita|imprime|imprima|diz|diga)\\b.{0,30}\\b(o teu|o seu|seu|teu) prompt\\b",
+        "\\b(prompt|instrucciones|mensaje|reglas) (del|de) sistema\\b",
+        "\\b(instrucciones|reglas) (iniciales|ocultas|secretas|originales)\\b",
+        "\\b(muestra|muestrame|revela|repite|imprime|dime)\\b.{0,30}\\b(tu) prompt\\b",
+        "\\b(prompt|instructions|message|regles) (du|de) systeme\\b",
+        "\\b(instructions|consignes|regles) (initiales|cachees|secretes|originales)\\b",
+        "\\b(montre|montrez|revele|revelez|repete|repetez|affiche|affichez)\\b.{0,30}\\b(ton|votre) prompt\\b",
+        "\\bsystem-?(prompt|anweisungen|nachricht)\\b",
+        "\\b(versteckten|geheimen|ursprunglichen|anfanglichen) (anweisungen|regeln)\\b",
+        "\\b(zeig|zeige|verrate|wiederhole|gib)\\b.{0,30}\\b(deinen|dein) prompt\\b"
+      ]
+    },
+    {
+      "name": "secret_extraction",
+      "category": "extraction",
+      "severity": "high",
+      "patterns": [
+        "\\b(show|give|print|reveal|tell|leak|dump|list|send|share|what (is|are))\\b.{0,30}\\b(api[\\s_-]*keys?|secret[\\s_-]*keys?|access[\\s_-]*tokens?|credentials|env(ironment)?[\\s_-]*var(iable)?s?|\\.env\\b|database (password|url|credentials)|connection string|bearer tokens?|jwts?|anthropic[\\s_-]*(api[\\s_-]*)?key|private key)",
+        "\\b(your|the service's|the server's|the admin's) (jwt|bearer|access|auth) token\\b",
+        "\\b(chaves?|chave) (da|de) api\\b",
+        "\\b(senha|credenciais) (do|da) (banco|base de dados|servidor|sistema)\\b",
+        "\\bvariaveis de ambiente\\b",
+        "\\b(claves?|llaves?) (de )?(la )?api\\b",
+        "\\b(contrasena|credenciales) (de la|del) (base de datos|servidor|sistema)\\b",
+        "\\bvariables de entorno\\b",
+        "\\b(cles?|cle) (d'|de l'|de )?api\\b",
+        "\\b(mot de passe|identifiants) (de la|du) (base de donnees|serveur|systeme)\\b",
+        "\\bvariables d'environnement\\b",
+        "\\bapi-?schlussel\\b",
+        "\\b(passwort|zugangsdaten) (der|des) (datenbank|servers|systems)\\b",
+        "\\bumgebungsvariablen\\b"
+      ]
+    },
+    {
+      "name": "impersonation",
+      "category": "impersonation",
+      "severity": "high",
+      "patterns": [
+        "\\b(i am|i'm|this is|acting as|speaking as|logged in as)\\b.{0,15}\\b(an? |the |your )?(admin|administrator|developer|operator|support (staff|agent)|staff member|superuser|root|another (user|customer)|a different (user|customer))\\b",
+        "\\b(i am|i'm|acting as|on behalf of|logged in as|as)\\b.{0,10}\\b(user|customer)( id)?\\s*[:#]?\\s*[0-9a-f][0-9a-f-]{5,}",
+        "\\b(switch|change|set)\\b.{0,10}\\b(my )?(user|account|identity|role|customer)( id)? to\\b",
+        "\\bmy role is (now )?(admin|administrator|staff|support|developer|operator)\\b",
+        "\\b(sou|eu sou)\\b.{0,10}\\b(o |a |um |uma )?(administrador|admin|desenvolvedor|operador|suporte|outro (cliente|usuario|utilizador))\\b",
+        "\\bem nome (do|de|da) (outro |outra )?(cliente|usuario|utilizador|conta)\\b",
+        "\\b(soy|yo soy)\\b.{0,10}\\b(el |la |un |una )?(administrador|admin|desarrollador|operador|soporte|otro (cliente|usuario))\\b",
+        "\\ben nombre de(l)? (otro |otra )?(cliente|usuario|cuenta)\\b",
+        "\\bje suis\\b.{0,10}\\b(l'|le |la |un |une )?(administrateur|admin|developpeur|operateur|support|un autre (client|utilisateur))\\b",
+        "\\bau nom (d'un autre|du|de l'autre|d'un) (client|utilisateur)\\b",
+        "\\bich bin\\b.{0,10}\\b(der |die |ein |eine )?(administrator|admin|entwickler|betreiber|support|ein anderer (kunde|benutzer|nutzer))\\b",
+        "\\bim namen (eines anderen|des|eines) (kunden|benutzers|nutzers)\\b"
+      ]
+    },
+    {
+      "name": "approval_on_behalf",
+      "category": "approval_on_behalf",
+      "severity": "low",
+      "patterns": [
+        "\\bi (hereby |already |do )?(approve|authori[sz]e|confirm|pre-?approve)\\b.{0,30}\\b(go ahead|in advance|already|beforehand|everything|all of them|without asking|automatically|any (cancellation|request))",
+        "\\b(skip|bypass|don't ask for|do not ask for|no need for|no need to ask for|without)\\b.{0,20}\\b(the )?(approval|confirmation)\\b",
+        "\\b(consider|treat|mark) (it|this|them|the request) (as )?(approved|confirmed)\\b",
+        "\\bpre-?approved\\b",
+        "\\bauto-?approve",
+        "\\b(eu )?(ja )?(aprovo|autorizo|confirmo)\\b.{0,30}\\b(antecipadamente|previamente|de antemao|tudo|todos|pode avancar|pode seguir|sem perguntar)\\b",
+        "\\bsem (pedir |precisar de )?(aprovacao|confirmacao)\\b",
+        "\\b(pula|pule|ignora|ignore|salta|salte) (a )?(aprovacao|confirmacao)\\b",
+        "\\b(ya )?(apruebo|autorizo|confirmo)\\b.{0,30}\\b(de antemano|por adelantado|todo|todos|adelante|sin preguntar)\\b",
+        "\\bsin (pedir |necesidad de )?(aprobacion|confirmacion)\\b",
+        "\\b(salta|saltate|omite|ignora) (la )?(aprobacion|confirmacion)\\b",
+        "\\bj'?(approuve|autorise|confirme)\\b.{0,30}\\b(a l'avance|d'avance|deja|tout|tous|vas-y|allez-y|sans demander)",
+        "\\bsans (demander )?(d')?(approbation|confirmation|validation)\\b",
+        "\\bich (genehmige|bestatige|autorisiere)\\b.{0,30}\\b(im voraus|vorab|bereits|alles|alle|mach weiter|ohne nachzufragen)\\b",
+        "\\bohne (bestatigung|genehmigung|nachfrage|ruckfrage|freigabe)\\b"
+      ]
+    },
+    {
+      "name": "other_customers_data",
+      "category": "other_customers_data",
+      "severity": "high",
+      "patterns": [
+        "\\b(other|another|different|all|every) (customers?|users?|clients?|people|accounts?|buyers?)('s|'|s')\\s*(orders|data|addresses|address|emails|e-mails|details|information|info|notifications|history|purchases|phone numbers?)\\b",
+        "\\b(someone|somebody|anyone|everyone|everybody) else's (orders|data|address|addresses|emails|details|information|notifications|purchases)\\b",
+        "\\b(orders|data|addresses|address|emails|details|information|notifications|purchases)\\b.{0,15}\\b(of|from|for|belonging to)\\b.{0,6}\\b(an?other|other|different|all|every) (customers?|users?|clients?|people|accounts?)\\b",
+        "\\b(show|list|give|get|see|access|read|look up|fetch|dump|export)\\b.{0,20}\\b(other|another|different|all) (customers|users|accounts|clients)\\b",
+        "\\b(pedidos|dados|enderecos|emails|e-mails|encomendas|informacoes|notificacoes|compras)\\b.{0,20}\\b(de |dos |das )?(outros?|outras?|todos os|outro|outra|doutros?) (clientes?|usuarios?|utilizadores?|pessoas?|contas?)\\b",
+        "\\b(mostra|mostre|lista|liste|ver|aceder|acessar|da-me|me de|quero)\\b.{0,20}\\b(outros?|outras?) (clientes|usuarios|utilizadores|contas)\\b",
+        "\\b(pedidos|datos|direcciones|correos|informacion|notificaciones|ordenes|compras)\\b.{0,20}\\b(de )?(otros?|otras?|todos los|otro|otra) (clientes?|usuarios?|personas?|cuentas?)\\b",
+        "\\b(muestra|muestrame|lista|ver|acceder|dame|quiero)\\b.{0,20}\\b(otros?|otras?) (clientes|usuarios|cuentas)\\b",
+        "\\b(commandes|donnees|adresses|e-?mails|informations|notifications|achats)\\b.{0,20}\\b(des |d')?(autres?|tous les|d'un autre|d'autres|un autre) (clients?|utilisateurs?|personnes?|comptes?)\\b",
+        "\\b(montre|montrez|affiche|liste|voir|acceder|donne)\\b.{0,20}\\b(d'autres|les autres|un autre) (clients|utilisateurs|comptes|client|utilisateur)\\b",
+        "\\b(bestellungen|daten|adressen|e-?mails|informationen|benachrichtigungen|kaufe)\\b.{0,20}\\b(anderer|anderen|aller|eines anderen) (kunden|benutzer|nutzer|personen|konten)\\b",
+        "\\b(zeig|zeige|liste|gib)\\b.{0,20}\\b(andere|anderen|alle) (kunden|benutzer|nutzer|konten)\\b",
+        "\\b(customer|user|client|account|cliente|utilizador|usuario|kunde|kunden|benutzer)[\\s_-]*(id|number|no|#)?\\s*[:#=]?\\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
+        "\\b(orders|data|addresses|address|emails|details|information|notifications|purchases|history)\\b.{0,15}\\b(of|from|for|belonging to)\\b.{0,6}\\b(customer|user|client)\\b\\s*(id\\b)?\\s*[:#=]?\\s*[0-9a-f]{6,}"
+      ]
+    },
+    {
+      "name": "obfuscated_payload",
+      "category": "obfuscation",
+      "severity": "medium",
+      "patterns": [
+        "\\b(decode|decodifica|decodifique|descodifica|descodifique|decodifie|decodez|dekodiere|entschlussele)\\b.{0,60}\\b(and|then|e|y|et|und|luego|depois|puis|dann)\\b.{0,20}\\b(follow|execute|run|do|obey|apply|segue|siga|executa|execute|sigue|ejecuta|obedece|suis|suivez|executez|befolge|fuhre|folge)",
+        "\\b(rot13|rot-13|base64|base-64|hex|hexadecimal|morse|reversed|backwards)\\b.{0,40}\\b(instructions?|commands?|follow|execute|obey|instrucoes|instrucciones|anweisungen)\\b"
+      ]
+    }
+  ]
+}

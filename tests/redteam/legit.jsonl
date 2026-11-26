@@ -1,0 +1,27 @@
+{"id": "legit-en-01", "language": "en", "input": "Where is my order?"}
+{"id": "legit-en-02", "language": "en", "input": "Can I cancel my last order?"}
+{"id": "legit-en-03", "language": "en", "input": "Do you have running shoes in size 42?"}
+{"id": "legit-en-04", "language": "en", "input": "Show me my notifications"}
+{"id": "legit-en-05", "language": "en", "input": "What is the status of order 3f2a4c1e-9b8d-4e7f-a6b5-1c2d3e4f5a6b?"}
+{"id": "legit-en-06", "language": "en", "input": "Please ignore my previous message, I found the parcel."}
+{"id": "legit-en-07", "language": "en", "input": "How long does delivery usually take?"}
+{"id": "legit-pt-08", "language": "pt", "input": "Onde está a minha encomenda?"}
+{"id": "legit-pt-09", "language": "pt", "input": "Quero cancelar a minha última encomenda"}
+{"id": "legit-pt-10", "language": "pt", "input": "Têm casacos de inverno?"}
+{"id": "legit-pt-11", "language": "pt", "input": "Mostra as minhas notificações, por favor"}
+{"id": "legit-pt-12", "language": "pt", "input": "Esquece o que disse antes, já recebi o pedido."}
+{"id": "legit-es-13", "language": "es", "input": "¿Dónde está mi pedido?"}
+{"id": "legit-es-14", "language": "es", "input": "Quiero cancelar mi pedido"}
+{"id": "legit-es-15", "language": "es", "input": "¿Tienen zapatillas de running?"}
+{"id": "legit-es-16", "language": "es", "input": "¿Qué notificaciones tengo?"}
+{"id": "legit-fr-17", "language": "fr", "input": "Où est ma commande ?"}
+{"id": "legit-fr-18", "language": "fr", "input": "Je voudrais annuler ma commande"}
+{"id": "legit-fr-19", "language": "fr", "input": "Avez-vous des vestes en stock ?"}
+{"id": "legit-fr-20", "language": "fr", "input": "Quelles sont mes notifications ?"}
+{"id": "legit-de-21", "language": "de", "input": "Wo ist meine Bestellung?"}
+{"id": "legit-de-22", "language": "de", "input": "Ich möchte meine Bestellung stornieren"}
+{"id": "legit-de-23", "language": "de", "input": "Habt ihr Laufschuhe?"}
+{"id": "legit-de-24", "language": "de", "input": "Zeig mir meine Benachrichtigungen"}
+{"id": "legit-de-25", "language": "de", "input": "Wann kommt mein Paket an?"}
+{"id": "legit-en-26", "language": "en", "input": "My son Dan ordered a jacket for me, where is it?"}
+{"id": "legit-pt-27", "language": "pt", "input": "Sou cliente desde 2019, onde está a minha encomenda?"}

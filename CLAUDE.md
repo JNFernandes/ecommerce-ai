@@ -61,7 +61,7 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 - `api`: routers and schemas, I/O only (auth, validation, SSE). One agent entry point per route.
   `auth.py` (`require_caller`, shared 401/403/503 bodies with `/mcp`), `chat.py` (`/chat` routes,
   `{code, message}` errors, `ChatHttpCode`), `sse.py` (framer: ids from 1, keep-alive,
-  `CancelledError` → disconnect), `rate_limit.py` (`SlidingWindowLimiter`, before DB work), `body_limit.py` (16 KB on `/chat`, 413
+  `CancelledError` → disconnect), the per-user minute limit (`infrastructure/rate_limit.py::SlidingWindowLimiter`, before DB work), `body_limit.py` (16 KB on `/chat`, 413
   `PAYLOAD_TOO_LARGE`, replaces the gateway's buffering limit; later receives pass through).
 - `agents`: graphs, nodes, state, prompts. No HTTP/Kafka/SQL; outside world only via tools or
   `typing.Protocol` ports. Domain decisions (triage cause, suggested action, gatekeeper) live here.
@@ -90,6 +90,15 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   the state's arguments; `ChatGraph.resume`/`close_approval`. `ChatService.decide` records the
   decision atomically before resuming (shielded from disconnect), closes expired/orphaned
   approvals lazily, withdraws on delete; one `chat_approval` log line per proposal and decision.
+- `agents/guardrails` (US-07): `Guardrails` bundle (`input_guard`, `tool_result_guard`,
+  `output_checks`, `tool_guard`, `canary_factory`, each with a `NOOP`; built by
+  `main.py::build_guardrails`), `events.py` (`GuardEvent` stage/rule/action/severity, ports
+  `GuardrailEventStore`/`UserUsageStore`/`RateWindow`), `normalizer.py`, `input_rules.py` +
+  `rules/input.v1.json` (versioned, SHA-pinned), `output_checks.py` (`LeakChecks`), `tool_guard.py`
+  (`CallGuard`: allowlist, seen ids for `cancel_order`, loops), `canary.py`, `quotas.py`
+  (`UserQuotas`: cooldown → minute in the API dependency, day in `ChatService.start`; cooldown
+  event after the audit). `RunAllowance` reserves the user budget then the global one
+  (`denied_scope`); `ActiveStreams` holds one stream per user; 429s carry `scope`.
 - `tools`: MCP server and tools, one documented endpoint each. `invoker.py::ToolInvoker` runs a
   tool in process (allowlist, input validation, timeout, error mapping) for `/mcp` and the chat;
   `invoke` refuses mutating tools, only `invoke_approved` runs them (no retry). `tools/mutating/`:
@@ -114,7 +123,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `inbound_dead_letters`, `triage_results`, `outbox_events`, `llm_token_usage`, `chat_conversations`,
   `chat_messages`, `chat_checkpoints`, `chat_checkpoint_writes` (migration 0003), `chat_approvals`
   (cascade with the conversation, one `pending` per conversation) and append-only `chat_actions`
-  (audit, trigger-enforced, migration 0004).
+  (audit, trigger-enforced, migration 0004); migration 0005: append-only `guardrail_events` (no
+  FK, no content), `chat_user_usage` (per user and UTC day), `chat_conversations.tool_allowlist`;
+  `GuardrailEventRepository`, `UserUsageRepository` (conditional token upsert).
 - `infrastructure/llm/anthropic_model.py`: `AnthropicTriageModel` (`messages.parse`,
   `output_format=DraftOutput`, `max_retries=0`, per-call timeout, effort; refusal/truncation/schema
   → `ModelOutputInvalid`, API errors → `ModelUnavailable`); `build_anthropic_model(settings)`.
@@ -130,8 +141,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   the lifespan and stops them (cancel after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before closing
   the LLM client and disposing the engine.
 - Prompts live in versioned files under `agents/prompts/` (`triage.v1.md`, `assistant.v1.md`,
-  `assistant.v2.md` (US-06 approval rules), `assistant.v3.md` (active: calls `cancel_order`
-  directly for a named or single clear order, never asks in the chat first), loaded by
+  `assistant.v2.md` (US-06 approval rules), `assistant.v3.md` (calls `cancel_order` directly for
+  a named or single clear order), `assistant.v4.md` (active: v3 + per-run `{canary}` slot and
+  truncation note), loaded by
   `loader.py::load_prompt`, SHA-256 pinned by a test), immutable once released; never inline
   prompt strings in Python.
 
@@ -156,7 +168,10 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `POST /chat/conversations/{id}/messages` → SSE (409 `APPROVAL_PENDING` while an approval is
   pending); US-06 `POST /chat/conversations/{id}/approvals/{approvalId}` (`{decision}`, same rate
   and body limits) → SSE continuation; the detail carries `pendingApproval`. Settings
-  `APPROVAL_TTL_SECONDS`, `CANCEL_PROPOSALS_PER_HOUR`. Frozen contract `docs/chat-contract.md`, checked
+  `APPROVAL_TTL_SECONDS`, `CANCEL_PROPOSALS_PER_HOUR`. US-07 settings: `USER_DAILY_TOKEN_BUDGET`,
+  `USER_MESSAGES_PER_MINUTE`/`_PER_DAY`, `TOOL_RESULT_MAX_CHARS`, `GUARD_VIOLATION_THRESHOLD`,
+  `GUARD_VIOLATION_WINDOW_SECONDS`, `GUARD_COOLDOWN_SECONDS`, `GUARD_LLM_CLASSIFIER` (no effect);
+  guard rows and logs never carry text, tool data, the canary or tokens. Frozen contract `docs/chat-contract.md`, checked
   by `tests/contract/test_chat_contract.py`; change both together. Chat settings: `CHAT_*`
   (keep-alive, per-message token cap, rate limit, tool rounds, max messages); tools reuse
   `TOOL_TIMEOUT_SECONDS`; the budget is the shared `DAILY_TOKEN_BUDGET`. Chat logs never carry
@@ -213,6 +228,11 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   truncated per test. Live-model tests get the `live_llm` marker (excluded by default;
   `tests/integration/test_live_llm.py`: triage per cause + one assistant answer, needs
   `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` in the env). Assistant evals: US-09 (TODO(EVAL_SUITE)).
+- `tests/redteam/` (default run): `cases.jsonl` (48, 11 categories) and `legit.jsonl` (27, five
+  languages) via `loader.py`; `runner.py` runs a case through `chat_graph` with
+  `CompromisedChatModel` and the production guards; `test_guard_coverage.py` swaps each guard for
+  its `NOOP` and expects a failure; `test_redteam_live.py` is `live_llm`. Grow the corpus with
+  every new finding.
 - Drive the app with an httpx `AsyncClient` over `ASGITransport`, building it with
   `create_app(probes=[...])`. `create_app` reconfigures logging, so tests capturing logs call
   `configure_logging("INFO", stream)` after building the app.
@@ -245,7 +265,7 @@ layers (evals) extend `ci.yml` in the story that adds them. The image's entrypoi
 
 - ADRs in `docs/adr/` (template `docs/adr/template.md`, index `docs/adr/README.md`). Current: 0001
   token passthrough, 0002 human-in-the-loop, 0003 fallback and cost caps, 0004 evals as release
-  gate.
+  gate, 0005 layered guardrails. Threat model: `docs/threat-model.md` (OWASP LLM mapping).
 - Keep `README.md`, this file and the `Dockerfile` up to date with every behaviour change.
 - Constitution 2.0.0 (US-04): IV one result per order + outbox relay, `modelId` null on fallback;
   VI interim LLM gate until US-09 (gatekeeper/injection tests, pinned prompt hash, `live_llm`);

@@ -193,6 +193,10 @@ class ConversationStore(Protocol):
         """Delete the conversation, its messages and its graph state; ``False`` when unknown."""
         ...
 
+    async def find(self, user_id: str, conversation_id: UUID) -> Conversation | None:
+        """The conversation without its messages (with its tool allowlist), or ``None``."""
+        ...
+
     async def count_messages(self, user_id: str, conversation_id: UUID) -> int | None:
         """Number of stored messages, or ``None`` when the conversation is unknown."""
         ...

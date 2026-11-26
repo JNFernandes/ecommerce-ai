@@ -28,6 +28,9 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from ecommerce_ai.agents.guardrails.events import GuardEvent
+from ecommerce_ai.agents.guardrails.quotas import QuotaScope
+
 
 class FinishReason(StrEnum):
     """How an answer ended; ``client_disconnected`` is stored, never sent."""
@@ -37,6 +40,8 @@ class FinishReason(StrEnum):
     TOOL_LIMIT = "tool_limit"
     CLIENT_DISCONNECTED = "client_disconnected"
     AWAITING_APPROVAL = "awaiting_approval"
+    BLOCKED = "blocked"
+    TOOL_LOOP = "tool_loop"
 
 
 SENT_FINISH_REASONS: Final = frozenset(
@@ -45,6 +50,8 @@ SENT_FINISH_REASONS: Final = frozenset(
         FinishReason.REPLACED,
         FinishReason.TOOL_LIMIT,
         FinishReason.AWAITING_APPROVAL,
+        FinishReason.BLOCKED,
+        FinishReason.TOOL_LOOP,
     }
 )
 """Finish reasons a ``message.end`` event may carry."""
@@ -282,11 +289,20 @@ class StreamError(_Event):
     EVENT: ClassVar[str] = "error"
     code: ChatErrorCode = Field(description="Error code.")
     message: str = Field(description="Fixed, customer-safe message of the code.")
+    scope: QuotaScope | None = Field(
+        default=None,
+        description="`user` or `global`: whose limit `BUDGET_EXCEEDED`/`RATE_LIMITED` hit.",
+    )
 
     @classmethod
-    def for_code(cls, code: ChatErrorCode) -> "StreamError":
-        """The error event of ``code`` with its fixed message."""
-        return cls(code=code, message=ERROR_MESSAGES[code])
+    def for_code(cls, code: ChatErrorCode, scope: QuotaScope | None = None) -> "StreamError":
+        """The error event of ``code`` with its fixed message (and ``scope`` for limit errors)."""
+        limited = code in {ChatErrorCode.BUDGET_EXCEEDED, ChatErrorCode.RATE_LIMITED}
+        return cls(code=code, message=ERROR_MESSAGES[code], scope=scope if limited else None)
+
+    def data(self) -> dict[str, JsonValue]:
+        """The payload; ``scope`` only on the limit errors."""
+        return self.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 class ApprovalSummary(_Camel):
@@ -427,6 +443,8 @@ class RunOutcome(_Frozen):
     execution: ApprovalExecution | None = None
     violations: tuple[str, ...] = ()
     """Names of the gatekeeper rules the answer broke, once each, in order."""
+    guard_events: tuple[GuardEvent, ...] = ()
+    """What the guards did during the run (US-07), in order; content-free."""
 
     @model_validator(mode="after")
     def _one_ending(self) -> Self:
@@ -447,6 +465,9 @@ class Conversation(_Frozen):
     title: str | None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    tool_allowlist: tuple[str, ...] | None = None
+    """Tools the conversation may call, set on create (US-07 FR-010); ``None``: no allowlist
+    (only stores without one, in tests). Never part of the HTTP responses."""
 
 
 class StoredMessage(_Frozen):

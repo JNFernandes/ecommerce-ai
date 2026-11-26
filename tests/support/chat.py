@@ -25,6 +25,8 @@ from ecommerce_ai.agents.assistant.ports import (
     ToolRunner,
     ToolSpec,
 )
+from ecommerce_ai.agents.guardrails import Guardrails
+from ecommerce_ai.agents.guardrails.events import GuardrailEventStore, UserUsageStore
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
 from ecommerce_ai.infrastructure.settings import Settings
@@ -32,7 +34,9 @@ from ecommerce_ai.main import create_app
 from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
+    InMemoryGuardrailEventStore,
     InMemoryTokenBudget,
+    InMemoryUserUsageStore,
 )
 
 UNLIMITED_BUDGET = 10**9
@@ -188,13 +192,24 @@ def chat_graph(
     model: ChatModel | None,
     tools: ToolRunner | None = None,
     checkpointer: Checkpointer | None = None,
+    guardrails: Guardrails | None = None,
 ) -> ChatGraph:
-    """The chat graph with the real prompt, fake tools and an in-memory saver by default."""
+    """The chat graph with the real prompt, fake tools and an in-memory saver by default.
+
+    ``guardrails`` default to ``Guardrails.noop()``.
+    """
     return ChatGraph(
         model=model,
         tools=tools or FakeToolRunner(),
         prompt=load_assistant_prompt(),
         checkpointer=checkpointer or InMemorySaver(),
+        guardrails=guardrails,
+    )
+
+
+def _guard_store(clock: Clock | None) -> InMemoryGuardrailEventStore:
+    return (
+        InMemoryGuardrailEventStore() if clock is None else InMemoryGuardrailEventStore(clock.now)
     )
 
 
@@ -207,10 +222,15 @@ def chat_app(
     approvals: ApprovalStore | None = None,
     clock: Clock | None = None,
     settings: Settings | None = None,
+    guard_store: GuardrailEventStore | None = None,
+    guardrails: Guardrails | None = None,
+    user_usage: UserUsageStore | None = None,
 ) -> FastAPI:
     """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
 
-    Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used.
+    Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used; without
+    ``guard_store`` a fresh ``InMemoryGuardrailEventStore`` (stamped by ``clock`` when given);
+    without ``user_usage`` a fresh ``InMemoryUserUsageStore``.
     """
     conversations = store or InMemoryConversationStore()
     return create_app(
@@ -223,4 +243,12 @@ def chat_app(
         token_budget=budget or InMemoryTokenBudget(UNLIMITED_BUDGET),
         approval_store=approvals or InMemoryApprovalStore(conversations),
         clock=clock,
+        guard_store=guard_store
+        or (
+            InMemoryGuardrailEventStore()
+            if clock is None
+            else InMemoryGuardrailEventStore(clock.now)
+        ),
+        guardrails=guardrails,
+        user_usage_store=user_usage or InMemoryUserUsageStore(),
     )

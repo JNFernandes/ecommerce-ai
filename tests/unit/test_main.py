@@ -58,8 +58,10 @@ from tests.support.sse import events_of, parse_sse
 from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
+    InMemoryGuardrailEventStore,
     InMemoryOutboxStore,
     InMemoryTriageCaseQueue,
+    InMemoryUserUsageStore,
 )
 from tests.support.tokens import jwks, make_token
 from tests.support.triage import NOW, make_case
@@ -421,8 +423,13 @@ def test_should_serve_the_chat_routes_on_the_database_repository_when_no_store_i
     real = ConversationRepository
     built: list[ConversationRepository] = []
 
-    def recording_repository(engine: AsyncEngine) -> ConversationRepository:
-        built.append(real(engine))
+    allowlists: list[Sequence[str]] = []
+
+    def recording_repository(
+        engine: AsyncEngine, tool_allowlist: Sequence[str]
+    ) -> ConversationRepository:
+        allowlists.append(tool_allowlist)
+        built.append(real(engine, tool_allowlist))
         return built[-1]
 
     monkeypatch.setattr(main, "ConversationRepository", recording_repository)
@@ -430,6 +437,15 @@ def test_should_serve_the_chat_routes_on_the_database_repository_when_no_store_i
     app = create_app(probes=[])
 
     assert len(built) == 1
+    # New conversations may call exactly the chat-exposed tools (US-07 FR-010).
+    assert set(allowlists[0]) == {
+        "get_order",
+        "list_my_orders",
+        "list_products",
+        "get_product",
+        "list_my_notifications",
+        "cancel_order",
+    }
     paths = set(app.openapi()["paths"])
     assert {"/chat/conversations", "/chat/conversations/{conversation_id}"} <= paths
 
@@ -442,6 +458,8 @@ async def test_should_end_chat_llm_unavailable_without_model_kafka_or_database()
         conversation_store=store,
         checkpointer=InMemorySaver(),
         approval_store=InMemoryApprovalStore(store),
+        guard_store=InMemoryGuardrailEventStore(),
+        user_usage_store=InMemoryUserUsageStore(),
     )
     headers = {"Authorization": f"Bearer {make_token(sub='user-1')}"}
     with respx.mock(assert_all_called=False) as router:

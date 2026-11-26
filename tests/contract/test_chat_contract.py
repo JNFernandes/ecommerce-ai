@@ -15,6 +15,7 @@ import pytest
 from pydantic import BaseModel
 
 from ecommerce_ai.agents.assistant.approvals import Refusal, outcome_summary, refusal_summary
+from ecommerce_ai.agents.assistant.gatekeeper import BLOCKED_REFUSAL
 from ecommerce_ai.agents.assistant.model import (
     ERROR_MESSAGES,
     STREAM_EVENT_TYPES,
@@ -22,6 +23,7 @@ from ecommerce_ai.agents.assistant.model import (
     ChatErrorCode,
     FinishReason,
 )
+from ecommerce_ai.agents.guardrails.tool_guard import TOOL_GUARD_SUMMARY
 from ecommerce_ai.api.chat import (
     HTTP_MESSAGES,
     PREFIX,
@@ -181,3 +183,11 @@ def test_should_document_every_cancel_order_summary() -> None:
     }
 
     assert all(f"`{phrase}`" in DOC for phrase in phrases)
+
+
+def test_should_document_the_fixed_blocked_refusal() -> None:
+    assert BLOCKED_REFUSAL in " ".join(DOC.split())
+
+
+def test_should_document_the_fixed_tool_guard_summary() -> None:
+    assert f"`{TOOL_GUARD_SUMMARY}`" in " ".join(DOC.split())

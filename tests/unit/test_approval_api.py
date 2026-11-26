@@ -106,7 +106,7 @@ async def test_should_answer_413_when_the_decision_body_is_too_large(
 
 
 async def test_should_answer_429_when_decisions_come_too_fast() -> None:
-    harness = ApprovalHarness(settings=Settings(chat_rate_limit_messages=1))
+    harness = ApprovalHarness(settings=Settings(user_messages_per_minute=1))
     async with harness.client() as client:
         conversation_id, approval_id, _ = await harness.propose(client)
         response = await harness.decide(client, conversation_id, approval_id)

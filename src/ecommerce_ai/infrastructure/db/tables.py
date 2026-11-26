@@ -1,4 +1,4 @@
-"""SQLAlchemy Core tables of the triage intake, results, outbox, token budget, chat and approvals.
+"""Core tables of the triage intake, results, outbox, token budget, chat, approvals and guards.
 
 The schema itself is created only by Alembic revisions (``migrations/versions``); these
 definitions are what the repositories query, and must match the latest revision.
@@ -26,7 +26,7 @@ from sqlalchemy import (
     Uuid,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from ecommerce_ai.agents.assistant.model import (
     ApprovalOutcome,
@@ -35,6 +35,7 @@ from ecommerce_ai.agents.assistant.model import (
     MessageRole,
 )
 from ecommerce_ai.agents.assistant.ports import ApprovalStatus
+from ecommerce_ai.agents.guardrails.events import GuardAction, GuardSeverity, GuardStage
 from ecommerce_ai.agents.triage.model import (
     EXPLANATION_MAX_CHARS,
     MAX_REVISIONS,
@@ -189,6 +190,7 @@ chat_conversations = Table(
     Column("title", String(200), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("tool_allowlist", ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")),
     CheckConstraint("title IS NULL OR char_length(title) >= 1", name="title_not_empty"),
     Index("ix_chat_conversations_user_id_updated_at", "user_id", "updated_at", "id"),
 )
@@ -303,3 +305,35 @@ chat_checkpoint_writes = Table(
     Column("type", Text, nullable=False),
     Column("value", LargeBinary, nullable=False),
 )
+
+guardrail_events = Table(
+    "guardrail_events",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("user_id", Text, nullable=False),
+    Column("conversation_id", Uuid, nullable=True),
+    Column("request_id", String(64), nullable=True),
+    Column("stage", String(8), nullable=False),
+    Column("rule", String(64), nullable=False),
+    Column("action", String(16), nullable=False),
+    Column("severity", String(8), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(_one_of("stage", GuardStage), name="stage"),
+    CheckConstraint(_one_of("action", GuardAction), name="action"),
+    CheckConstraint(_one_of("severity", GuardSeverity), name="severity"),
+    Index("ix_guardrail_events_user_id_created_at", "user_id", "created_at"),
+)
+"""Append-only audit of guard actions (US-07): no content, no foreign key, trigger-protected."""
+
+chat_user_usage = Table(
+    "chat_user_usage",
+    metadata,
+    Column("user_id", Text, primary_key=True),
+    Column("day", Date, primary_key=True),
+    Column("messages", Integer, nullable=False),
+    Column("tokens", BigInteger, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("messages >= 0", name="messages_not_negative"),
+    CheckConstraint("tokens >= 0", name="tokens_not_negative"),
+)
+"""Messages accepted and tokens reserved or spent per user and UTC day (US-07)."""

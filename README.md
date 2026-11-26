@@ -133,7 +133,7 @@ The frozen frontend contract (routes, SSE events, codes, fixed messages, example
 [`docs/chat-contract.md`](docs/chat-contract.md). Through the gateway the routes are
 `/api/ai/chat/...`. Request bodies over 16 KB get `413 PAYLOAD_TOO_LARGE` from the service itself,
 because the gateway's buffering body limit would hold back the stream. Posting a message stores it, then runs a
-LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v3.md`) whose state is
+LangGraph flow (`agents/assistant`, prompt `agents/prompts/assistant.v4.md`) whose state is
 checkpointed per conversation in PostgreSQL (`chat_checkpoints`, `chat_checkpoint_writes`), so a
 follow-up remembers earlier turns across restarts. The model (Anthropic, streamed) may call only
 the five read-only MCP tools, in process through `tools/invoker.py` with the caller's own token
@@ -144,10 +144,11 @@ Every sentence is checked by a deterministic gatekeeper before it is sent (no pr
 contacts or internal names, no ids, amounts or dates absent from tool results or the customer's
 own words, no HTML); a violating sentence and the rest of the answer are replaced by a fixed safe
 message (`finishReason: replaced`). More than `CHAT_MAX_TOOL_ROUNDS` tool rounds ends with
-`tool_limit`. Limits: one stream per conversation (`409 STREAM_ACTIVE`), `CHAT_MAX_MESSAGES` per
-conversation (`409 CONVERSATION_FULL`), `CHAT_RATE_LIMIT_MESSAGES` per `CHAT_RATE_LIMIT_WINDOW_SECONDS`
-per user (`429` + `Retry-After`), `CHAT_REQUEST_TOKEN_CAP` per message out of the shared
-`DAILY_TOKEN_BUDGET` (`error BUDGET_EXCEEDED`). Without a model every answer ends
+`tool_limit`. Limits: one stream per user across conversations (`409 STREAM_ACTIVE`),
+`CHAT_MAX_MESSAGES` per conversation (`409 CONVERSATION_FULL`), `USER_MESSAGES_PER_MINUTE` per
+minute and `USER_MESSAGES_PER_DAY` per UTC day per user (`429 {code, message, scope: "user"}` +
+`Retry-After`), `CHAT_REQUEST_TOKEN_CAP` per message out of the user's `USER_DAILY_TOKEN_BUDGET`
+and then the shared `DAILY_TOKEN_BUDGET` (`error BUDGET_EXCEEDED` with `scope` `user`/`global`). Without a model every answer ends
 `error LLM_UNAVAILABLE` (the user message is kept). A client that disconnects cancels the run;
 the text already sent is stored with `finishReason: client_disconnected`. One `chat_run` log line
 per answer (ids, latency, tokens, tool names/outcomes/durations, finish reason, prompt version,
@@ -181,6 +182,25 @@ orphaned and deleted-conversation approvals are closed lazily on the next touch 
 log line per proposal and per decision (ids, action, decision, outcome, hashed user). The gateway
 (ecommerce-infra) must route the decision endpoint like the message stream (no buffering limit);
 that route is a follow-up there.
+
+#### Guardrails (US-07)
+
+Deterministic layers ([ADR 0005](docs/adr/0005-layered-guardrails.md),
+[threat model](docs/threat-model.md)), injected as one `Guardrails` bundle (`agents/guardrails`):
+the input is normalised (NFKC, no zero-width/bidi characters) and checked against versioned rules
+(`rules/input.v1.json`, also over decoded base64/hex/leet variants); a match is answered with a
+fixed refusal (`finishReason: blocked`) without calling the model or spending tokens. Tool results
+are sanitised and capped at `TOOL_RESULT_MAX_CHARS`. Each run puts a fresh canary in the prompt;
+an answer leaking it, a token, a secret, an internal name or host, a foreign id or the prompt is
+replaced. The tool guard allows only the conversation's stored allowlist, proposes `cancel_order`
+only for ids the customer typed or a tool returned, and stops repeated identical calls
+(`finishReason: tool_loop`). `GUARD_VIOLATION_THRESHOLD` medium/high blocks within
+`GUARD_VIOLATION_WINDOW_SECONDS` start a `GUARD_COOLDOWN_SECONDS` cooldown (`429`, also on
+decisions). Every action is one append-only `guardrail_events` row (migration 0005, no content)
+and one `guardrail_event` log line; `chat_run` carries `guards` counts and `rulesVersion`.
+`tests/redteam/` runs 48 attacks through the graph with a model that obeys them, checks that each
+guard is needed, and checks a legit set in five languages for false positives; `-m live_llm` runs
+the corpus against the real model and reports pass rates.
 
 ### Logging
 
@@ -286,7 +306,14 @@ use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL
 | `OUTBOX_POLL_INTERVAL_SECONDS` | `1` | Relay wait when nothing is due |
 | `CHAT_KEEPALIVE_SECONDS` | `15` | Stream silence before a `: keep-alive` comment |
 | `CHAT_REQUEST_TOKEN_CAP` | `20000` | Most tokens one chat message may spend (`≥ LLM_MAX_OUTPUT_TOKENS`) |
-| `CHAT_RATE_LIMIT_MESSAGES` / `_WINDOW_SECONDS` | `10` / `60` | Posts per user per sliding window |
+| `USER_MESSAGES_PER_MINUTE` | `10` | Posts and decisions per user per minute (sliding window) |
+| `USER_MESSAGES_PER_DAY` | `200` | Messages per user per UTC day (persisted, survives deletes) |
+| `USER_DAILY_TOKEN_BUDGET` | `25000` | Chat tokens per user per UTC day (`≤ DAILY_TOKEN_BUDGET`) |
+| `TOOL_RESULT_MAX_CHARS` | `8000` | Longest tool result the model sees (`500..100000`), then truncated |
+| `GUARD_VIOLATION_THRESHOLD` | `5` | Medium/high input blocks that start a cooldown |
+| `GUARD_VIOLATION_WINDOW_SECONDS` | `600` | Window those blocks are counted in |
+| `GUARD_COOLDOWN_SECONDS` | `600` | How long a cooldown answers `429` |
+| `GUARD_LLM_CLASSIFIER` | `false` | Reserved for future work; no effect |
 | `CHAT_MAX_TOOL_ROUNDS` | `5` | Model → tool rounds per answer |
 | `CHAT_MAX_MESSAGES` | `100` | Messages (user + assistant) per conversation |
 | `APPROVAL_TTL_SECONDS` | `600` | Seconds a proposed cancellation stays approvable (`> 0`) |
@@ -334,6 +361,8 @@ uv run pytest --cov
   `TEST_DATABASE_URL` if set (its triage tables are truncated per test), else a Testcontainers
   `postgres:16-alpine`, else the tests are skipped (CI sets `INTEGRATION_REQUIRED=true`, which
   fails instead). `-m "not integration"` runs the unit tests only.
+- `tests/redteam/` (run by default): the guardrail corpus against a compromised fake model,
+  guard coverage (each guard disabled in turn) and false positives; `-m live_llm` for the real model.
 
 ## CI/CD and security
 
@@ -361,10 +390,11 @@ src/ecommerce_ai/
   main.py            Composition root: settings, logging, probes, engine, consumer, worker and relay tasks
   __main__.py        `python -m ecommerce_ai [migrate]`
   api/               FastAPI app, routers, request-id middleware, route access policy, bearer auth,
-                     /mcp, /chat (conversations, SSE framer, rate limiter)
+                     /mcp, /chat (conversations, SSE framer, quota errors)
   agents/            triage_intake (cause rules, intake), triage (graph, gatekeeper, templates,
                      worker, ports), assistant (chat graph, gatekeeper, segmenter, summaries,
-                     limits, approvals, service), safety (shared gatekeeper rules), prompts
+                     limits, approvals, service), guardrails (normaliser, input rules, output
+                     checks, tool guard, canary, quotas), safety (shared gatekeeper rules), prompts
                      (versioned prompt files); no HTTP/Kafka/SQL
   tools/             MCP server, tool invoker, registry/allowlist, Orders/Inventory/Notifications tools,
                      mutating/ (approval policy, exposure, chat-only cancel_order)
@@ -373,9 +403,10 @@ src/ecommerce_ai/
                      (Anthropic adapter), db/ (engine, tables, repositories, Alembic migrations)
 tests/unit/          Unit tests (no network)
 tests/integration/   PostgreSQL tests: migrations, repositories, consumer and triage flows, live_llm
+tests/redteam/       Red-team corpus (cases.jsonl, legit.jsonl), runner, coverage and live tests
 tests/contract/      Tool schema snapshot, Orders queries vs its schema, event models vs events.md,
                      chat models vs docs/chat-contract.md
 tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka, ScriptedModel, stores
 scripts/             Manual tools: mcp_smoke.py (/mcp) and chat_smoke.py (/chat, y/n approvals) against the local stack
-docs/                chat-contract.md (frozen chat API), adr/ (Architecture Decision Records)
+docs/                chat-contract.md (frozen chat API), threat-model.md, adr/ (Architecture Decision Records)
 ```
