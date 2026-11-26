@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "source": "Anthropic first-party API list prices per million tokens, checked 2026-11-26",
+  "models": {
+    "claude-fable-5-2": { "input_per_mtok": "8.00", "output_per_mtok": "40.00" },
+    "claude-opus-5-5": { "input_per_mtok": "4.00", "output_per_mtok": "20.00" },
+    "claude-sonnet-5-5": { "input_per_mtok": "2.00", "output_per_mtok": "10.00" },
+    "claude-haiku-5-5": { "input_per_mtok": "0.10", "output_per_mtok": "0.50" }
+  }
+}

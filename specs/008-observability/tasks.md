@@ -6,7 +6,7 @@
 ## Phase 1: Setup
 
 - [X] T001 Add `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http` with `uv add`; commit `uv.lock` (pyproject.toml)
-- [ ] T002 [P] Create `config/model_prices.json` (`version`, `models` → `input_per_mtok`/`output_per_mtok` for the models in use) and `COPY config ./config` in Dockerfile
+- [X] T002 [P] Create `config/model_prices.json` (`version`, `models` → `input_per_mtok`/`output_per_mtok` for the models in use) and `COPY config ./config` in Dockerfile
 - [ ] T003 [P] Add settings `MODEL_PRICES_PATH`, `LANGSMITH_TRACING=false`, `LANGSMITH_HIDE_INPUTS=true`, `LANGSMITH_HIDE_OUTPUTS=true` (OTEL_* stay standard env, read in T006) in src/ecommerce_ai/infrastructure/settings.py; clear them in tests/conftest.py
 
 ## Phase 2: Foundational (blocks all stories)
