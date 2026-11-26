@@ -63,11 +63,12 @@ from ecommerce_ai.agents.triage.ports import (
 from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker, WorkerState
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
-from ecommerce_ai.agents.usage import LlmUsage
+from ecommerce_ai.agents.usage import LlmUsage, UsageSummaryStore
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
+from ecommerce_ai.api.usage import ADMIN_ROLE, build_usage_router
 from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.approval_repository import ApprovalRepository
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
@@ -81,6 +82,7 @@ from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
 from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
+from ecommerce_ai.infrastructure.db.usage_summary_repository import UsageSummaryRepository
 from ecommerce_ai.infrastructure.db.user_usage_repository import UserUsageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
@@ -297,11 +299,13 @@ def create_app(
     user_usage_store: UserUsageStore | None = None,
     tracer_provider: TracerProvider | None = None,
     llm_call_recorder: LlmCallRecorder | None = None,
+    usage_summary_store: UsageSummaryStore | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
     checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
     clock, the guard audit store, the chat's guardrails, the per-user usage store, the tracer
-    provider and the per-call usage recorder replace the real ones in tests.
+    provider, the per-call usage recorder and the usage summary store replace the real ones in
+    tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
@@ -450,6 +454,12 @@ def create_app(
         keepalive_seconds=settings.chat_keepalive_seconds,
         quotas=quotas,
     )
+    usage_router = build_usage_router(
+        usage_summary_store or UsageSummaryRepository(engine),
+        require_caller(verifier, required_role=ADMIN_ROLE, rejected_event="usage_auth_rejected"),
+        clock=lambda: datetime.now(UTC),
+        is_unavailable=is_transient_db_error,
+    )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 
     @asynccontextmanager
@@ -483,6 +493,7 @@ def create_app(
         mcp=mcp,
         resources=resources,
         chat=chat,
+        usage=usage_router,
         consumer_state=consumer_state if settings.triage_consumer_enabled else None,
         worker_state=worker.state if settings.triage_worker_enabled else None,
         relay_state=relay_state if settings.triage_worker_enabled else None,

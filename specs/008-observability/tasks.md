@@ -54,10 +54,10 @@ Independent test: ok/timeout/error/budget/fallback each produce one row with the
 
 Independent test: ADMIN 200 with aggregates, CUSTOMER 403, no token 401, bad range 422.
 
-- [ ] T027 [US4] `UsageSummaryRepository.summarize(from, to, group_by)` (SQL `percentile_cont`, `FILTER`, guardrail `blocked` counts per day/totals) in src/ecommerce_ai/infrastructure/db/usage_summary_repository.py
-- [ ] T028 [US4] `GET /usage/summary` router (query validation: dates, `from ≤ to`, ≤ 90 days, default last 7, `groupBy`; frozen camelCase response models; OpenAPI descriptions; `x-roles: [ADMIN]`) in src/ecommerce_ai/api/usage.py; register in src/ecommerce_ai/api/app.py and src/ecommerce_ai/main.py
-- [ ] T029 [P] [US4] Unit tests: 401/403/422/200 with a fake summary store in tests/unit/test_usage_api.py
-- [ ] T030 [P] [US4] Integration: seeded rows → grouped calls, tokens, cost, p50/p95, error/fallback rates, guardrail blocks; empty range → zero/null rates in tests/integration/test_usage_summary.py
+- [X] T027 [US4] `UsageSummaryRepository.summarize(from, to, group_by)` (SQL `percentile_cont`, `FILTER`, guardrail `blocked` counts per day/totals) in src/ecommerce_ai/infrastructure/db/usage_summary_repository.py
+- [X] T028 [US4] `GET /usage/summary` router (query validation: dates, `from ≤ to`, ≤ 90 days, default last 7, `groupBy`; frozen camelCase response models; OpenAPI descriptions; `x-roles: [ADMIN]`) in src/ecommerce_ai/api/usage.py; register in src/ecommerce_ai/api/app.py and src/ecommerce_ai/main.py
+- [X] T029 [P] [US4] Unit tests: 401/403/422/200 with a fake summary store in tests/unit/test_usage_api.py
+- [X] T030 [P] [US4] Integration: seeded rows → grouped calls, tokens, cost, p50/p95, error/fallback rates, guardrail blocks; empty range → zero/null rates in tests/integration/test_usage_summary.py
 
 ## Phase 7: US5 – Optional LangSmith (P3)
 

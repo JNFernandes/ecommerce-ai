@@ -45,6 +45,7 @@ def build_api(
     mcp: McpEndpoint,
     resources: Resources,
     chat: APIRouter,
+    usage: APIRouter | None = None,
     consumer_state: ConsumerStateSource | None = None,
     worker_state: WorkerStateSource | None = None,
     relay_state: RelayStateSource | None = None,
@@ -55,6 +56,7 @@ def build_api(
     chains the MCP app's lifespan; ``resources`` is opened around it for the app's lifetime.
     ``chat`` is the ``/chat`` router; its validation and outage errors get ``{code, message}``,
     and its request bodies are limited to ``MAX_BODY_BYTES`` (innermost middleware, 413).
+    ``usage`` is the ADMIN ``/usage`` router (US-08), when given.
     ``consumer_state``, ``worker_state`` and ``relay_state`` (``None`` when disabled) are
     reported by ``/ready``.
     Every route must declare its access, or this raises ``RoutePolicyError`` (default deny). The
@@ -88,6 +90,8 @@ def build_api(
     app.add_middleware(RequestIdMiddleware)
     app.include_router(health.router)
     app.include_router(chat)
+    if usage is not None:
+        app.include_router(usage)
     install_chat_error_handlers(app)
     app.router.routes.append(mcp.route)
     assert_route_policies(app)

@@ -5,7 +5,8 @@
 to one fixed response: the same 401 (``WWW-Authenticate: Bearer``) for every missing or bad token,
 503 when no signing key can be obtained, 403 without the required role. ``/mcp`` uses it from its
 ASGI middleware; ``/chat`` routes use the ``require_caller`` FastAPI dependency, which accepts any
-token with at least one role and binds the ``RequestCaller`` for the request (ADR 0001).
+token with at least one role (``/usage`` asks for ``ADMIN``) and binds the ``RequestCaller`` for
+the request (ADR 0001).
 """
 
 from collections.abc import AsyncIterator, Callable
@@ -114,18 +115,24 @@ def log_rejection(event: str, reason: RejectReason) -> None:
 
 def require_caller(
     verifier: TokenVerifier,
+    *,
+    required_role: str | None = None,
+    rejected_event: str = "chat_auth_rejected",
 ) -> Callable[[Request], AsyncIterator[RequestCaller]]:
-    """Return a FastAPI dependency admitting any valid token with a role (``x-authenticated``).
+    """Return a FastAPI dependency admitting a valid token with ``required_role``.
 
-    It answers like ``/mcp`` (same 401/403/503 bodies) and binds the ``RequestCaller`` while the
-    route runs.
+    ``required_role`` ``None`` admits any role (``x-authenticated``). It answers like ``/mcp``
+    (same 401/403/503 bodies), logs a rejection as ``rejected_event`` and binds the
+    ``RequestCaller`` while the route runs.
     """
 
     async def dependency(request: Request) -> AsyncIterator[RequestCaller]:
         try:
-            token, identity = await authenticate(request.headers, verifier, required_role=None)
+            token, identity = await authenticate(
+                request.headers, verifier, required_role=required_role
+            )
         except AuthRejected as rejected:
-            log_rejection("chat_auth_rejected", rejected.reason)
+            log_rejection(rejected_event, rejected.reason)
             status = rejected.status_code
             raise HTTPException(
                 status, detail=_DETAIL[status], headers=_HEADERS.get(status)
