@@ -15,7 +15,7 @@
 - [X] T005 Implement `ScrubbingSpanExporter` (rebuild span with allowlisted attributes, drop events/link attributes/status description, scrub resource to `service.*`, catch exporter exceptions → FAILURE, warn by class name at most once per minute, D4) in src/ecommerce_ai/infrastructure/tracing.py
 - [X] T006 Implement `build_tracer_provider(env)` in src/ecommerce_ai/infrastructure/tracing.py: `OTEL_TRACES_EXPORTER` none(default)/console/otlp, `OTEL_SDK_DISABLED`, unknown → None + one warning; `BatchSpanProcessor(ScrubbingSpanExporter(...))`; shutdown hook (D3, D5)
 - [X] T007 Wire in `create_app(..., tracer_provider=None)`: build provider, `use_provider`, flush/shutdown in lifespan after workers stop, in src/ecommerce_ai/main.py
-- [ ] T008 [P] Test support: `tests/support/tracing.py` (`InMemorySpanExporter` provider fixture through the scrubber, `spans_by_name`, `assert_parent`)
+- [X] T008 [P] Test support: `tests/support/tracing.py` (`InMemorySpanExporter` provider fixture through the scrubber, `spans_by_name`, `assert_parent`)
 - [ ] T009 [P] Unit tests: scrubber drops non-allowlisted attributes, events, status descriptions; failing exporter returns FAILURE without raising; default/none/disabled/unknown exporter → no-op in tests/unit/telemetry/test_tracing_setup.py
 
 ## Phase 3: US1 – Trace every chat and triage run (P1) 🎯 MVP
