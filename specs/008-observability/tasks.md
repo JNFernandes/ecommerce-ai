@@ -23,21 +23,21 @@
 Independent test: chat with a tool call + approval pause and one triage case produce the expected span tree (plan D7).
 
 - [X] T010 [US1] `http.request` span (`http.route`, `http.response.status_code`, `request.id`) in src/ecommerce_ai/api/middleware.py::RequestIdMiddleware
-- [ ] T011 [US1] Chat: `chat.run`/`chat.resume` spans (`conversation.id`, `user.hash`, `request.id`, `prompt.version`) in src/ecommerce_ai/agents/assistant/service.py; wrap every node with `traced_node` and add `approval.pause`/`approval.resume` spans in src/ecommerce_ai/agents/assistant/graph.py
-- [ ] T012 [US1] `llm.call` spans (model, tokens, finish reason, `latency.ms`, `cost.usd` once US3 lands, `llm.outcome`) around model calls in src/ecommerce_ai/agents/assistant/graph.py and src/ecommerce_ai/agents/triage/graph.py
-- [ ] T013 [P] [US1] `tool.call` span (`tool.name`, `tool.outcome`) in src/ecommerce_ai/tools/invoker.py; `upstream.http` span (`http.response.status_code`, `error.type`) in src/ecommerce_ai/infrastructure/upstream.py
-- [ ] T014 [US1] Triage: `triage.run` (`order.id`, `case.id`, `triage.source`, `triage.revisions`) in src/ecommerce_ai/agents/triage/service.py; `traced_node` for classify/draft/gatekeeper/finalize/fallback in src/ecommerce_ai/agents/triage/graph.py
-- [ ] T015 [US1] `triage.consume` span in src/ecommerce_ai/messaging/triage_consumer.py; `outbox.publish` span + Kafka headers `correlation-id: <orderId>` and `traceparent` (add `headers` to `ProducerPort.send` and the aiokafka adapter) in src/ecommerce_ai/messaging/kafka.py, src/ecommerce_ai/messaging/outbox_relay.py, tests/support/kafka.py::FakeProducer
-- [ ] T016 [P] [US1] Span-tree tests: chat run with tool call and approval pause (names, parents, `request.id` everywhere) in tests/unit/telemetry/test_chat_spans.py
-- [ ] T017 [P] [US1] Triage span-tree test + published message has `correlation-id` header and unchanged payload in tests/unit/telemetry/test_triage_spans.py
-- [ ] T018 [P] [US1] Exporter down (OTLP to `http://localhost:1`) and raising exporter: chat responses identical to no-op, in tests/unit/telemetry/test_exporter_failure.py
+- [X] T011 [US1] Chat: `chat.run`/`chat.resume` spans (`conversation.id`, `user.hash`, `request.id`, `prompt.version`) in src/ecommerce_ai/agents/assistant/service.py; wrap every node with `traced_node` and add `approval.pause`/`approval.resume` spans in src/ecommerce_ai/agents/assistant/graph.py
+- [X] T012 [US1] `llm.call` spans (model, tokens, finish reason, `latency.ms`, `cost.usd` once US3 lands, `llm.outcome`) around model calls in src/ecommerce_ai/agents/assistant/graph.py and src/ecommerce_ai/agents/triage/graph.py
+- [X] T013 [P] [US1] `tool.call` span (`tool.name`, `tool.outcome`) in src/ecommerce_ai/tools/invoker.py; `upstream.http` span (`http.response.status_code`, `error.type`) in src/ecommerce_ai/infrastructure/upstream.py
+- [X] T014 [US1] Triage: `triage.run` (`order.id`, `case.id`, `triage.source`, `triage.revisions`) in src/ecommerce_ai/agents/triage/service.py; `traced_node` for classify/draft/gatekeeper/finalize/fallback in src/ecommerce_ai/agents/triage/graph.py
+- [X] T015 [US1] `triage.consume` span in src/ecommerce_ai/messaging/triage_consumer.py; `outbox.publish` span + Kafka headers `correlation-id: <orderId>` and `traceparent` (add `headers` to `ProducerPort.send` and the aiokafka adapter) in src/ecommerce_ai/messaging/kafka.py, src/ecommerce_ai/messaging/outbox_relay.py, tests/support/kafka.py::FakeProducer
+- [X] T016 [P] [US1] Span-tree tests: chat run with tool call and approval pause (names, parents, `request.id` everywhere) in tests/unit/telemetry/test_chat_spans.py
+- [X] T017 [P] [US1] Triage span-tree test + published message has `correlation-id` header and unchanged payload in tests/unit/telemetry/test_triage_spans.py
+- [X] T018 [P] [US1] Exporter down (OTLP to `http://localhost:1`) and raising exporter: chat responses identical to no-op, in tests/unit/telemetry/test_exporter_failure.py
 
 ## Phase 4: US2 – Privacy allowlist (P1)
 
 Independent test: conversation with fake token, email and secret leaves no trace in spans or logs.
 
-- [ ] T019 [US2] Test: chat run (and tool call with fake email argument) containing `sk-ant-FAKE…`, `bearer eyJ…`, `jane@example.com`, `secret-XYZ`; assert none appear in any exported span attribute/name/event or captured log line; system prompt text absent, in tests/unit/telemetry/test_privacy.py
-- [ ] T020 [US2] Fix any leak found by T019 at its source (no content attributes, error.type only) in the files touched by Phase 3
+- [X] T019 [US2] Test: chat run (and tool call with fake email argument) containing `sk-ant-FAKE…`, `bearer eyJ…`, `jane@example.com`, `secret-XYZ`; assert none appear in any exported span attribute/name/event or captured log line; system prompt text absent, in tests/unit/telemetry/test_privacy.py
+- [X] T020 [US2] Fix any leak found by T019 at its source (no content attributes, error.type only) in the files touched by Phase 3
 
 ## Phase 5: US3 – Per-call usage and cost records (P2)
 
