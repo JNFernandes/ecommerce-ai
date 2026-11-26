@@ -87,6 +87,7 @@ from ecommerce_ai.infrastructure.db.user_usage_repository import UserUsageReposi
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
+from ecommerce_ai.infrastructure.langsmith import configure_langsmith
 from ecommerce_ai.infrastructure.llm.anthropic_chat_model import build_anthropic_chat_model
 from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
@@ -317,6 +318,7 @@ def create_app(
     """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
+    configure_langsmith(settings, os.environ)
     prices = load_model_prices(settings.model_prices_path)
     owns_provider = tracer_provider is None
     provider = build_tracer_provider(os.environ) if owns_provider else tracer_provider

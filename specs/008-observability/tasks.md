@@ -61,8 +61,8 @@ Independent test: ADMIN 200 with aggregates, CUSTOMER 403, no token 401, bad ran
 
 ## Phase 7: US5 – Optional LangSmith (P3)
 
-- [ ] T031 [US5] `configure_langsmith(settings)` writing `LANGSMITH_TRACING`/`LANGCHAIN_TRACING_V2` and, when on, `LANGCHAIN_HIDE_INPUTS/OUTPUTS` in src/ecommerce_ai/infrastructure/langsmith.py; call it in src/ecommerce_ai/main.py
-- [ ] T032 [P] [US5] Tests: default (even with a stray `LANGSMITH_TRACING=true` env) → tracing disabled and no client created; enabled → hide inputs/outputs true, in tests/unit/test_langsmith.py
+- [X] T031 [US5] `configure_langsmith(settings)` writing `LANGSMITH_TRACING`/`LANGCHAIN_TRACING_V2` and, when on, `LANGCHAIN_HIDE_INPUTS/OUTPUTS` in src/ecommerce_ai/infrastructure/langsmith.py; call it in src/ecommerce_ai/main.py
+- [X] T032 [P] [US5] Tests: default (even with a stray `LANGSMITH_TRACING=true` env) → tracing disabled and no client created; enabled → hide inputs/outputs true, in tests/unit/test_langsmith.py
 
 ## Phase 8: Polish
 
