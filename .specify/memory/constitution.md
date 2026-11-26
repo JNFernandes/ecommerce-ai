@@ -1,7 +1,11 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change:    1.1.0 → 2.0.0
+Version change:    2.0.0 → 2.0.1 (US-08)
+Bump rationale:    PATCH. TODO(TRACING) resolved: OpenTelemetry is the trace backend (ADR 0006);
+                   VII's interim wording is replaced, its rules are unchanged.
+
+Previous change:   1.1.0 → 2.0.0
 Bump rationale:    MAJOR. Principle IV's triage-worker rules are redefined (US-04): one result per
                    order instead of per consumed `eventId`, an outbox instead of an outbound
                    dead-letter table, and `modelId` null on a fallback. VI and VII gain interim
@@ -42,7 +46,7 @@ Deferred TODOs:
     gatekeeper and every tool registered by then (Principle VI).
   - TODO(EVAL_THRESHOLD): the composite-score threshold value is agreed in the story that
     introduces the eval suite and recorded in the suite configuration (Principle VI).
-  - TODO(TRACING): US-08 adds the trace backend (LangSmith or OpenTelemetry) (Principle VII).
+  - TODO(TRACING): done in US-08: OpenTelemetry behind an attribute allowlist (ADR 0006).
 -->
 
 # ecommerce-ai Constitution
@@ -255,10 +259,10 @@ for every topic and payload.
 
 ### VII. Observability
 
-- Every graph run MUST be traced (LangSmith or OpenTelemetry) with latency, token usage, cost,
-  tool calls (name, duration, outcome) and `promptVersion` and `modelId`. Until US-08 adds the
-  trace backend, each graph run MUST emit one structured log line carrying latency, input and
-  output tokens, `promptVersion`, `modelId` and `orderId` (TODO(TRACING)).
+- Every graph run MUST be traced (OpenTelemetry, [ADR 0006](../../docs/adr/0006-vendor-neutral-tracing.md))
+  with latency, token usage, cost, tool calls (name, duration, outcome) and `promptVersion` and
+  `modelId`. Each graph run also emits one structured log line carrying latency, input and output
+  tokens, `promptVersion`, `modelId` and `orderId`.
 - Trace and log data MUST NOT contain secrets, tokens or unnecessary personal data; tool
   arguments and results are redacted to what is needed for debugging.
 - A correlation id (the `orderId` for triage, a request id for the assistant) MUST link logs,
@@ -439,4 +443,4 @@ note if existing code must change.
 Reviewers are empowered to block merges for violations without exception. New principles take
 effect immediately upon merge.
 
-**Version**: 2.0.0 | **Ratified**: 2026-11-23 | **Last Amended**: 2026-11-24
+**Version**: 2.0.1 | **Ratified**: 2026-11-23 | **Last Amended**: 2026-11-26

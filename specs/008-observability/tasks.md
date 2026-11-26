@@ -66,10 +66,10 @@ Independent test: ADMIN 200 with aggregates, CUSTOMER 403, no token 401, bad ran
 
 ## Phase 8: Polish
 
-- [ ] T033 [P] docs/observability.md (span trees, attribute list, console + OTLP run, reading the summary, privacy rules)
-- [ ] T034 [P] docs/adr/0006-vendor-neutral-tracing.md + index in docs/adr/README.md; mark TODO(TRACING) done in .specify/memory/constitution.md (VII)
-- [ ] T035 README.md (settings, LangSmith privacy note, usage endpoint), CLAUDE.md (telemetry layer, llm_calls, migration 0006, `/usage/summary`, gateway follow-up)
-- [ ] T036 Run the full gate and quickstart checks from plan.md
+- [X] T033 [P] docs/observability.md (span trees, attribute list, console + OTLP run, reading the summary, privacy rules)
+- [X] T034 [P] docs/adr/0006-vendor-neutral-tracing.md + index in docs/adr/README.md; mark TODO(TRACING) done in .specify/memory/constitution.md (VII)
+- [X] T035 README.md (settings, LangSmith privacy note, usage endpoint), CLAUDE.md (telemetry layer, llm_calls, migration 0006, `/usage/summary`, gateway follow-up)
+- [X] T036 Run the full gate and quickstart checks from plan.md
 
 ## Dependencies
 

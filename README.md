@@ -39,6 +39,7 @@ Releases are gated by an eval suite ([ADR 0004](docs/adr/0004-evals-as-release-g
 | `POST /mcp` | `CUSTOMER` | MCP Streamable HTTP, stateless, plain JSON responses (no session id, no SSE). Tools, all read-only: `get_order(orderId)`, `list_my_orders(limit=20 (1–50), status?)`, `list_products(limit=20 (1–50), offset=0)`, `get_product(productId)`, `list_my_notifications(limit, offset, orderId?)`. |
 | `POST /chat/conversations`, `GET /chat/conversations`, `GET`/`DELETE /chat/conversations/{id}` | any role | The caller's chat conversations: create (`title?`), list (`limit`, `offset`, newest activity first), read with history, delete (state included). Another user's id is the same `404` as an unknown one. |
 | `POST /chat/conversations/{id}/messages` | any role | `{content}` (1–2000 characters) → `text/event-stream` of the grounded answer ([contract](docs/chat-contract.md)). |
+| `GET /usage/summary` | `ADMIN` | Model usage per `day`, `model` or `kind` (`from`, `to`, `groupBy`; last 7 days by default, ≤ 90): calls, tokens, estimated cost, p50/p95 latency, error and fallback rates, guardrail blocks ([observability](docs/observability.md)). Gateway: `/api/ai/usage/summary`. |
 | `GET /docs`, `GET /openapi.json` | public | API documentation. |
 
 ### MCP endpoint
@@ -213,6 +214,19 @@ fields named like `authorization`, `*token*`, `password`, `secret`, `api_key` or
 replaced with `[REDACTED]`, and bearer/basic credentials, JWTs, passwords in URLs and
 `password=...`-style pairs are scrubbed from all text, tracebacks included.
 
+### Tracing and usage (US-08)
+
+Every request, chat run, graph node, model call, tool call, upstream attempt, triage run, consumed
+record and outbox publish is an OpenTelemetry span ([ADR 0006](docs/adr/0006-vendor-neutral-tracing.md)).
+Nothing is exported by default; `OTEL_TRACES_EXPORTER=console` prints spans, `otlp` sends them to
+`OTEL_EXPORTER_OTLP_ENDPOINT`. An allowlisting exporter keeps only identifiers, counts, durations,
+outcomes and error class names, never text, prompts, tool data or tokens; a failing exporter never
+affects a response. Published triage events carry `correlation-id: <orderId>` and `traceparent`
+headers. Each model call writes one `llm_calls` row (tokens, latency, outcome, cost priced from
+`config/model_prices.json`), summarised by `GET /usage/summary` for `ADMIN`s. LangSmith is off
+by default; when turned on (`LANGSMITH_TRACING=true`), inputs and outputs stay hidden. Span trees,
+attributes and examples: [docs/observability.md](docs/observability.md).
+
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) 0.11 (it installs Python 3.12; never use the system Python).
@@ -318,6 +332,10 @@ use `postgresql://` or `postgresql+asyncpg://`; without a user in it, PostgreSQL
 | `CHAT_MAX_MESSAGES` | `100` | Messages (user + assistant) per conversation |
 | `APPROVAL_TTL_SECONDS` | `600` | Seconds a proposed cancellation stays approvable (`> 0`) |
 | `CANCEL_PROPOSALS_PER_HOUR` | `5` | Cancellation proposals per user per rolling hour (`≥ 1`) |
+| `MODEL_PRICES_PATH` | `config/model_prices.json` | Per-model token prices for the cost estimate; missing or invalid = startup error |
+| `OTEL_TRACES_EXPORTER` | `none` | `none`, `console` or `otlp`; other standard `OTEL_*` variables (endpoint, timeout, `OTEL_SDK_DISABLED`, `OTEL_SERVICE_NAME`) apply |
+| `LANGSMITH_TRACING` | `false` | Send LangGraph run metadata to LangSmith (needs `LANGSMITH_API_KEY`); overrides any stray `LANGCHAIN_TRACING_V2` |
+| `LANGSMITH_HIDE_INPUTS` / `_HIDE_OUTPUTS` | `true` / `true` | Keep message text, prompts and tool data out of LangSmith; do not turn off in production |
 
 ### Docker
 
@@ -399,8 +417,10 @@ src/ecommerce_ai/
   tools/             MCP server, tool invoker, registry/allowlist, Orders/Inventory/Notifications tools,
                      mutating/ (approval policy, exposure, chat-only cancel_order)
   messaging/         Event contracts, decoding, Kafka ports/adapters, triage consumer, outbox relay
-  infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, llm/
-                     (Anthropic adapter), db/ (engine, tables, repositories, Alembic migrations)
+  telemetry/         Span helpers (API only): attribute allowlist, span names, traced_node
+  infrastructure/    Settings, logging, probes, JWKS, token verifier, HTTP clients, retry, tracing
+                     (provider, scrubbing exporter), pricing, LangSmith switch, llm/ (Anthropic
+                     adapter), db/ (engine, tables, repositories, Alembic migrations)
 tests/unit/          Unit tests (no network)
 tests/integration/   PostgreSQL tests: migrations, repositories, consumer and triage flows, live_llm
 tests/redteam/       Red-team corpus (cases.jsonl, legit.jsonl), runner, coverage and live tests
@@ -408,5 +428,6 @@ tests/contract/      Tool schema snapshot, Orders queries vs its schema, event m
                      chat models vs docs/chat-contract.md
 tests/support/       Test tokens/JWKS, stubs, MCP helpers, fake probes, fake Kafka, ScriptedModel, stores
 scripts/             Manual tools: mcp_smoke.py (/mcp) and chat_smoke.py (/chat, y/n approvals) against the local stack
-docs/                chat-contract.md (frozen chat API), threat-model.md, adr/ (Architecture Decision Records)
+config/              model_prices.json (token prices for the cost estimate, copied into the image)
+docs/                chat-contract.md (frozen chat API), observability.md, threat-model.md, adr/ (Architecture Decision Records)
 ```
