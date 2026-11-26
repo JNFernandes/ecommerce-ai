@@ -184,7 +184,7 @@ async def test_should_log_one_line_per_call_without_the_token_when_invoked() -> 
     tool_calls = [line for line in lines if line["event"] == "tool_call"]
     assert [(line["tool"], line["outcome"]) for line in tool_calls] == [
         ("echo", "ok"),
-        ("cancel_order", "unknown_tool"),
+        ("<unknown>", "unknown_tool"),  # a requested name is untrusted text (US-08)
     ]
     assert TOKEN not in stream.getvalue()
 
