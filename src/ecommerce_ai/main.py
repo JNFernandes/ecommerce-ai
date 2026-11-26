@@ -16,6 +16,7 @@ registry makes ``create_app`` raise ``ToolRegistryError``.
 
 import argparse
 import asyncio
+import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ import structlog
 import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
+from opentelemetry.sdk.trace import TracerProvider
 
 from ecommerce_ai.agents.assistant.approvals import APPROVAL_ACTIONS, TARGET_ARGUMENT
 from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
@@ -87,6 +89,7 @@ from ecommerce_ai.infrastructure.orders_client import OrdersClient
 from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
+from ecommerce_ai.infrastructure.tracing import build_tracer_provider, shutdown_tracer_provider
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport
 from ecommerce_ai.messaging.consumer_state import ConsumerState
 from ecommerce_ai.messaging.contracts import TOPIC_MODELS
@@ -99,6 +102,7 @@ from ecommerce_ai.messaging.kafka import (
 from ecommerce_ai.messaging.outbox_relay import OutboxRelay, OutboxStore, RelayState
 from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from ecommerce_ai.messaging.triage_published import to_outbox_message
+from ecommerce_ai.telemetry.tracing import use_provider
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
 from ecommerce_ai.tools.invoker import ToolInvoker
 from ecommerce_ai.tools.mutating.cancel_order import cancel_order_tool
@@ -257,6 +261,16 @@ def build_guardrails(settings: Settings) -> Guardrails:
     )
 
 
+async def _stop_tracing(provider: TracerProvider | None, *, owns: bool) -> None:
+    """Flush ``provider`` off the event loop, and shut it down when this app built it."""
+    if provider is None:
+        return
+    if owns:
+        await asyncio.to_thread(shutdown_tracer_provider, provider)
+    else:
+        await asyncio.to_thread(provider.force_flush)
+
+
 def create_app(
     settings: Settings | None = None,
     probes: Sequence[DependencyProbe] | None = None,
@@ -274,18 +288,25 @@ def create_app(
     guard_store: GuardrailEventStore | None = None,
     guardrails: Guardrails | None = None,
     user_usage_store: UserUsageStore | None = None,
+    tracer_provider: TracerProvider | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
     checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
-    clock, the guard audit store, the chat's guardrails and the per-user usage store replace the
-    real ones in tests.
+    clock, the guard audit store, the chat's guardrails, the per-user usage store and the tracer
+    provider replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
     ``/mcp`` serves only the MCP-exposed tools; the chat also gets ``cancel_order`` (US-06).
+    Without ``tracer_provider`` the provider comes from the standard ``OTEL_*`` variables (none by
+    default); one built here is flushed and shut down last when the app stops, an injected one is
+    only flushed.
     """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
+    owns_provider = tracer_provider is None
+    provider = build_tracer_provider(os.environ) if owns_provider else tracer_provider
+    use_provider(provider)
     checker = ReadinessChecker(build_probes(settings) if probes is None else probes)
 
     # No connection is opened here: httpx connects on first request only.
@@ -421,6 +442,8 @@ def create_app(
     @asynccontextmanager
     async def resources() -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
+            # Pushed first, so it runs last: spans of the stopping tasks are still exported.
+            stack.push_async_callback(_stop_tracing, provider, owns=owns_provider)
             for client in (orders_http, inventory_http, notifications_http):
                 stack.push_async_callback(client.aclose)
             stack.push_async_callback(engine.dispose)
