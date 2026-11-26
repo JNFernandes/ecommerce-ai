@@ -14,6 +14,7 @@ from uuid import UUID
 
 import httpx
 from langgraph.checkpoint.memory import InMemorySaver
+from opentelemetry.sdk.trace import TracerProvider
 from pydantic import JsonValue
 
 from ecommerce_ai.infrastructure.settings import Settings
@@ -85,6 +86,7 @@ class ApprovalHarness:
         )
     )
     settings: Settings | None = None
+    tracer_provider: TracerProvider | None = None
     approvals: InMemoryApprovalStore = field(init=False)
 
     def __post_init__(self) -> None:
@@ -105,6 +107,7 @@ class ApprovalHarness:
             approvals=self.approvals,
             clock=self.clock,
             settings=self.settings,
+            tracer_provider=self.tracer_provider,
         )
         return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://localhost"
