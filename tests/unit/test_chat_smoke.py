@@ -312,3 +312,16 @@ async def test_should_print_the_replacement_marked_when_message_replaced_arrives
 
     assert code == 0
     assert f"on its way.\n[replaced] {SAFE_MESSAGE}\n[end] replaced" in output
+
+
+@pytest.mark.parametrize("scope", ["user", "global"])
+async def test_should_print_the_scope_when_the_budget_is_exceeded(scope: str) -> None:
+    message = "The assistant has reached its usage limit. Please try again later."
+    stream = _stream(
+        ("message.start", {"conversationId": CONVERSATION, "messageId": "m-1"}),
+        ("error", {"code": "BUDGET_EXCEEDED", "message": message, "scope": scope}),
+    )
+    code, output = await _run(FakeChat(stream))
+
+    assert code == 1
+    assert f"[error] BUDGET_EXCEEDED (scope: {scope}): {message}" in output

@@ -3,8 +3,9 @@
 Creates a conversation (or continues the one in ``CONVERSATION_ID``), posts the question given on
 the command line and prints the streamed answer: each tool call and result on its own line, the
 tokens as they arrive (text the gatekeeper replaced on a new line after ``[replaced]``), then
-the finish reason or the error code and message. The customer access
-token comes from ``TOKEN`` and is never printed; ``CHAT_URL`` overrides the default
+the finish reason or the error code (with its ``scope`` for limit errors) and message. The
+customer access token comes from ``TOKEN`` and is never printed; ``CHAT_URL`` overrides the
+default
 ``http://localhost:8002/chat``. The conversation id is printed first so a follow-up can reuse it.
 The SSE stream is parsed with the standard library only (no SSE client dependency).
 
@@ -92,7 +93,9 @@ def render(event: Event) -> str:
             )
             return f"\n[end] {data.get('finishReason')} ({data.get('modelId')}, {tokens})\n"
         case "error":
-            return f"\n[error] {data.get('code')}: {data.get('message')}\n"
+            scope = data.get("scope")
+            whose = "" if scope is None else f" (scope: {scope})"
+            return f"\n[error] {data.get('code')}{whose}: {data.get('message')}\n"
         case "approval.required":
             summary = data.get("summary")
             details = summary if isinstance(summary, dict) else {}
