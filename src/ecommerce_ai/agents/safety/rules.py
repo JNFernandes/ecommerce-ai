@@ -76,6 +76,17 @@ _PROMISE: Final = re.compile(
     re.I,
 )
 
+_NO_CHANGE: Final = re.compile(
+    r"\b(?:nothing|none(?:\s+of\s+(?:them|your\s+orders?))?|no\s+(?:orders?|changes?|action))"
+    r"\s+(?:will|'ll)\s+(?:be\s+)?(?:changed|cancell?ed|modified|touched|affected|happen|done)\b"
+    r"|(?:\bwill|'ll)\s+(?:not|never)\b"
+    r"|(?:\bwill|'ll)\s+(?:stay|remain)\s+(?:unchanged|untouched|as\s+(?:it\s+is|they\s+are|is)"
+    r"|the\s+same|active|open|pending)\b(?![^.!?]*\buntil\b)",
+    re.I,
+)
+"""Future tense that announces no change ("nothing will be cancelled", "your orders will stay as
+they are", "I will not change anything"): a statement of fact, never a promise."""
+
 _CONTACT: Final = re.compile(
     r"https?://|\bwww\.|[\w.+-]+@[\w-]+\.\w+"
     r"|\b[\w-]+\.(?:com|net|org|io|co|eu|de|pt|uk|info|biz|shop|store|app|dev)\b"
@@ -222,12 +233,12 @@ def promise_matches(text: str) -> list[str]:
 
     Returned so a gatekeeper can allow some of them (e.g. ``delivered`` as a grounded status).
     """
-    return [match.group() for match in _PROMISE.finditer(text)]
+    return [match.group() for match in _PROMISE.finditer(_NO_CHANGE.sub(" ", text))]
 
 
 def has_promise(text: str) -> bool:
     """True when ``text`` promises or announces a refund, compensation or any future action."""
-    return _PROMISE.search(text) is not None
+    return _PROMISE.search(_NO_CHANGE.sub(" ", text)) is not None
 
 
 def has_contact_or_url(text: str) -> bool:
@@ -263,8 +274,10 @@ _CANCELLATION_CLAIM: Final = re.compile(
     re.I,
 )
 _NEGATED: Final = re.compile(
-    r"(?:\bnot|\bcannot|n't|\bnever|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$", re.I
+    r"(?:\bnot|\bcannot|n't|\bnever|\bnothing|\bnone|\bno|\bn[aã]o|\bnunca)\s+(?:\w+\s+){0,2}$",
+    re.I,
 )
+"""A negation up to two words before the claim: "was not cancelled", "nothing will be cancelled"."""
 _MODAL: Final = re.compile(
     r"\b(?:can|could|may|might|must|should|cannot)(?:\s+not|n't)?\s+(?:\w+\s+)?be\s+$", re.I
 )

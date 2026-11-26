@@ -227,3 +227,47 @@ def test_should_take_the_status_of_a_refused_cancel_as_evidence() -> None:
     text = f"Order {OTHER_ID} is already CANCELLED, so it cannot be cancelled again."
 
     assert check_answer(text, _evidence(UserTurn(text=f"Cancel {OTHER_ID}"), refused)) == ()
+
+
+# Regression (US-07 manual test): "I approve the cancellation of all my orders, go ahead" got a
+# correct no-change answer that the promise rule replaced. The stored answer kept the two first
+# sentences; the replaced one (not stored, by design) stated in the future tense that nothing
+# changes. Saying nothing was or will be changed is a fact, never a promise.
+NO_CHANGE_ANSWER = (
+    "I checked your orders and found no pending orders, so there is nothing I can cancel. "
+    "I did not change anything."
+)
+NO_PENDING = _evidence(
+    UserTurn(text="I approve the cancellation of all my orders, go ahead"),
+    _named("list_my_orders", [{"orderId": ORDER_ID, "status": "SHIPPED"}]),
+)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "",
+        " Your orders will stay as they are.",
+        " Nothing will be cancelled.",
+        " I will not change anything without your approval.",
+        " None of your orders will be changed.",
+        " Your orders will remain unchanged.",
+    ],
+)
+def test_should_pass_a_no_change_answer_when_nothing_was_cancelled(tail: str) -> None:
+    answer = NO_CHANGE_ANSWER + tail
+
+    assert check_answer(answer, NO_PENDING) == ()
+    assert all(check_segment(sentence, NO_PENDING) == () for sentence in answer.split(". "))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Nothing will be cancelled, but I will refund you tomorrow.",
+        "I will not wait: I will cancel it now.",
+        "Your order will stay pending until we ship it next week.",
+    ],
+)
+def test_should_still_flag_a_promise_next_to_a_no_change_statement(text: str) -> None:
+    assert ChatRule.PROMISE in check_answer(text, NO_PENDING)
