@@ -120,8 +120,15 @@ class StubAIOKafkaProducer:
     async def stop(self) -> None:
         self.calls.append("stop")
 
-    async def send_and_wait(self, topic: str, *, value: bytes, key: bytes) -> None:
-        self.calls.append((topic, key, value))
+    async def send_and_wait(
+        self,
+        topic: str,
+        *,
+        value: bytes,
+        key: bytes,
+        headers: list[tuple[str, bytes]] | None = None,
+    ) -> None:
+        self.calls.append((topic, key, value, headers))
 
 
 async def test_should_send_with_acks_all_and_idempotence_when_producing(
@@ -133,6 +140,7 @@ async def test_should_send_with_acks_all_and_idempotence_when_producing(
 
     await port.start()
     await port.send("ai.order-triage-completed", b"order-1", b'{"a":1}')
+    await port.send("ai.order-triage-completed", b"order-1", b"{}", [("correlation-id", b"o")])
     await port.stop()
 
     stub = adapter._producer
@@ -144,6 +152,7 @@ async def test_should_send_with_acks_all_and_idempotence_when_producing(
     }
     assert stub.calls == [
         "start",
-        ("ai.order-triage-completed", b"order-1", b'{"a":1}'),
+        ("ai.order-triage-completed", b"order-1", b'{"a":1}', None),
+        ("ai.order-triage-completed", b"order-1", b"{}", [("correlation-id", b"o")]),
         "stop",
     ]

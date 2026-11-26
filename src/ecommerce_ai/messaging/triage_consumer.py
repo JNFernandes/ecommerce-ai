@@ -3,7 +3,8 @@
 The consumer holds no business logic (constitution I): it decodes each record, hands valid events
 to ``TriageIntakeService.record`` and invalid ones to the dead-letter store, and only then commits
 the record's offset (FR-008, FR-009). Each record yields one log line with its coordinates and
-outcome, never its payload, ``customerId`` or reason (FR-014).
+outcome, never its payload, ``customerId`` or reason (FR-014), and one ``triage.consume`` span
+with the topic and, once decoded, the order id (US-08).
 
 Resilience (research 2-4, 13): a save that fails on a transient database error is retried with
 bounded exponential backoff; when the retries run out, or Kafka fails, the consumer is closed
@@ -19,6 +20,7 @@ from contextlib import suppress
 from typing import Final, Protocol
 
 import structlog
+from opentelemetry.trace import Span
 
 from ecommerce_ai.agents.triage_intake.model import IntakeOutcome
 from ecommerce_ai.agents.triage_intake.ports import DeadLetterStore
@@ -35,6 +37,9 @@ from ecommerce_ai.messaging.kafka import (
     ConsumerPort,
     TopicPartition,
 )
+from ecommerce_ai.telemetry.attributes import MESSAGING_DESTINATION, ORDER_ID
+from ecommerce_ai.telemetry.spans import TRIAGE_CONSUME
+from ecommerce_ai.telemetry.tracing import span
 
 DEFAULT_POLL_TIMEOUT_MS: Final = 500
 """Longest wait for new records before the stop request is checked again."""
@@ -152,6 +157,12 @@ class TriageConsumer:
             await self._refresh_lag(consumer)
 
     async def _handle(self, consumer: ConsumerPort, record: ConsumedRecord) -> None:
+        with span(TRIAGE_CONSUME, {MESSAGING_DESTINATION: record.topic}) as consume:
+            await self._handle_record(consumer, record, consume)
+
+    async def _handle_record(
+        self, consumer: ConsumerPort, record: ConsumedRecord, consume: Span
+    ) -> None:
         decoded = decode(record)
         ids: dict[str, str] = {}
         if isinstance(decoded, DecodeFailure):
@@ -171,6 +182,7 @@ class TriageConsumer:
         else:
             event = decoded
             ids = {"event_id": str(event.event_id), "order_id": str(event.order_id)}
+            consume.set_attribute(ORDER_ID, str(event.order_id))
 
             async def save() -> IntakeOutcome:
                 return await self._intake.record(event)

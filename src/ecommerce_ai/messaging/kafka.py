@@ -6,7 +6,7 @@ both with fakes. This is the only module that imports aiokafka, which ships no t
 its values are converted to typed ones here.
 """
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple, Protocol
 
@@ -144,8 +144,10 @@ class ProducerPort(Protocol):
         """Flush pending records and close the connections."""
         ...
 
-    async def send(self, topic: str, key: bytes, value: bytes) -> None:
-        """Send one record and return once every in-sync replica has acknowledged it."""
+    async def send(
+        self, topic: str, key: bytes, value: bytes, headers: Sequence[tuple[str, bytes]] = ()
+    ) -> None:
+        """Send one record with ``headers``; return once every in-sync replica acknowledged it."""
         ...
 
 
@@ -173,6 +175,10 @@ class AIOKafkaProducerAdapter:
         """Flush pending records and close the connections."""
         await self._producer.stop()
 
-    async def send(self, topic: str, key: bytes, value: bytes) -> None:
+    async def send(
+        self, topic: str, key: bytes, value: bytes, headers: Sequence[tuple[str, bytes]] = ()
+    ) -> None:
         """Send one record and wait for the acknowledgement of every in-sync replica."""
-        await self._producer.send_and_wait(topic, value=value, key=key)
+        await self._producer.send_and_wait(
+            topic, value=value, key=key, headers=list(headers) or None
+        )

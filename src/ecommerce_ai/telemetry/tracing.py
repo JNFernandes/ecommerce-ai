@@ -11,6 +11,7 @@ from typing import Final
 
 from opentelemetry import trace
 from opentelemetry.trace import Span, StatusCode, Tracer, TracerProvider
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry.util.types import AttributeValue
 
 from ecommerce_ai.telemetry.attributes import ERROR_TYPE
@@ -21,6 +22,7 @@ type Attributes = Mapping[str, AttributeValue | None]
 """Span attributes; a ``None`` value is left out."""
 
 _NOOP_TRACER: Final = trace.NoOpTracer()
+_PROPAGATOR: Final = TraceContextTextMapPropagator()
 _provider: TracerProvider | None = None
 
 
@@ -75,3 +77,10 @@ def span(
         except BaseException as error:
             record_error(current, error)
             raise
+
+
+def trace_headers() -> dict[str, str]:
+    """W3C ``traceparent``/``tracestate`` of the current span; empty when none is recording."""
+    carrier: dict[str, str] = {}
+    _PROPAGATOR.inject(carrier)
+    return carrier

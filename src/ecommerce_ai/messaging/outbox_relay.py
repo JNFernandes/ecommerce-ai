@@ -13,6 +13,9 @@ transient database error are retried with the same growing backoff and reported 
 ``RelayState.last_error`` (class name only); any other database error ends the task. Each attempt
 yields one ``outbox_publish`` log line with the event id, the order id (the key), the outcome and
 the error class, never the payload.
+
+Each record carries the headers ``correlation-id: <orderId>`` and, while tracing, ``traceparent``
+of its ``outbox.publish`` span (US-08); the payload is unchanged (constitution V).
 """
 
 import asyncio
@@ -22,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Final, Protocol
 
 import structlog
 from pydantic import JsonValue
@@ -31,6 +34,12 @@ from ecommerce_ai.infrastructure.db.engine import is_transient_db_error
 from ecommerce_ai.infrastructure.errors import error_name
 from ecommerce_ai.infrastructure.outbox import OutboxMessage
 from ecommerce_ai.messaging.kafka import ProducerFactory, ProducerPort
+from ecommerce_ai.telemetry.attributes import MESSAGING_DESTINATION, ORDER_ID
+from ecommerce_ai.telemetry.spans import OUTBOX_PUBLISH
+from ecommerce_ai.telemetry.tracing import span, trace_headers
+
+CORRELATION_ID_HEADER: Final = "correlation-id"
+"""Record header carrying the order id, the correlation id of a triage (constitution VII)."""
 
 logger = structlog.get_logger(__name__)
 
@@ -110,6 +119,13 @@ async def wait_or_wake(stop_event: asyncio.Event, wake: asyncio.Event, delay: fl
         for waiter in waiters:
             waiter.cancel()
         wake.clear()
+
+
+def record_headers(message: OutboxMessage) -> list[tuple[str, bytes]]:
+    """The record headers of ``message``: its correlation id and the current trace context."""
+    headers = [(CORRELATION_ID_HEADER, message.key.encode())]
+    headers.extend((name, value.encode()) for name, value in trace_headers().items())
+    return headers
 
 
 def encode_payload(payload: dict[str, JsonValue]) -> bytes:
@@ -208,6 +224,18 @@ class OutboxRelay:
             self._state.running = False
             await producer.stop()
 
+    @staticmethod
+    async def _send(producer: ProducerPort, message: OutboxMessage) -> None:
+        """Send ``message`` inside its ``outbox.publish`` span, whose context the headers carry."""
+        ids = {ORDER_ID: message.key, MESSAGING_DESTINATION: message.topic}
+        with span(OUTBOX_PUBLISH, ids):
+            await producer.send(
+                message.topic,
+                message.key.encode(),
+                encode_payload(message.payload),
+                record_headers(message),
+            )
+
     async def publish_one(self, producer: ProducerPort) -> bool:
         """Try to send the earliest due event; ``False`` when nothing is due.
 
@@ -220,9 +248,7 @@ class OutboxRelay:
             message = event.message
             attempt = event.attempts + 1
             try:
-                await producer.send(
-                    message.topic, message.key.encode(), encode_payload(message.payload)
-                )
+                await self._send(producer, message)
             except Exception as error:  # any send failure is one failed attempt of this event
                 name = error_name(error)
                 now = self._clock()

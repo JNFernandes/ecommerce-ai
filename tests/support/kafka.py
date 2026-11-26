@@ -3,7 +3,7 @@
 import asyncio
 import json
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -186,6 +186,7 @@ class SentRecord:
     topic: str
     key: bytes
     value: bytes
+    headers: tuple[tuple[str, bytes], ...] = ()
 
 
 class FakeProducer:
@@ -220,8 +221,10 @@ class FakeProducer:
         if self.stop_error is not None:
             raise self.stop_error
 
-    async def send(self, topic: str, key: bytes, value: bytes) -> None:
+    async def send(
+        self, topic: str, key: bytes, value: bytes, headers: Sequence[tuple[str, bytes]] = ()
+    ) -> None:
         """Raise the next queued failure, else record the record as acknowledged."""
         if self.failures:
             raise self.failures.popleft()
-        self.sent.append(SentRecord(topic=topic, key=key, value=value))
+        self.sent.append(SentRecord(topic=topic, key=key, value=value, headers=tuple(headers)))
