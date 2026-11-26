@@ -11,7 +11,7 @@
 
 ## Phase 2: Foundational (blocks all stories)
 
-- [ ] T004 Create `telemetry` package: `attributes.py` (allowlist key constants + `ALLOWED_KEYS`, D6), `tracing.py` (`use_provider`, `get_tracer`, `span(name, **attrs)` context manager with `record_exception=False`, sets `error.type` = class name, D2/D7), `nodes.py` (`traced_node(name, fn)` for sync/async LangGraph nodes) in src/ecommerce_ai/telemetry/
+- [X] T004 Create `telemetry` package: `attributes.py` (allowlist key constants + `ALLOWED_KEYS`, D6), `tracing.py` (`use_provider`, `get_tracer`, `span(name, **attrs)` context manager with `record_exception=False`, sets `error.type` = class name, D2/D7), `nodes.py` (`traced_node(name, fn)` for sync/async LangGraph nodes) in src/ecommerce_ai/telemetry/
 - [ ] T005 Implement `ScrubbingSpanExporter` (rebuild span with allowlisted attributes, drop events/link attributes/status description, scrub resource to `service.*`, catch exporter exceptions → FAILURE, warn by class name at most once per minute, D4) in src/ecommerce_ai/infrastructure/tracing.py
 - [ ] T006 Implement `build_tracer_provider(env)` in src/ecommerce_ai/infrastructure/tracing.py: `OTEL_TRACES_EXPORTER` none(default)/console/otlp, `OTEL_SDK_DISABLED`, unknown → None + one warning; `BatchSpanProcessor(ScrubbingSpanExporter(...))`; shutdown hook (D3, D5)
 - [ ] T007 Wire in `create_app(..., tracer_provider=None)`: build provider, `use_provider`, flush/shutdown in lifespan after workers stop, in src/ecommerce_ai/main.py
