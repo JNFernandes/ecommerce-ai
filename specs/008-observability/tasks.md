@@ -22,7 +22,7 @@
 
 Independent test: chat with a tool call + approval pause and one triage case produce the expected span tree (plan D7).
 
-- [ ] T010 [US1] `http.request` span (`http.route`, `http.response.status_code`, `request.id`) in src/ecommerce_ai/api/middleware.py::RequestIdMiddleware
+- [X] T010 [US1] `http.request` span (`http.route`, `http.response.status_code`, `request.id`) in src/ecommerce_ai/api/middleware.py::RequestIdMiddleware
 - [ ] T011 [US1] Chat: `chat.run`/`chat.resume` spans (`conversation.id`, `user.hash`, `request.id`, `prompt.version`) in src/ecommerce_ai/agents/assistant/service.py; wrap every node with `traced_node` and add `approval.pause`/`approval.resume` spans in src/ecommerce_ai/agents/assistant/graph.py
 - [ ] T012 [US1] `llm.call` spans (model, tokens, finish reason, `latency.ms`, `cost.usd` once US3 lands, `llm.outcome`) around model calls in src/ecommerce_ai/agents/assistant/graph.py and src/ecommerce_ai/agents/triage/graph.py
 - [ ] T013 [P] [US1] `tool.call` span (`tool.name`, `tool.outcome`) in src/ecommerce_ai/tools/invoker.py; `upstream.http` span (`http.response.status_code`, `error.type`) in src/ecommerce_ai/infrastructure/upstream.py

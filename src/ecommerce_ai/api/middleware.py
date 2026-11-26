@@ -1,4 +1,8 @@
-"""Correlation id middleware: one ``X-Request-Id`` per request, on every log line and response."""
+"""Correlation id middleware: one ``X-Request-Id`` per request, on every log line and response.
+
+It also opens the request's root ``http.request`` span (US-08), so every span the request causes
+shares its trace and carries the same ``request.id``.
+"""
 
 import re
 import time
@@ -8,6 +12,9 @@ from typing import Final
 import structlog
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from ecommerce_ai.telemetry.attributes import HTTP_ROUTE, HTTP_STATUS_CODE, REQUEST_ID
+from ecommerce_ai.telemetry.tracing import span
 
 REQUEST_ID_HEADER: Final = "X-Request-Id"
 """Header that carries the correlation id in both directions."""
@@ -24,12 +31,20 @@ def accept_request_id(value: str | None) -> str:
     return str(uuid.uuid4())
 
 
+def route_template(scope: Scope) -> str | None:
+    """The matched route's path template (``/chat/conversations/{conversation_id}``), if any."""
+    path = getattr(scope.get("route"), "path", None)
+    return path if isinstance(path, str) else None
+
+
 class RequestIdMiddleware:
     """Bind ``request_id`` to the logging context for the whole request and echo it back.
 
     An incoming ``X-Request-Id`` is reused when it is 1-128 characters of ``[A-Za-z0-9._:-]``; any
     other value (or none) is replaced by a new UUID, so a caller cannot inject text into the logs.
-    One ``request completed`` line is logged per request, without headers or bodies.
+    One ``request completed`` line is logged per request, without headers or bodies, and one
+    ``http.request`` span records the route template (never the raw path or query), the status
+    code and the request id.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -53,10 +68,17 @@ class RequestIdMiddleware:
             await send(message)
 
         started = time.perf_counter()
-        with structlog.contextvars.bound_contextvars(request_id=request_id):
+        with (
+            structlog.contextvars.bound_contextvars(request_id=request_id),
+            span("http.request", {REQUEST_ID: request_id}) as request_span,
+        ):
             try:
                 await self._app(scope, receive, send_with_request_id)
             finally:
+                request_span.set_attribute(HTTP_STATUS_CODE, status_code)
+                route = route_template(scope)
+                if route is not None:
+                    request_span.set_attribute(HTTP_ROUTE, route)
                 logger.info(
                     "request completed",
                     method=scope["method"],
