@@ -4,6 +4,22 @@ import pytest
 
 from ecommerce_ai.infrastructure.settings import Settings
 
+# Standard variables read outside ``Settings``: OpenTelemetry's exporter selection and the ones
+# LangSmith/LangChain read themselves. A developer's shell must never turn tracing on in a test.
+_STANDARD_VARIABLES = (
+    "OTEL_SDK_DISABLED",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_SERVICE_NAME",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "LANGCHAIN_TRACING_V2",
+    "LANGCHAIN_HIDE_INPUTS",
+    "LANGCHAIN_HIDE_OUTPUTS",
+    "LANGSMITH_API_KEY",
+    "LANGCHAIN_API_KEY",
+)
+
 
 @pytest.fixture(autouse=True)
 def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -14,7 +30,7 @@ def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     enable them with fake factories.
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)  # never the developer's .env
-    for name in Settings.model_fields:
-        monkeypatch.delenv(name.upper(), raising=False)
+    for name in (*(field.upper() for field in Settings.model_fields), *_STANDARD_VARIABLES):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TRIAGE_CONSUMER_ENABLED", "false")
     monkeypatch.setenv("TRIAGE_WORKER_ENABLED", "false")

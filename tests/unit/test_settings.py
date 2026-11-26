@@ -42,6 +42,30 @@ def test_should_read_every_value_from_the_environment(monkeypatch: pytest.Monkey
     assert settings.daily_token_budget == 0
 
 
+def test_should_keep_langsmith_off_and_hidden_when_the_environment_is_empty() -> None:
+    settings = Settings()
+
+    assert settings.model_prices_path == "config/model_prices.json"
+    assert settings.langsmith_tracing is False
+    assert settings.langsmith_hide_inputs is True
+    assert settings.langsmith_hide_outputs is True
+
+
+def test_should_read_the_observability_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODEL_PRICES_PATH", "/etc/prices.json")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_HIDE_OUTPUTS", "false")
+
+    settings = Settings()
+
+    assert settings.model_prices_path == "/etc/prices.json"
+    assert settings.langsmith_tracing is True
+    assert settings.langsmith_hide_inputs is True
+    assert settings.langsmith_hide_outputs is False
+
+
 def test_should_treat_a_blank_model_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_MODEL", "  ")
 

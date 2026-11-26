@@ -298,6 +298,21 @@ class Settings(BaseSettings):
         default=False,
         description="Reserved for a future LLM-based input classifier; it has no effect yet.",
     )
+    model_prices_path: str = Field(
+        default="config/model_prices.json",
+        min_length=1,
+        description="JSON file with per-model token prices used for the per-call cost estimate.",
+    )
+    langsmith_tracing: bool = Field(
+        default=False,
+        description="Send LangGraph runs to LangSmith; off by default, nothing leaves the process.",
+    )
+    langsmith_hide_inputs: bool = Field(
+        default=True, description="When LangSmith is on, hide run inputs (message text, prompts)."
+    )
+    langsmith_hide_outputs: bool = Field(
+        default=True, description="When LangSmith is on, hide run outputs (answers, tool results)."
+    )
 
     @field_validator("cors_allowed_origins", "kafka_brokers", mode="before")
     @classmethod
