@@ -1,4 +1,11 @@
-"""OpenTelemetry SDK setup: the scrubbing exporter wrapper (plan D4).
+"""OpenTelemetry SDK setup: exporter selection (D3, D5) and the scrubbing exporter wrapper (D4).
+
+``build_tracer_provider`` reads the standard ``OTEL_TRACES_EXPORTER`` itself, defaulting to
+``none`` (the SDK's own default is ``otlp``): nothing leaves the process unless asked. ``console``
+prints spans to stdout, ``otlp`` sends them over OTLP/HTTP (endpoint, headers and timeout from the
+standard ``OTEL_EXPORTER_OTLP_*`` variables). ``OTEL_SDK_DISABLED=true`` turns tracing off; an
+unknown exporter turns it off with one warning. Spans go through a ``BatchSpanProcessor`` (a
+background thread with a bounded queue that drops when full), so exporting never delays a request.
 
 ``ScrubbingSpanExporter`` sits between the span processor and the real exporter. A finished span
 is immutable, so the wrapper rebuilds each one with only the allowlisted attributes
@@ -9,18 +16,93 @@ becomes ``FAILURE`` and a warning naming its class, at most once per ``warn_inte
 
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from importlib import metadata
 from typing import Final
 
 import structlog
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+    SpanExporter,
+    SpanExportResult,
+)
 from opentelemetry.trace import Link, Status
 
 from ecommerce_ai.telemetry.attributes import ALLOWED_KEYS, RESOURCE_KEYS
 
 _logger = structlog.get_logger(__name__)
+
+SERVICE_NAME: Final = "ecommerce-ai"
+DISTRIBUTION: Final = "ecommerce-ai"
+
+type ExporterFactory = Callable[[], SpanExporter]
+
+EXPORTERS: Final[Mapping[str, ExporterFactory]] = {
+    "console": ConsoleSpanExporter,
+    "otlp": OTLPSpanExporter,
+}
+"""``OTEL_TRACES_EXPORTER`` values this service supports, besides ``none``."""
+
+
+def build_tracer_provider(
+    env: Mapping[str, str],
+    *,
+    exporters: Mapping[str, ExporterFactory] = EXPORTERS,
+) -> TracerProvider | None:
+    """Build the provider ``env`` asks for, or ``None`` when tracing stays off.
+
+    ``OTEL_TRACES_EXPORTER`` may list several exporters separated by commas; each gets its own
+    batch processor behind a ``ScrubbingSpanExporter``. ``none`` (the default) or
+    ``OTEL_SDK_DISABLED=true`` gives ``None``; any unknown name gives ``None`` and one warning.
+    """
+    if env.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
+        return None
+    names = [
+        name.strip().lower()
+        for name in env.get("OTEL_TRACES_EXPORTER", "none").split(",")
+        if name.strip()
+    ]
+    names = [name for name in names if name != "none"]
+    if not names:
+        return None
+    unknown = sorted(name for name in names if name not in exporters)
+    if unknown:
+        _logger.warning("tracing_disabled", reason="unknown_exporter", exporters=unknown)
+        return None
+    provider = TracerProvider(resource=_resource(env), shutdown_on_exit=False)
+    for name in names:
+        provider.add_span_processor(BatchSpanProcessor(ScrubbingSpanExporter(exporters[name]())))
+    _logger.info("tracing_enabled", exporters=names)
+    return provider
+
+
+def shutdown_tracer_provider(provider: TracerProvider | None) -> None:
+    """Flush and shut ``provider`` down; an exporter that fails or hangs only delays shutdown.
+
+    The scrubbing wrapper already turns exporter errors into a warning; anything raised by the
+    SDK itself is logged by class name and not raised, so stopping the app always completes.
+    """
+    if provider is None:
+        return
+    try:
+        provider.force_flush()
+        provider.shutdown()
+    except Exception as error:
+        _logger.warning("tracing_shutdown_failed", error_type=type(error).__name__)
+
+
+def _resource(env: Mapping[str, str]) -> Resource:
+    try:
+        version = metadata.version(DISTRIBUTION)
+    except metadata.PackageNotFoundError:  # pragma: no cover - the project is always installed
+        version = "unknown"
+    name = env.get("OTEL_SERVICE_NAME", "").strip() or SERVICE_NAME
+    return Resource({"service.name": name, "service.version": version})
+
 
 WARN_INTERVAL_SECONDS: Final = 60.0
 EXPORT_FAILED: Final = "ExportFailed"
