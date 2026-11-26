@@ -39,6 +39,7 @@ cannot answer after a decision, a fixed per-outcome text is the answer (ADR 0003
 import asyncio
 import math
 import operator
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -47,6 +48,7 @@ from uuid import UUID, uuid4
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
@@ -122,9 +124,25 @@ from ecommerce_ai.agents.guardrails import Guardrails, ToolContext
 from ecommerce_ai.agents.guardrails.events import GuardEvent
 from ecommerce_ai.agents.guardrails.tool_guard import TOOL_GUARD_SUMMARY, ToolRule, call_key
 from ecommerce_ai.agents.guardrails.tool_guard import refusal_payload as tool_refusal_payload
-from ecommerce_ai.agents.ports import Clock, ModelError, ModelUnavailable, SystemClock
+from ecommerce_ai.agents.ports import (
+    Clock,
+    LlmCallOutcome,
+    ModelError,
+    ModelUnavailable,
+    SystemClock,
+    llm_outcome,
+)
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
 from ecommerce_ai.infrastructure.retry import call_with_retry
+from ecommerce_ai.telemetry.attributes import LATENCY_MS, LLM_OUTCOME, PROMPT_VERSION, TOOL_NAME
+from ecommerce_ai.telemetry.nodes import traced_node
+from ecommerce_ai.telemetry.spans import (
+    APPROVAL_PAUSE,
+    APPROVAL_RESUME,
+    LLM_CALL,
+    llm_call_attributes,
+)
+from ecommerce_ai.telemetry.tracing import Attributes, record_error, set_attributes, span
 
 type GraphEvent = (
     Token
@@ -162,6 +180,8 @@ _GATEKEEPER: Final = "gatekeeper"
 _FINALIZE: Final = "finalize"
 _THINKING_BLOCKS: Final = frozenset({"thinking", "redacted_thinking"})
 DEFAULT_MAX_TOOL_ROUNDS: Final = 5
+UNKNOWN_TOOL_STAT: Final = "<unknown>"
+"""The ``chat_run`` log's name for a requested tool the registry does not offer."""
 DEFAULT_APPROVAL_TTL_SECONDS: Final = 600
 """Seconds a proposal stays approvable (``APPROVAL_TTL_SECONDS``)."""
 
@@ -444,6 +464,19 @@ def _stat(name: str, outcome: ToolOutcome) -> dict[str, JsonValue]:
     return stat.model_dump(mode="json")
 
 
+def _await_decision(payload: dict[str, JsonValue], pending: PendingApproval) -> Decision:
+    """The decision on ``pending``; pauses the run (``approval.pause``) until there is one."""
+    try:
+        decision = _decision_for(interrupt(payload), pending.approval_id)
+        while decision is None:
+            decision = _decision_for(interrupt(payload), pending.approval_id)
+    except GraphInterrupt:
+        with span(APPROVAL_PAUSE, {TOOL_NAME: pending.action}):
+            pass
+        raise
+    return decision
+
+
 def _config(conversation_id: UUID) -> RunnableConfig:
     """The checkpointer thread of the conversation."""
     return {"configurable": {"thread_id": str(conversation_id)}}
@@ -485,6 +518,7 @@ class ChatGraph:
         self._max_retries = max_retries
         self._sleep = sleep
         self._tools = tools
+        self._tool_names = frozenset(spec.name for spec in tools.tool_specs())
         self._prompt = prompt
         self._checkpointer = checkpointer
         self._clock = clock or SystemClock()
@@ -498,12 +532,12 @@ class ChatGraph:
 
     def _compile(self) -> CompiledStateGraph[ChatState, RunContext, ChatState, ChatState]:
         graph = StateGraph(ChatState, context_schema=RunContext)
-        graph.add_node(_GUARD, self._guard_input)
-        graph.add_node(_AGENT, self._agent)
-        graph.add_node(_TOOLS, self._run_tools)
-        graph.add_node(_APPROVAL, self._approval)
-        graph.add_node(_GATEKEEPER, self._gatekeeper)
-        graph.add_node(_FINALIZE, self._finalize)
+        graph.add_node(_GUARD, traced_node(_GUARD, self._guard_input))
+        graph.add_node(_AGENT, traced_node(_AGENT, self._agent))
+        graph.add_node(_TOOLS, traced_node(_TOOLS, self._run_tools))
+        graph.add_node(_APPROVAL, traced_node(_APPROVAL, self._approval))
+        graph.add_node(_GATEKEEPER, traced_node(_GATEKEEPER, self._gatekeeper))
+        graph.add_node(_FINALIZE, traced_node(_FINALIZE, self._finalize))
         graph.add_edge(START, _GUARD)
         graph.add_conditional_edges(_GUARD, _after_guard)
         graph.add_conditional_edges(_AGENT, _after_agent)
@@ -771,16 +805,31 @@ class ChatGraph:
             # The adapter enforces the per-call timeout itself (LLM_TIMEOUT_SECONDS).
             nonlocal failed
             if allowance is not None and not await allowance.admit():
+                self._trace_refused_call()
                 raise _BudgetSpent
             turn = _Turn()
-            try:
-                await self._stream_turn(model, request, evidence, write, turn, replacement)
-            except ModelError as error:
-                spent = Usage(input_tokens=error.input_tokens, output_tokens=error.output_tokens)
-                failed = failed + spent
-                if allowance is not None:
-                    allowance.spend(spent)
-                raise _TurnFailed(turn, error) from error
+            version = {PROMPT_VERSION: self._prompt.version}
+            with span(LLM_CALL, version, ignore=(_TurnFailed,)) as call:
+                started = time.perf_counter()
+                try:
+                    await self._stream_turn(model, request, evidence, write, turn, replacement)
+                except ModelError as error:
+                    spent = Usage(
+                        input_tokens=error.input_tokens, output_tokens=error.output_tokens
+                    )
+                    failed = failed + spent
+                    if allowance is not None:
+                        allowance.spend(spent)
+                    record_error(call, error)
+                    closing = llm_call_attributes(
+                        outcome=llm_outcome(error),
+                        latency_ms=self._elapsed_ms(started),
+                        input_tokens=spent.input_tokens,
+                        output_tokens=spent.output_tokens,
+                    )
+                    set_attributes(call, closing)
+                    raise _TurnFailed(turn, error) from error
+                set_attributes(call, self._turn_attributes(turn.end, started))
             if allowance is not None and turn.end is not None:
                 allowance.spend(turn.end.usage, turn.end.model_id)
             return turn
@@ -831,6 +880,42 @@ class ChatGraph:
             "usage": (usage + end.usage).model_dump(),
             "model_id": end.model_id,
         }
+
+    def _stat_name(self, name: str) -> str:
+        """``name`` for the ``chat_run`` log if it is an offered tool, else a fixed label.
+
+        A requested name is model output, so an unknown one may carry anything (US-08 FR-008).
+        """
+        return name if name in self._tool_names else UNKNOWN_TOOL_STAT
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> int:
+        # Wall time, not the injected clock: a span's latency never changes a result.
+        return max(0, round((time.perf_counter() - started) * 1000))
+
+    def _turn_attributes(self, end: ModelTurnEnd | None, started: float) -> Attributes:
+        """Closing ``llm.call`` attributes of a turn that ended without a model error."""
+        latency = self._elapsed_ms(started)
+        if end is None:  # stopped by the gatekeeper before the model finished
+            return llm_call_attributes(outcome=LlmCallOutcome.OK, latency_ms=latency)
+        return llm_call_attributes(
+            outcome=LlmCallOutcome.OK,
+            latency_ms=latency,
+            model=end.model_id,
+            input_tokens=end.usage.input_tokens,
+            output_tokens=end.usage.output_tokens,
+            finish_reason=end.stop_reason,
+        )
+
+    def _trace_refused_call(self) -> None:
+        """An ``llm.call`` span for a call the token budget refused: nothing was sent."""
+        refused: Attributes = {
+            PROMPT_VERSION: self._prompt.version,
+            LLM_OUTCOME: LlmCallOutcome.BUDGET.value,
+            LATENCY_MS: 0,
+        }
+        with span(LLM_CALL, refused):
+            pass
 
     async def _stream_turn(
         self,
@@ -945,7 +1030,7 @@ class ChatGraph:
                     call_id=call.call_id, name=call.name, ok=outcome.ok, payload=sanitized.payload
                 )
                 summary = summarize(call.name, outcome)
-                stats.append(_stat(call.name, outcome))
+                stats.append(_stat(self._stat_name(call.name), outcome))
                 unauthenticated = unauthenticated or outcome.upstream_unauthenticated
             write(ToolResult(call_id=call.call_id, name=call.name, ok=result.ok, summary=summary))
             results.append(result)
@@ -1050,9 +1135,14 @@ class ChatGraph:
             return {}
         pending = PendingApproval.model_validate(raw)
         payload = pending.required_event().data()
-        decision = _decision_for(interrupt(payload), pending.approval_id)
-        while decision is None:
-            decision = _decision_for(interrupt(payload), pending.approval_id)
+        decision = _await_decision(payload, pending)
+        with span(APPROVAL_RESUME, {TOOL_NAME: pending.action}):
+            return await self._carry_out(state, pending, decision)
+
+    async def _carry_out(
+        self, state: ChatState, pending: PendingApproval, decision: Decision
+    ) -> StateUpdate:
+        """Carry out the customer's ``decision`` on ``pending``: re-read, then cancel once."""
         stats: list[dict[str, JsonValue]] = []
         unauthenticated = False
         result_payload: dict[str, JsonValue] | None = None

@@ -13,6 +13,7 @@ from pydantic import SecretStr, ValidationError
 from ecommerce_ai.agents.triage.model import DraftOutput, SuggestedAction
 from ecommerce_ai.agents.triage.ports import (
     ModelOutputInvalid,
+    ModelTimeout,
     ModelUnavailable,
     PromptInput,
     TriageModel,
@@ -167,6 +168,11 @@ async def test_should_charge_the_output_limit_when_the_output_fails_the_schema()
 async def test_should_raise_unavailable_when_the_api_fails(error: anthropic.APIError) -> None:
     with pytest.raises(ModelUnavailable):
         await _model(FakeMessages(error)).draft(PROMPT)
+
+
+async def test_should_raise_timeout_when_the_api_times_out() -> None:
+    with pytest.raises(ModelTimeout):
+        await _model(FakeMessages(anthropic.APITimeoutError(request=REQUEST))).draft(PROMPT)
 
 
 async def test_should_never_log_prompt_text_or_model_output() -> None:

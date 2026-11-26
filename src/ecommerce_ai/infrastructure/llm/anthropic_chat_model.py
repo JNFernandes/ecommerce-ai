@@ -41,6 +41,7 @@ from ecommerce_ai.agents.assistant.model import (
 from ecommerce_ai.agents.assistant.ports import (
     ChatModelEvent,
     ChatModelRequest,
+    ModelTimeout,
     ModelTurnEnd,
     ModelUnavailable,
     TextDelta,
@@ -197,6 +198,9 @@ class AnthropicChatModel:
                     if isinstance(event, TextEvent) and event.text:
                         yield TextDelta(text=event.text)
                 message = await stream.get_final_message()
+        except anthropic.APITimeoutError as error:
+            logger.warning("llm_call_failed", error_type=type(error).__name__)
+            raise ModelTimeout("the model did not answer in time") from None
         except anthropic.APIError as error:
             logger.warning("llm_call_failed", error_type=type(error).__name__)
             raise ModelUnavailable("the model did not answer") from None

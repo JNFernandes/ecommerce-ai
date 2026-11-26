@@ -44,6 +44,7 @@ come before any approval is touched, so a pending approval is never withdrawn by
 """
 
 import asyncio
+import contextlib
 import hashlib
 from collections.abc import AsyncGenerator, Iterable
 from dataclasses import dataclass
@@ -98,6 +99,14 @@ from ecommerce_ai.agents.guardrails.normalizer import normalize
 from ecommerce_ai.agents.guardrails.quotas import UserQuotas
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.errors import error_fields
+from ecommerce_ai.telemetry.attributes import (
+    CONVERSATION_ID,
+    PROMPT_VERSION,
+    REQUEST_ID,
+    USER_HASH,
+)
+from ecommerce_ai.telemetry.spans import CHAT_RESUME, CHAT_RUN
+from ecommerce_ai.telemetry.tracing import Attributes, span
 
 USER_HASH_CHARS: Final = 16
 
@@ -222,7 +231,25 @@ class ChatRun:
         self._started = False
 
     async def events(self) -> AsyncGenerator[StreamEvent]:
-        """``message.start``, the run's events, then ``message.end`` or ``error``."""
+        """``message.start``, the run's events, then ``message.end`` or ``error``.
+
+        The whole run is one ``chat.run`` span (``chat.resume`` after a decision), the parent of
+        every node, model and tool span; it carries ids and hashes only (US-08).
+        """
+        name = CHAT_RUN if self._decided is None else CHAT_RESUME
+        attributes: Attributes = {
+            CONVERSATION_ID: str(self.conversation_id),
+            USER_HASH: user_hash(self.user_id),
+            REQUEST_ID: self._request_id,
+            PROMPT_VERSION: self._graph.prompt_version,
+        }
+        # A reader closing the stream early is not a failure of the run.
+        with span(name, attributes, ignore=(GeneratorExit,)):
+            async with contextlib.aclosing(self._events()) as events:
+                async for event in events:
+                    yield event
+
+    async def _events(self) -> AsyncGenerator[StreamEvent]:
         self._started = True
         self._streams.attach(self.conversation_id)
         started = self._clock.monotonic()
