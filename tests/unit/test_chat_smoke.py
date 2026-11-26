@@ -8,6 +8,8 @@ import pytest
 from scripts import chat_smoke
 from scripts.chat_smoke import smoke
 
+from ecommerce_ai.agents.assistant.gatekeeper import SAFE_MESSAGE
+
 URL = "http://chat.test/chat"
 CONVERSATION = "9b1f0c2e-0000-4000-8000-000000000001"
 
@@ -268,3 +270,45 @@ async def test_should_print_an_unknown_total_and_fail_when_the_decision_is_refus
     assert code == 1
     assert "total unknown" in out.getvalue()
     assert "[http 410]" in out.getvalue()
+
+
+def _replaced_end() -> tuple[str, object]:
+    return (
+        "message.end",
+        {
+            "messageId": "m-1",
+            "finishReason": "replaced",
+            "promptVersion": "assistant.v4",
+            "modelId": "claude-test",
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "violations": ["promise"],
+        },
+    )
+
+
+async def test_should_print_the_safe_message_on_its_own_marked_line_when_a_segment_is_stopped() -> (
+    None
+):
+    stream = _stream(
+        ("message.start", {"conversationId": CONVERSATION, "messageId": "m-1"}),
+        ("token", {"text": "I did not change anything."}),
+        ("token", {"text": SAFE_MESSAGE}),
+        _replaced_end(),
+    )
+    code, output = await _run(FakeChat(stream))
+
+    assert code == 0
+    assert f"I did not change anything.\n[replaced] {SAFE_MESSAGE}\n[end] replaced" in output
+
+
+async def test_should_print_the_replacement_marked_when_message_replaced_arrives() -> None:
+    stream = _stream(
+        ("message.start", {"conversationId": CONVERSATION, "messageId": "m-1"}),
+        ("token", {"text": "Your order is on its way."}),
+        ("message.replaced", {"messageId": "m-1", "text": SAFE_MESSAGE}),
+        _replaced_end(),
+    )
+    code, output = await _run(FakeChat(stream))
+
+    assert code == 0
+    assert f"on its way.\n[replaced] {SAFE_MESSAGE}\n[end] replaced" in output

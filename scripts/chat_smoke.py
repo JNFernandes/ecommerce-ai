@@ -2,7 +2,8 @@
 
 Creates a conversation (or continues the one in ``CONVERSATION_ID``), posts the question given on
 the command line and prints the streamed answer: each tool call and result on its own line, the
-tokens as they arrive, then the finish reason or the error code and message. The customer access
+tokens as they arrive (text the gatekeeper replaced on a new line after ``[replaced]``), then
+the finish reason or the error code and message. The customer access
 token comes from ``TOKEN`` and is never printed; ``CHAT_URL`` overrides the default
 ``http://localhost:8002/chat``. The conversation id is printed first so a follow-up can reuse it.
 The SSE stream is parsed with the standard library only (no SSE client dependency).
@@ -23,8 +24,12 @@ from typing import TextIO
 
 import httpx
 
+from ecommerce_ai.agents.assistant.gatekeeper import SAFE_MESSAGE
+
 DEFAULT_CHAT_URL = "http://localhost:8002/chat"
 AWAITING_APPROVAL = "awaiting_approval"
+REPLACED = "[replaced]"
+"""Marks the text that replaced what the gatekeeper stopped or withdrew."""
 APPROVE_ANSWERS = frozenset({"y", "yes"})
 TIMEOUT = httpx.Timeout(10.0, read=120.0)
 """Connect/write limits for the requests; a long read limit for a slow answer."""
@@ -73,7 +78,11 @@ def render(event: Event) -> str:
             outcome = "ok" if data.get("ok") else "failed"
             return f"[tool] {data.get('name')} {outcome}: {data.get('summary')}\n"
         case "token":
-            return str(data.get("text", ""))
+            text = str(data.get("text", ""))
+            # A stopped segment is replaced in the stream by the fixed safe message (contract).
+            return f"\n{REPLACED} {text}" if text == SAFE_MESSAGE else text
+        case "message.replaced":
+            return f"\n{REPLACED} {data.get('text')}"
         case "message.end":
             usage = data.get("usage")
             tokens = (
