@@ -126,6 +126,8 @@ from ecommerce_ai.agents.guardrails.tool_guard import TOOL_GUARD_SUMMARY, ToolRu
 from ecommerce_ai.agents.guardrails.tool_guard import refusal_payload as tool_refusal_payload
 from ecommerce_ai.agents.ports import (
     Clock,
+    LlmCall,
+    LlmCallKind,
     LlmCallOutcome,
     ModelError,
     ModelUnavailable,
@@ -133,6 +135,7 @@ from ecommerce_ai.agents.ports import (
     llm_outcome,
 )
 from ecommerce_ai.agents.prompts.loader import SystemPrompt, load_system_prompt
+from ecommerce_ai.agents.usage import LlmUsage
 from ecommerce_ai.infrastructure.retry import call_with_retry
 from ecommerce_ai.telemetry.attributes import LATENCY_MS, LLM_OUTCOME, PROMPT_VERSION, TOOL_NAME
 from ecommerce_ai.telemetry.nodes import traced_node
@@ -230,6 +233,10 @@ class RunContext:
     """This run's canary (US-07 FR-007); in the context only, so never checkpointed."""
     tool_allowlist: frozenset[str] | None = None
     """Tools the conversation may call (US-07 FR-010; ``None``: every offered tool)."""
+    conversation_id: UUID | None = None
+    """The conversation the run answers in, for its usage records (US-08)."""
+    request_id: str | None = None
+    """The HTTP request that started the run, for its usage records (US-08)."""
 
 
 @dataclass(slots=True)
@@ -284,6 +291,15 @@ class _Checked:
             payload=refusal_payload(refusal, self.status, self.order_id),
         )
         return result, refusal_summary(refusal)
+
+
+@dataclass(frozen=True, slots=True)
+class _ChatCall:
+    """One model call's usage record (``None`` outside a conversation) and span-only details."""
+
+    record: LlmCall | None
+    finish_reason: str | None
+    outcome: LlmCallOutcome
 
 
 class _BudgetSpent(Exception):
@@ -506,13 +522,16 @@ class ChatGraph:
         clock: Clock | None = None,
         approval_ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
         guardrails: Guardrails | None = None,
+        usage: LlmUsage | None = None,
     ) -> None:
         """Answer with ``model`` (``None``: every run ends ``LLM_UNAVAILABLE``) and ``tools``.
 
         ``clock`` stamps proposals, which stay approvable for ``approval_ttl_seconds``.
-        ``guardrails`` are the US-07 guards (``None``: ``Guardrails.noop()``).
+        ``guardrails`` are the US-07 guards (``None``: ``Guardrails.noop()``). ``usage`` prices
+        and records every model call (``None``: nothing is recorded, US-08).
         """
         self.guardrails = guardrails or Guardrails.noop()
+        self._usage = usage or LlmUsage()
         self._model = model
         self._max_tool_rounds = max_tool_rounds
         self._max_retries = max_retries
@@ -555,6 +574,7 @@ class ChatGraph:
         quota: ProposalQuota | None = None,
         *,
         tool_allowlist: frozenset[str] | None = None,
+        request_id: str | None = None,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Answer ``text`` in the conversation: the events in order, then one ``RunOutcome``.
 
@@ -563,7 +583,7 @@ class ChatGraph:
         (``None``: every offered tool). A run that pauses for an approval ends
         ``awaiting_approval`` with the outcome's ``proposal``.
         """
-        context = self._context(allowance, quota, tool_allowlist)
+        context = self._context(allowance, quota, tool_allowlist, conversation_id, request_id)
         async for item in self._stream(_initial(text), conversation_id, context):
             yield item
 
@@ -576,6 +596,7 @@ class ChatGraph:
         quota: ProposalQuota | None = None,
         *,
         tool_allowlist: frozenset[str] | None = None,
+        request_id: str | None = None,
     ) -> AsyncGenerator[GraphEvent | RunOutcome]:
         """Continue the run paused on ``approval_id`` with the customer's recorded ``decision``.
 
@@ -594,7 +615,7 @@ class ChatGraph:
         command: Command[str] = Command(
             resume=_resume_value(approval_id, decision), update={"guard_events": []}
         )
-        context = self._context(allowance, quota, tool_allowlist)
+        context = self._context(allowance, quota, tool_allowlist, conversation_id, request_id)
         async for item in self._stream(command, conversation_id, context):
             yield item
 
@@ -603,6 +624,8 @@ class ChatGraph:
         allowance: RunAllowance | None,
         quota: ProposalQuota | None,
         tool_allowlist: frozenset[str] | None,
+        conversation_id: UUID,
+        request_id: str | None,
     ) -> RunContext:
         """The run's context, with a fresh canary."""
         return RunContext(
@@ -610,6 +633,8 @@ class ChatGraph:
             quota=quota,
             canary=self.guardrails.canary_factory(),
             tool_allowlist=tool_allowlist,
+            conversation_id=conversation_id,
+            request_id=request_id,
         )
 
     def _evidence(
@@ -806,6 +831,7 @@ class ChatGraph:
             nonlocal failed
             if allowance is not None and not await allowance.admit():
                 self._trace_refused_call()
+                await self._record(runtime.context, LlmCallOutcome.BUDGET)
                 raise _BudgetSpent
             turn = _Turn()
             version = {PROMPT_VERSION: self._prompt.version}
@@ -821,17 +847,21 @@ class ChatGraph:
                     if allowance is not None:
                         allowance.spend(spent)
                     record_error(call, error)
-                    closing = llm_call_attributes(
-                        outcome=llm_outcome(error),
+                    failed_call = self._call(
+                        runtime.context,
+                        llm_outcome(error),
                         latency_ms=self._elapsed_ms(started),
                         input_tokens=spent.input_tokens,
                         output_tokens=spent.output_tokens,
                     )
-                    set_attributes(call, closing)
+                    set_attributes(call, self._closing(failed_call))
+                    await self._record_call(failed_call)
                     raise _TurnFailed(turn, error) from error
-                set_attributes(call, self._turn_attributes(turn.end, started))
+                answered = self._answered_call(runtime.context, turn.end, started)
+                set_attributes(call, self._closing(answered))
             if allowance is not None and turn.end is not None:
                 allowance.spend(turn.end.usage, turn.end.model_id)
+            await self._record_call(answered)
             return turn
 
         try:
@@ -893,19 +923,78 @@ class ChatGraph:
         # Wall time, not the injected clock: a span's latency never changes a result.
         return max(0, round((time.perf_counter() - started) * 1000))
 
-    def _turn_attributes(self, end: ModelTurnEnd | None, started: float) -> Attributes:
-        """Closing ``llm.call`` attributes of a turn that ended without a model error."""
+    def _answered_call(
+        self, context: RunContext, end: ModelTurnEnd | None, started: float
+    ) -> "_ChatCall":
+        """The usage record of a turn that ended without a model error.
+
+        A turn the gatekeeper stopped before the model finished has no usage report (no tokens).
+        """
         latency = self._elapsed_ms(started)
-        if end is None:  # stopped by the gatekeeper before the model finished
-            return llm_call_attributes(outcome=LlmCallOutcome.OK, latency_ms=latency)
-        return llm_call_attributes(
-            outcome=LlmCallOutcome.OK,
+        if end is None:
+            return self._call(context, LlmCallOutcome.OK, latency_ms=latency)
+        return self._call(
+            context,
+            LlmCallOutcome.OK,
             latency_ms=latency,
-            model=end.model_id,
+            model_id=end.model_id,
             input_tokens=end.usage.input_tokens,
             output_tokens=end.usage.output_tokens,
             finish_reason=end.stop_reason,
         )
+
+    def _call(
+        self,
+        context: RunContext,
+        outcome: LlmCallOutcome,
+        *,
+        latency_ms: int = 0,
+        model_id: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        finish_reason: str | None = None,
+    ) -> "_ChatCall":
+        """The usage record of one model call of the run, priced from its tokens."""
+        record = None
+        if context.conversation_id is not None:
+            record = LlmCall(
+                kind=LlmCallKind.CHAT,
+                conversation_id=context.conversation_id,
+                request_id=context.request_id,
+                model_id=model_id,
+                prompt_version=self._prompt.version,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost_usd=self._usage.cost(model_id, input_tokens, output_tokens),
+                latency_ms=latency_ms,
+                outcome=outcome,
+            )
+        return _ChatCall(record=record, finish_reason=finish_reason, outcome=outcome)
+
+    @staticmethod
+    def _closing(call: "_ChatCall") -> Attributes:
+        """The closing ``llm.call`` span attributes of ``call``."""
+        record = call.record
+        if record is None:
+            return llm_call_attributes(outcome=call.outcome, latency_ms=0)
+        return llm_call_attributes(
+            outcome=record.outcome,
+            latency_ms=record.latency_ms,
+            model=record.model_id,
+            input_tokens=record.input_tokens,
+            output_tokens=record.output_tokens,
+            finish_reason=call.finish_reason,
+            cost_usd=record.estimated_cost_usd,
+        )
+
+    async def _record_call(self, call: "_ChatCall") -> None:
+        """Store ``call``'s usage record, if it has one (fails open)."""
+        if call.record is not None:
+            await self._usage.record(call.record)
+
+    async def _record(self, context: RunContext, outcome: LlmCallOutcome) -> None:
+        """Store the usage record of a call that sent nothing (``budget``)."""
+        await self._record_call(self._call(context, outcome))
 
     def _trace_refused_call(self) -> None:
         """An ``llm.call`` span for a call the token budget refused: nothing was sent."""

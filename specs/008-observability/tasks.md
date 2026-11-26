@@ -43,12 +43,12 @@ Independent test: conversation with fake token, email and secret leaves no trace
 
 Independent test: ok/timeout/error/budget/fallback each produce one row with the right outcome and cost.
 
-- [ ] T021 [US3] `ModelPrices` (Pydantic, load from `MODEL_PRICES_PATH`, startup error when missing/invalid) + `estimate_cost(model_id, in, out) -> Decimal | None` warning once per unknown model in src/ecommerce_ai/infrastructure/pricing.py
-- [ ] T022 [US3] Migration 0006 `llm_calls` (plan data model) in src/ecommerce_ai/infrastructure/db/migrations/versions/0006_llm_calls.py and Core table in src/ecommerce_ai/infrastructure/db/tables.py
-- [ ] T023 [US3] `LlmCall` model, `LlmCallOutcome`/`LlmCallKind` StrEnums and `LlmCallRecorder` port in src/ecommerce_ai/agents/ports.py; `LlmCallRepository` (insert, cost via pricing) in src/ecommerce_ai/infrastructure/db/llm_call_repository.py; in-memory recorder in tests/support/stores.py
-- [ ] T024 [US3] Record calls in triage `_draft` (ok/timeout/error/budget) and one `fallback` row per fallback run in src/ecommerce_ai/agents/triage/graph.py; chat `agent` node (ok/timeout/error) and budget denial in src/ecommerce_ai/agents/assistant/graph.py + service.py; fail open (log class name); inject via src/ecommerce_ai/main.py (`llm_call_recorder=None`)
-- [ ] T025 [P] [US3] Unit tests: cost with known prices, unknown model → None + one warning, missing file → error in tests/unit/test_pricing.py; outcome rows for ok/timeout/error/budget/fallback and recorder failure not affecting results in tests/unit/test_llm_call_recording.py
-- [ ] T026 [P] [US3] Integration: repository insert + constraints in tests/integration/test_llm_calls.py
+- [X] T021 [US3] `ModelPrices` (Pydantic, load from `MODEL_PRICES_PATH`, startup error when missing/invalid) + `estimate_cost(model_id, in, out) -> Decimal | None` warning once per unknown model in src/ecommerce_ai/infrastructure/pricing.py
+- [X] T022 [US3] Migration 0006 `llm_calls` (plan data model) in src/ecommerce_ai/infrastructure/db/migrations/versions/0006_llm_calls.py and Core table in src/ecommerce_ai/infrastructure/db/tables.py
+- [X] T023 [US3] `LlmCall` model, `LlmCallOutcome`/`LlmCallKind` StrEnums and `LlmCallRecorder` port in src/ecommerce_ai/agents/ports.py; `LlmCallRepository` (insert, cost via pricing) in src/ecommerce_ai/infrastructure/db/llm_call_repository.py; in-memory recorder in tests/support/stores.py (cost is priced in the agent via a `CostEstimator` port so the span and the row agree; the repository only inserts)
+- [X] T024 [US3] Record calls in triage `_draft` (ok/timeout/error/budget) and one `fallback` row per fallback run in src/ecommerce_ai/agents/triage/graph.py; chat `agent` node (ok/timeout/error) and budget denial in src/ecommerce_ai/agents/assistant/graph.py + service.py; fail open (log class name); inject via src/ecommerce_ai/main.py (`llm_call_recorder=None`)
+- [X] T025 [P] [US3] Unit tests: cost with known prices, unknown model → None + one warning, missing file → error in tests/unit/test_pricing.py; outcome rows for ok/timeout/error/budget/fallback and recorder failure not affecting results in tests/unit/test_llm_call_recording.py
+- [X] T026 [P] [US3] Integration: repository insert + constraints in tests/integration/test_llm_calls.py
 
 ## Phase 6: US4 – Admin usage summary (P2)
 

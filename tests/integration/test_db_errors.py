@@ -101,7 +101,7 @@ def test_should_succeed_and_change_nothing_when_migrate_runs_at_head(
     assert main.cli(["migrate"]) == 0
     assert main.cli(["migrate"]) == 0
 
-    assert asyncio.run(_alembic_versions(database_url)) == ["0005"]
+    assert asyncio.run(_alembic_versions(database_url)) == ["0006"]
 
 
 async def _alembic_versions(database_url: str) -> list[str]:

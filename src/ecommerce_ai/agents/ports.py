@@ -4,12 +4,17 @@
 - ``Clock`` / ``SystemClock``: wall time for stored timestamps and a monotonic clock for latency.
 - ``ModelError`` and its subclasses: a failed LLM call, carrying the tokens it spent.
 - ``LlmCallOutcome`` / ``llm_outcome``: how one model call ended (spans and usage records, US-08).
+- ``LlmCall`` / ``LlmCallRecorder`` / ``CostEstimator``: per-call usage records and their cost.
 """
 
 import time
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, Self
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ModelError(Exception):
@@ -51,6 +56,66 @@ class LlmCallOutcome(StrEnum):
 def llm_outcome(error: ModelError) -> LlmCallOutcome:
     """The outcome of a call that failed with ``error``: ``timeout`` or ``error``."""
     return LlmCallOutcome.TIMEOUT if isinstance(error, ModelTimeout) else LlmCallOutcome.ERROR
+
+
+class LlmCallKind(StrEnum):
+    """Which agent made a model call."""
+
+    CHAT = "chat"
+    TRIAGE = "triage"
+
+
+class LlmCall(BaseModel):
+    """Usage record of one model call (``llm_calls``, US-08 FR-010): ids and numbers only.
+
+    A chat call names its conversation, a triage call its case; never both.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: LlmCallKind = Field(description="The agent that made the call.")
+    conversation_id: UUID | None = Field(default=None, description="Chat conversation, if chat.")
+    case_id: UUID | None = Field(default=None, description="Triage case, if triage.")
+    request_id: str | None = Field(default=None, description="HTTP request id (chat only).")
+    model_id: str | None = Field(
+        default=None, description="Model that answered (none when nothing was sent)."
+    )
+    prompt_version: str = Field(min_length=1, max_length=32, description="Prompt version used.")
+    input_tokens: int = Field(default=0, ge=0, description="Input tokens spent.")
+    output_tokens: int = Field(default=0, ge=0, description="Output tokens spent.")
+    estimated_cost_usd: Decimal | None = Field(
+        default=None, ge=0, description="Estimated USD cost; none for an unpriced model."
+    )
+    latency_ms: int = Field(default=0, ge=0, description="Wall time of the call.")
+    outcome: LlmCallOutcome = Field(description="How the call ended.")
+
+    @model_validator(mode="after")
+    def _check_subject(self) -> Self:
+        chat = self.kind is LlmCallKind.CHAT
+        subject, other = (
+            (self.conversation_id, self.case_id) if chat else (self.case_id, self.conversation_id)
+        )
+        if subject is None or other is not None:
+            raise ValueError("a chat call names a conversation, a triage call a case")
+        return self
+
+
+class LlmCallRecorder(Protocol):
+    """Stores usage records (``LlmCallRepository``)."""
+
+    async def record(self, call: LlmCall) -> None:
+        """Store ``call``."""
+        ...
+
+
+class CostEstimator(Protocol):
+    """Estimates the USD cost of a call from its tokens (``ModelPrices``)."""
+
+    def estimate_cost(
+        self, model_id: str | None, input_tokens: int, output_tokens: int
+    ) -> Decimal | None:
+        """USD cost, ``None`` without a model or for an unpriced model."""
+        ...
 
 
 class TokenBudget(Protocol):

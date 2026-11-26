@@ -49,6 +49,7 @@ from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_inpu
 from ecommerce_ai.agents.guardrails.output_checks import LeakChecks
 from ecommerce_ai.agents.guardrails.quotas import QuotaLimits, UserQuotas
 from ecommerce_ai.agents.guardrails.tool_guard import CallGuard
+from ecommerce_ai.agents.ports import LlmCallRecorder
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -62,6 +63,7 @@ from ecommerce_ai.agents.triage.ports import (
 from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker, WorkerState
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
+from ecommerce_ai.agents.usage import LlmUsage
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
@@ -73,6 +75,7 @@ from ecommerce_ai.infrastructure.db.conversation_repository import ConversationR
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
 from ecommerce_ai.infrastructure.db.guardrail_event_repository import GuardrailEventRepository
+from ecommerce_ai.infrastructure.db.llm_call_repository import LlmCallRepository
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
@@ -86,6 +89,7 @@ from ecommerce_ai.infrastructure.llm.anthropic_chat_model import build_anthropic
 from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.pricing import load_model_prices
 from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
@@ -213,10 +217,12 @@ def build_triage_worker(
     budget: TokenBudget,
     model: TriageModel | None,
     wake: asyncio.Event,
+    usage: LlmUsage | None = None,
 ) -> TriageWorker:
     """Build the triage worker, which sets ``wake`` after each saved result.
 
-    ``model=None`` (no key or model id) gives every case its cause's template.
+    ``model=None`` (no key or model id) gives every case its cause's template; ``usage`` records
+    every model call (``None``: nothing is recorded).
     """
     clock = SystemClock()
     graph = build_triage_graph(
@@ -231,6 +237,7 @@ def build_triage_worker(
             backoff_base_seconds=settings.triage_backoff_base_seconds,
         ),
         clock=clock,
+        usage=usage,
     )
     service = TriageService(
         queue,
@@ -289,21 +296,24 @@ def create_app(
     guardrails: Guardrails | None = None,
     user_usage_store: UserUsageStore | None = None,
     tracer_provider: TracerProvider | None = None,
+    llm_call_recorder: LlmCallRecorder | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
     checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
-    clock, the guard audit store, the chat's guardrails, the per-user usage store and the tracer
-    provider replace the real ones in tests.
+    clock, the guard audit store, the chat's guardrails, the per-user usage store, the tracer
+    provider and the per-call usage recorder replace the real ones in tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
     ``/mcp`` serves only the MCP-exposed tools; the chat also gets ``cancel_order`` (US-06).
     Without ``tracer_provider`` the provider comes from the standard ``OTEL_*`` variables (none by
     default); one built here is flushed and shut down last when the app stops, an injected one is
-    only flushed.
+    only flushed. The model price file (``MODEL_PRICES_PATH``) is read here: a missing or
+    invalid file raises ``PriceFileError``.
     """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
+    prices = load_model_prices(settings.model_prices_path)
     owns_provider = tracer_provider is None
     provider = build_tracer_provider(os.environ) if owns_provider else tracer_provider
     use_provider(provider)
@@ -363,6 +373,7 @@ def create_app(
         if chat_model is None:
             chat_model = build_anthropic_chat_model(settings, llm_client)
     wake = asyncio.Event()
+    usage = LlmUsage(llm_call_recorder or LlmCallRepository(engine), prices)
     budget = token_budget or TokenBudgetRepository(engine, settings.daily_token_budget)
     worker = build_triage_worker(
         settings,
@@ -370,6 +381,7 @@ def create_app(
         budget,
         model,
         wake,
+        usage,
     )
     relay_state = RelayState()
     relay = OutboxRelay(
@@ -396,6 +408,7 @@ def create_app(
         clock=chat_clock,
         approval_ttl_seconds=settings.approval_ttl_seconds,
         guardrails=guardrails or build_guardrails(settings),
+        usage=usage,
     )
     guard_events = guard_store or GuardrailEventRepository(engine)
     user_usage = user_usage_store or UserUsageRepository(engine)

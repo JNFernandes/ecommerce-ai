@@ -25,6 +25,7 @@ from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
     InMemoryGuardrailEventStore,
+    InMemoryLlmCallRecorder,
     InMemoryTokenBudget,
     InMemoryUserUsageStore,
 )
@@ -62,6 +63,7 @@ def _client(spans: SpanRecorder, model: ScriptedChatModel) -> httpx.AsyncClient:
         guard_store=InMemoryGuardrailEventStore(),
         user_usage_store=InMemoryUserUsageStore(),
         tracer_provider=spans.provider,
+        llm_call_recorder=InMemoryLlmCallRecorder(),
     )
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost")
 

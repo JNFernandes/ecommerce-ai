@@ -322,6 +322,7 @@ class ChatRun:
                 self._allowance,
                 self._quota,
                 tool_allowlist=self._tool_allowlist,
+                request_id=self._request_id,
             )
         resumed = self._graph.resume(
             self.conversation_id,
@@ -330,6 +331,7 @@ class ChatRun:
             self._allowance,
             self._quota,
             tool_allowlist=self._tool_allowlist,
+            request_id=self._request_id,
         )
         return self._until_executed(resumed)
 

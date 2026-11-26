@@ -30,6 +30,7 @@ TABLES = {
     "chat_checkpoint_writes",
     "guardrail_events",
     "chat_user_usage",
+    "llm_calls",
 }
 
 
@@ -81,7 +82,7 @@ async def test_should_change_nothing_when_the_migrations_run_again(
 
     async with db_engine.connect() as connection:
         version = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert version == "0005"
+    assert version == "0006"
 
 
 @pytest.mark.parametrize(("cause", "status"), [("BOGUS", "PENDING_TRIAGE"), ("UNKNOWN", "DONE")])

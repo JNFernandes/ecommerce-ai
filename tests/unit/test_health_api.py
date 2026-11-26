@@ -17,7 +17,11 @@ from tests.support.kafka import FakeConsumer, FakeProducer
 from tests.support.mcp import serve_app
 from tests.support.polling import poll_until
 from tests.support.probes import FakeProbe
-from tests.support.stores import InMemoryOutboxStore, InMemoryTriageCaseQueue
+from tests.support.stores import (
+    InMemoryLlmCallRecorder,
+    InMemoryOutboxStore,
+    InMemoryTriageCaseQueue,
+)
 
 UP, DOWN = DependencyStatus.UP, DependencyStatus.DOWN
 
@@ -191,6 +195,7 @@ def _worker_app(
         producer_factory=lambda: producer,
         triage_queue=InMemoryTriageCaseQueue(),
         outbox_store=InMemoryOutboxStore(),
+        llm_call_recorder=InMemoryLlmCallRecorder(),
     )
 
 

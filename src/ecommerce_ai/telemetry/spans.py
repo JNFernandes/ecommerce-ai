@@ -3,9 +3,11 @@
 Names are fixed strings, never built from data; ``node.<name>`` spans come from ``traced_node``.
 """
 
+from decimal import Decimal
 from typing import Final
 
 from ecommerce_ai.telemetry.attributes import (
+    COST_USD,
     FINISH_REASON,
     INPUT_TOKENS,
     LATENCY_MS,
@@ -36,6 +38,7 @@ def llm_call_attributes(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     finish_reason: str | None = None,
+    cost_usd: Decimal | None = None,
 ) -> Attributes:
     """The closing attributes of an ``llm.call`` span; ``None`` values are left out."""
     return {
@@ -45,4 +48,5 @@ def llm_call_attributes(
         INPUT_TOKENS: input_tokens,
         OUTPUT_TOKENS: output_tokens,
         FINISH_REASON: finish_reason,
+        COST_USD: None if cost_usd is None else float(cost_usd),
     }
