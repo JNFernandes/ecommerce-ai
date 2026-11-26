@@ -228,7 +228,7 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   truncated per test. Live-model tests get the `live_llm` marker (excluded by default;
   `tests/integration/test_live_llm.py`: triage per cause + one assistant answer, needs
   `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` in the env). Assistant evals: US-09 (TODO(EVAL_SUITE)).
-- `tests/redteam/` (default run): `cases.jsonl` (44, 11 categories) and `legit.jsonl` (25, five
+- `tests/redteam/` (default run): `cases.jsonl` (48, 11 categories) and `legit.jsonl` (27, five
   languages) via `loader.py`; `runner.py` runs a case through `chat_graph` with
   `CompromisedChatModel` and the production guards; `test_guard_coverage.py` swaps each guard for
   its `NOOP` and expects a failure; `test_redteam_live.py` is `live_llm`. Grow the corpus with

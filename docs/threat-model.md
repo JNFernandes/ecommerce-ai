@@ -44,8 +44,8 @@ for another customer's order gets the upstream's 404/403 even if every guard wer
 
 ## Residual risks
 
-- **Paraphrased attacks** that avoid the rule vocabulary reach the model (e.g. the role-play case
-  `roleplay-grandma-02`); the output checks and tool guard still hold, but the model may answer
+- **Paraphrased attacks** that avoid the rule vocabulary reach the model and spend tokens (the DAN persona and
+  customer-id probes were such gaps until fixed in v1); the output checks and tool guard still hold, but the model may answer
   off-topic. Mitigation path: grow the corpus and rules; optional LLM classifier
   (`GUARD_LLM_CLASSIFIER`, not implemented).
 - **Semantic leaks** that match no pattern (e.g. a paraphrased prompt shorter than a shingle).

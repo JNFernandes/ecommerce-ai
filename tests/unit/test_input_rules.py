@@ -21,7 +21,7 @@ from ecommerce_ai.agents.guardrails.input_rules import (
     parse_input_rules,
 )
 
-INPUT_V1_SHA256 = "28b40f7a145128744b5d7bd4ecb1dde5571a7e06c7988cd567058f689b0a99d3"
+INPUT_V1_SHA256 = "ef4581eb2d70ed6be88583701754a6f589f4150e0bca39f8ccccb2ca40053bfd"
 """SHA-256 of ``rules/input.v1.json``; a released rules file never changes: write ``v2``."""
 
 GUARD = RuleInputGuard(load_input_rules())

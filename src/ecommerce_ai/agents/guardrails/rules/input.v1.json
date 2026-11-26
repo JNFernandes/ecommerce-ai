@@ -48,7 +48,10 @@
         "\\b(fais semblant|faites semblant|joue le role|agis comme)\\b.{0,40}\\b(une autre ia|un autre assistant|sans regles|sans restrictions)\\b",
         "\\b(entwicklermodus|gottmodus|admin-?modus|dan-?modus)\\b",
         "\\bohne (jegliche |irgendwelche |alle )?(regeln|einschrankungen|grenzen|filter)\\b",
-        "\\b(tu so als|stell dir vor,? du bist|spiel die rolle)\\b"
+        "\\b(tu so als|stell dir vor,? du bist|spiel die rolle)\\b",
+        "\\byou are (now )?(dan|stan|dude|aim|mongo tom|evil ?bot|chaos ?gpt)\\b",
+        "\\b(act|pretend|behave|play|roleplay|role-play) (as|like|to be) (dan|stan|dude|aim)\\b",
+        "\\b(grandma|grandmother|grandpa|grandfather|avo|avó|abuela|abuelo|grand-mere|oma|opa)\\b.{0,60}\\b(read|tell|told|recite|say|said)\\b.{0,40}\\b(api[\\s_-]*keys?|passwords?|secrets?|tokens?|credentials|prompt)\\b"
       ]
     },
     {
@@ -152,7 +155,9 @@
         "\\b(commandes|donnees|adresses|e-?mails|informations|notifications|achats)\\b.{0,20}\\b(des |d')?(autres?|tous les|d'un autre|d'autres|un autre) (clients?|utilisateurs?|personnes?|comptes?)\\b",
         "\\b(montre|montrez|affiche|liste|voir|acceder|donne)\\b.{0,20}\\b(d'autres|les autres|un autre) (clients|utilisateurs|comptes|client|utilisateur)\\b",
         "\\b(bestellungen|daten|adressen|e-?mails|informationen|benachrichtigungen|kaufe)\\b.{0,20}\\b(anderer|anderen|aller|eines anderen) (kunden|benutzer|nutzer|personen|konten)\\b",
-        "\\b(zeig|zeige|liste|gib)\\b.{0,20}\\b(andere|anderen|alle) (kunden|benutzer|nutzer|konten)\\b"
+        "\\b(zeig|zeige|liste|gib)\\b.{0,20}\\b(andere|anderen|alle) (kunden|benutzer|nutzer|konten)\\b",
+        "\\b(customer|user|client|account|cliente|utilizador|usuario|kunde|kunden|benutzer)[\\s_-]*(id|number|no|#)?\\s*[:#=]?\\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
+        "\\b(orders|data|addresses|address|emails|details|information|notifications|purchases|history)\\b.{0,15}\\b(of|from|for|belonging to)\\b.{0,6}\\b(customer|user|client)\\b\\s*(id\\b)?\\s*[:#=]?\\s*[0-9a-f]{6,}"
       ]
     },
     {

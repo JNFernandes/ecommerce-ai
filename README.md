@@ -198,7 +198,7 @@ only for ids the customer typed or a tool returned, and stops repeated identical
 `GUARD_VIOLATION_WINDOW_SECONDS` start a `GUARD_COOLDOWN_SECONDS` cooldown (`429`, also on
 decisions). Every action is one append-only `guardrail_events` row (migration 0005, no content)
 and one `guardrail_event` log line; `chat_run` carries `guards` counts and `rulesVersion`.
-`tests/redteam/` runs 44 attacks through the graph with a model that obeys them, checks that each
+`tests/redteam/` runs 48 attacks through the graph with a model that obeys them, checks that each
 guard is needed, and checks a legit set in five languages for false positives; `-m live_llm` runs
 the corpus against the real model and reports pass rates.
 
