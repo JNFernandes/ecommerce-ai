@@ -31,6 +31,8 @@ TRIAGE_SOURCE: Final = "triage.source"
 ERROR_TYPE: Final = "error.type"
 LLM_OUTCOME: Final = "llm.outcome"
 MESSAGING_DESTINATION: Final = "messaging.destination"
+STREAM_CLIENT_DISCONNECTED: Final = "stream.client_disconnected"
+CHAT_ABORTED: Final = "chat.aborted"
 
 ALLOWED_KEYS: Final = frozenset(
     {
@@ -58,6 +60,8 @@ ALLOWED_KEYS: Final = frozenset(
         ERROR_TYPE,
         LLM_OUTCOME,
         MESSAGING_DESTINATION,
+        STREAM_CLIENT_DISCONNECTED,
+        CHAT_ABORTED,
     }
 )
 """Every attribute key an exported span may carry."""

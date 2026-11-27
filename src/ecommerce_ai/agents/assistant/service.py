@@ -100,15 +100,19 @@ from ecommerce_ai.agents.guardrails.quotas import UserQuotas
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.telemetry.attributes import (
+    CHAT_ABORTED,
     CONVERSATION_ID,
     PROMPT_VERSION,
     REQUEST_ID,
+    STREAM_CLIENT_DISCONNECTED,
     USER_HASH,
 )
 from ecommerce_ai.telemetry.spans import CHAT_RESUME, CHAT_RUN
-from ecommerce_ai.telemetry.tracing import Attributes, span
+from ecommerce_ai.telemetry.tracing import Attributes, mark_ok, span
 
 USER_HASH_CHARS: Final = 16
+# How a reader stops a stream: closing the generator or cancelling the task driving it.
+_STREAM_STOPS: Final = (GeneratorExit, asyncio.CancelledError)
 
 _logger = structlog.get_logger(__name__)
 
@@ -243,11 +247,23 @@ class ChatRun:
             REQUEST_ID: self._request_id,
             PROMPT_VERSION: self._graph.prompt_version,
         }
-        # A reader closing the stream early is not a failure of the run.
-        with span(name, attributes, ignore=(GeneratorExit,)):
-            async with contextlib.aclosing(self._events()) as events:
-                async for event in events:
-                    yield event
+        ended = answered = False
+        # A reader leaving (closed stream or cancelled task) is never a failure of the run.
+        with span(name, attributes, ignore=_STREAM_STOPS) as run:
+            try:
+                async with contextlib.aclosing(self._events()) as events:
+                    async for event in events:
+                        ended = ended or isinstance(event, (MessageEnd, StreamError))
+                        answered = answered or isinstance(event, MessageEnd)
+                        yield event
+            except _STREAM_STOPS:
+                # After the last event the client only left early; before it the run was aborted.
+                run.set_attribute(STREAM_CLIENT_DISCONNECTED if ended else CHAT_ABORTED, True)
+                if answered:
+                    mark_ok(run)
+                raise
+            if answered:
+                mark_ok(run)
 
     async def _events(self) -> AsyncGenerator[StreamEvent]:
         self._started = True

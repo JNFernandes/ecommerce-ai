@@ -62,6 +62,11 @@ triage.run          order.id, case.id, triage.source, triage.revisions   (worker
 outbox.publish      order.id, messaging.destination          (relay, one per attempt)
 ```
 
+A reader leaving is never an error: `chat.run`/`chat.resume` end `OK` with
+`stream.client_disconnected=true` when the client leaves after `message.end`, and `UNSET` with
+`chat.aborted=true` when it aborts mid-run (no span is marked by a cancellation, and no
+`error`/`timeout` usage row is written). Only real exceptions give `ERROR` + `error.type`.
+
 `outbox.publish` sends the Kafka headers `correlation-id: <orderId>` and `traceparent`; the
 payload is unchanged. A failed span carries status `ERROR` and `error.type` (a class name) only:
 exceptions are never recorded, status descriptions and events are dropped.
@@ -75,7 +80,8 @@ else is dropped at export, so a new attribute must be added there on purpose:
 `user.hash`, `node.name`, `tool.name`, `tool.outcome`, `gen_ai.request.model`, `prompt.version`,
 `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `latency.ms`, `cost.usd`,
 `gen_ai.response.finish_reason`, `guard.rules`, `guard.actions` (reserved), `triage.revisions`,
-`triage.source`, `error.type`, `llm.outcome`, `messaging.destination`.
+`triage.source`, `error.type`, `llm.outcome`, `messaging.destination`,
+`stream.client_disconnected`, `chat.aborted`.
 
 `user.hash` is the same truncated SHA-256 of the token subject the chat logs use; the raw subject
 never appears.

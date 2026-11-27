@@ -5,6 +5,7 @@ the OpenTelemetry global, which can be set only once per process. Without a prov
 no-op tracer is used, so instrumented code costs next to nothing.
 """
 
+import asyncio
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Final
@@ -46,6 +47,11 @@ def set_attributes(target: Span, attributes: Attributes) -> None:
             target.set_attribute(key, value)
 
 
+def mark_ok(target: Span) -> None:
+    """Mark ``target`` succeeded; OpenTelemetry treats an ``OK`` status as final."""
+    target.set_status(StatusCode.OK)
+
+
 def record_error(target: Span, error: BaseException) -> None:
     """Mark ``target`` failed with the error's class name only, never its message (D4)."""
     target.set_attribute(ERROR_TYPE, type(error).__name__)
@@ -63,16 +69,18 @@ def span(
 
     An exception leaving the block sets ``error.type`` to its class name and an error status; no
     exception event is recorded, so its message never reaches the exporter. Exceptions in
-    ``ignore`` (control flow, such as a LangGraph interrupt) pass through without marking the span.
+    ``ignore`` (control flow, such as a LangGraph interrupt) and a task cancellation (the caller
+    went away, which is no failure of the operation) pass through without marking the span.
     """
     with get_tracer().start_as_current_span(
         name, record_exception=False, set_status_on_exception=False
     ) as current:
         if attributes:
             set_attributes(current, attributes)
+        passing: tuple[type[BaseException], ...] = (asyncio.CancelledError, *ignore)
         try:
             yield current
-        except ignore:
+        except passing:
             raise
         except BaseException as error:
             record_error(current, error)
