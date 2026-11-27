@@ -8,7 +8,8 @@ non-allowlisted name and arguments that fail validation are *refused* (the handl
 ``upstream_unauthenticated``. A mutating tool is refused by ``invoke`` and runs only through
 ``invoke_approved``, once, after the customer's approval (US-06, constitution III). The caller
 must be bound (``bind_caller``) so handlers forward the caller's own token (ADR 0001). One
-``tool_call`` log line per call: tool, outcome, duration.
+``tool_call`` log line per call: tool, outcome, duration; and one ``tool.call`` span with the
+tool's name (only for a registered tool: a requested name is untrusted text) and outcome.
 """
 
 import asyncio
@@ -21,6 +22,9 @@ import structlog
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
+from ecommerce_ai.telemetry.attributes import TOOL_NAME, TOOL_OUTCOME
+from ecommerce_ai.telemetry.spans import TOOL_CALL
+from ecommerce_ai.telemetry.tracing import span
 from ecommerce_ai.tools.envelope import ToolErrorCode, ToolErrorResult, ToolFailure
 from ecommerce_ai.tools.registry import (
     ALLOWLIST,
@@ -35,6 +39,8 @@ the budget itself, so this only stops a handler that hangs."""
 
 OUTCOME_OK: Final = "ok"
 OUTCOME_UNKNOWN_TOOL: Final = "unknown_tool"
+UNKNOWN_TOOL_LABEL: Final = "<unknown>"
+"""What the log line names a refused unknown tool by: the requested name is untrusted text."""
 
 _logger = structlog.get_logger(__name__)
 
@@ -119,11 +125,7 @@ class ToolInvoker:
         A mutating tool is refused exactly like an unknown one: it only ever runs through
         ``invoke_approved`` (constitution III).
         """
-        started = time.perf_counter()
-        definition = self._definition(name)
-        if definition is None or definition.mutating:
-            return self._unknown(name, started)
-        return await self._run(name, definition, arguments, started)
+        return await self._call(name, arguments, mutating=False)
 
     async def invoke_approved(self, name: str, arguments: Mapping[str, Any]) -> ToolInvocation:
         """Run mutating tool ``name`` once, for a call the customer approved; never raises.
@@ -132,15 +134,29 @@ class ToolInvoker:
         read-only or unknown name is refused; the call is never retried (the upstream ``POST``
         is sent once), so a timeout is reported, not repeated.
         """
-        started = time.perf_counter()
-        definition = self._definition(name)
-        if definition is None or not definition.mutating:
-            return self._unknown(name, started)
-        return await self._run(name, definition, arguments, started)
+        return await self._call(name, arguments, mutating=True)
+
+    async def _call(
+        self, name: str, arguments: Mapping[str, Any], *, mutating: bool
+    ) -> ToolInvocation:
+        """Run ``name`` if it is a registered, allowlisted tool of that kind, in a span."""
+        with span(TOOL_CALL) as call:
+            started = time.perf_counter()
+            definition = self._definition(name)
+            if definition is None or definition.mutating is not mutating:
+                invocation = self._unknown(name, started)
+            else:
+                call.set_attribute(TOOL_NAME, definition.name)
+                invocation = await self._run(name, definition, arguments, started)
+            call.set_attribute(TOOL_OUTCOME, invocation.outcome)
+            return invocation
 
     def _unknown(self, name: str, started: float) -> ToolInvocation:
         result = ToolErrorResult.for_code(ToolErrorCode.NOT_ALLOWED)
-        return self._finish(name, started, result, OUTCOME_UNKNOWN_TOOL, executed=False)
+        logged = name if self._registry.get(name) is not None else UNKNOWN_TOOL_LABEL
+        return self._finish(
+            name, started, result, OUTCOME_UNKNOWN_TOOL, executed=False, logged=logged
+        )
 
     async def _run(
         self,
@@ -172,12 +188,13 @@ class ToolInvoker:
         outcome: str,
         *,
         executed: bool,
+        logged: str | None = None,
     ) -> ToolInvocation:
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
         ok = not isinstance(result, ToolErrorResult)
         payload = result if isinstance(result, dict) else result.model_dump(mode="json")
         log = _logger.info if ok or executed else _logger.warning
-        log("tool_call", tool=name, outcome=outcome, duration_ms=duration_ms)
+        log("tool_call", tool=logged or name, outcome=outcome, duration_ms=duration_ms)
         return ToolInvocation(
             name=name,
             ok=ok,

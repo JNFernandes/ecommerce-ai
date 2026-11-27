@@ -36,6 +36,7 @@ from ecommerce_ai.agents.assistant.model import (
 )
 from ecommerce_ai.agents.assistant.ports import ApprovalStatus
 from ecommerce_ai.agents.guardrails.events import GuardAction, GuardSeverity, GuardStage
+from ecommerce_ai.agents.ports import LlmCallKind, LlmCallOutcome
 from ecommerce_ai.agents.triage.model import (
     EXPLANATION_MAX_CHARS,
     MAX_REVISIONS,
@@ -337,3 +338,32 @@ chat_user_usage = Table(
     CheckConstraint("tokens >= 0", name="tokens_not_negative"),
 )
 """Messages accepted and tokens reserved or spent per user and UTC day (US-07)."""
+
+llm_calls = Table(
+    "llm_calls",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("kind", String(8), nullable=False),
+    Column("conversation_id", Uuid, nullable=True),
+    Column("case_id", Uuid, nullable=True),
+    Column("request_id", Text, nullable=True),
+    Column("model_id", Text, nullable=True),
+    Column("prompt_version", Text, nullable=False),
+    Column("input_tokens", Integer, nullable=False),
+    Column("output_tokens", Integer, nullable=False),
+    Column("estimated_cost_usd", Numeric(12, 6), nullable=True),
+    Column("latency_ms", Integer, nullable=False),
+    Column("outcome", String(8), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    CheckConstraint(_one_of("kind", LlmCallKind), name="kind"),
+    CheckConstraint(_one_of("outcome", LlmCallOutcome), name="outcome"),
+    CheckConstraint("(conversation_id IS NULL) <> (case_id IS NULL)", name="one_subject"),
+    CheckConstraint("input_tokens >= 0 AND output_tokens >= 0", name="tokens_not_negative"),
+    CheckConstraint("latency_ms >= 0", name="latency_not_negative"),
+    CheckConstraint(
+        "estimated_cost_usd IS NULL OR estimated_cost_usd >= 0", name="cost_not_negative"
+    ),
+    Index("ix_llm_calls_created_at", "created_at"),
+    Index("ix_llm_calls_model_id_created_at", "model_id", "created_at"),
+)
+"""One usage record per model call (US-08): ids, tokens, cost, latency, outcome; no content."""

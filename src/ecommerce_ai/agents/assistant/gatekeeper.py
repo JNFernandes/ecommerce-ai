@@ -132,6 +132,7 @@ INTERNAL_TABLES: Final = frozenset(
         "chat_user_usage",
         "guardrail_events",
         "inbound_dead_letters",
+        "llm_calls",
         "llm_token_usage",
         "outbox_events",
         "triage_cases",

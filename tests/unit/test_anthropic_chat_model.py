@@ -23,6 +23,7 @@ from ecommerce_ai.agents.assistant.ports import (
     ChatModel,
     ChatModelEvent,
     ChatModelRequest,
+    ModelTimeout,
     ModelTurnEnd,
     ModelUnavailable,
     TextDelta,
@@ -243,6 +244,14 @@ async def test_should_raise_unavailable_when_the_api_fails_before_the_first_delt
     messages = FakeMessages(FakeStream([], _message([])), open_error=error)
 
     with pytest.raises(ModelUnavailable):
+        await _collect(_model(messages), _request())
+
+
+async def test_should_raise_timeout_when_the_api_times_out() -> None:
+    error = anthropic.APITimeoutError(request=REQUEST)
+    messages = FakeMessages(FakeStream([], _message([])), open_error=error)
+
+    with pytest.raises(ModelTimeout):
         await _collect(_model(messages), _request())
 
 

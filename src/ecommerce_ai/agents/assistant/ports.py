@@ -31,7 +31,7 @@ from ecommerce_ai.agents.assistant.model import (
     TranscriptItem,
     Usage,
 )
-from ecommerce_ai.agents.ports import ModelUnavailable
+from ecommerce_ai.agents.ports import ModelTimeout, ModelUnavailable
 
 __all__ = [
     "Approval",
@@ -45,6 +45,7 @@ __all__ = [
     "ConversationPage",
     "ConversationStore",
     "Decision",
+    "ModelTimeout",
     "ModelTurnEnd",
     "ModelUnavailable",
     "ProposalMessage",

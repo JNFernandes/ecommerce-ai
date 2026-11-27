@@ -6,7 +6,8 @@
 ``NotFound`` (404) or ``UpstreamError`` (5xx, timeouts and transport errors are retryable; any
 other non-200 status and an ``application/problem+json`` body are not). Retryable failures are
 retried inside the call's time budget (``call_with_retry``). Every exception reason starts with
-the service name and never carries upstream bodies, URLs or tokens.
+the service name and never carries upstream bodies, URLs or tokens. Each attempt is one
+``upstream.http`` span with the status code and, on failure, the error's class name only.
 """
 
 import asyncio
@@ -15,9 +16,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
 import httpx
+from opentelemetry.trace import Span
 
 from ecommerce_ai.infrastructure.caller import current_caller
 from ecommerce_ai.infrastructure.retry import call_with_retry
+from ecommerce_ai.telemetry.attributes import HTTP_STATUS_CODE
+from ecommerce_ai.telemetry.spans import UPSTREAM_HTTP
+from ecommerce_ai.telemetry.tracing import span
 
 REQUEST_ID_HEADER: Final = "X-Request-Id"
 PROBLEM_CONTENT_TYPE: Final = "application/problem+json"
@@ -134,13 +139,16 @@ class UpstreamTransport:
         max_bytes: int,
     ) -> bytes:
         """Send one request within ``timeout`` and classify transport failures."""
-        try:
-            async with asyncio.timeout(timeout):
-                return await self._send(method, url, params, json, headers, timeout, max_bytes)
-        except (TimeoutError, httpx.TimeoutException) as error:
-            raise UpstreamError(f"{self._service} timed out", retryable=True) from error
-        except httpx.TransportError as error:
-            raise UpstreamError(f"{self._service} unreachable", retryable=True) from error
+        with span(UPSTREAM_HTTP) as attempt_span:
+            try:
+                async with asyncio.timeout(timeout):
+                    return await self._send(
+                        method, url, params, json, headers, timeout, max_bytes, attempt_span
+                    )
+            except (TimeoutError, httpx.TimeoutException) as error:
+                raise UpstreamError(f"{self._service} timed out", retryable=True) from error
+            except httpx.TransportError as error:
+                raise UpstreamError(f"{self._service} unreachable", retryable=True) from error
 
     async def _send(
         self,
@@ -151,6 +159,7 @@ class UpstreamTransport:
         headers: Mapping[str, str],
         timeout: float,
         max_bytes: int,
+        attempt_span: Span,
     ) -> bytes:
         """Return the body, aborting the stream once it exceeds ``max_bytes``."""
         async with self._http.stream(
@@ -161,6 +170,7 @@ class UpstreamTransport:
             headers=headers,
             timeout=timeout,
         ) as response:
+            attempt_span.set_attribute(HTTP_STATUS_CODE, response.status_code)
             self._raise_for_status(response)
             chunks = bytearray()
             async for chunk in response.aiter_bytes():

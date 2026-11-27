@@ -44,6 +44,7 @@ come before any approval is touched, so a pending approval is never withdrawn by
 """
 
 import asyncio
+import contextlib
 import hashlib
 from collections.abc import AsyncGenerator, Iterable
 from dataclasses import dataclass
@@ -98,8 +99,20 @@ from ecommerce_ai.agents.guardrails.normalizer import normalize
 from ecommerce_ai.agents.guardrails.quotas import UserQuotas
 from ecommerce_ai.agents.ports import Clock, TokenBudget
 from ecommerce_ai.infrastructure.errors import error_fields
+from ecommerce_ai.telemetry.attributes import (
+    CHAT_ABORTED,
+    CONVERSATION_ID,
+    PROMPT_VERSION,
+    REQUEST_ID,
+    STREAM_CLIENT_DISCONNECTED,
+    USER_HASH,
+)
+from ecommerce_ai.telemetry.spans import CHAT_RESUME, CHAT_RUN
+from ecommerce_ai.telemetry.tracing import Attributes, mark_ok, span
 
 USER_HASH_CHARS: Final = 16
+# How a reader stops a stream: closing the generator or cancelling the task driving it.
+_STREAM_STOPS: Final = (GeneratorExit, asyncio.CancelledError)
 
 _logger = structlog.get_logger(__name__)
 
@@ -222,7 +235,37 @@ class ChatRun:
         self._started = False
 
     async def events(self) -> AsyncGenerator[StreamEvent]:
-        """``message.start``, the run's events, then ``message.end`` or ``error``."""
+        """``message.start``, the run's events, then ``message.end`` or ``error``.
+
+        The whole run is one ``chat.run`` span (``chat.resume`` after a decision), the parent of
+        every node, model and tool span; it carries ids and hashes only (US-08).
+        """
+        name = CHAT_RUN if self._decided is None else CHAT_RESUME
+        attributes: Attributes = {
+            CONVERSATION_ID: str(self.conversation_id),
+            USER_HASH: user_hash(self.user_id),
+            REQUEST_ID: self._request_id,
+            PROMPT_VERSION: self._graph.prompt_version,
+        }
+        ended = answered = False
+        # A reader leaving (closed stream or cancelled task) is never a failure of the run.
+        with span(name, attributes, ignore=_STREAM_STOPS) as run:
+            try:
+                async with contextlib.aclosing(self._events()) as events:
+                    async for event in events:
+                        ended = ended or isinstance(event, (MessageEnd, StreamError))
+                        answered = answered or isinstance(event, MessageEnd)
+                        yield event
+            except _STREAM_STOPS:
+                # After the last event the client only left early; before it the run was aborted.
+                run.set_attribute(STREAM_CLIENT_DISCONNECTED if ended else CHAT_ABORTED, True)
+                if answered:
+                    mark_ok(run)
+                raise
+            if answered:
+                mark_ok(run)
+
+    async def _events(self) -> AsyncGenerator[StreamEvent]:
         self._started = True
         self._streams.attach(self.conversation_id)
         started = self._clock.monotonic()
@@ -295,6 +338,7 @@ class ChatRun:
                 self._allowance,
                 self._quota,
                 tool_allowlist=self._tool_allowlist,
+                request_id=self._request_id,
             )
         resumed = self._graph.resume(
             self.conversation_id,
@@ -303,6 +347,7 @@ class ChatRun:
             self._allowance,
             self._quota,
             tool_allowlist=self._tool_allowlist,
+            request_id=self._request_id,
         )
         return self._until_executed(resumed)
 

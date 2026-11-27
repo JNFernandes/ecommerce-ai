@@ -37,6 +37,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=build --chown=app:app /app/.venv /app/.venv
+# Model prices for the per-call cost estimate (MODEL_PRICES_PATH, relative to /app).
+COPY --chown=app:app config ./config
 COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:${PATH}" \

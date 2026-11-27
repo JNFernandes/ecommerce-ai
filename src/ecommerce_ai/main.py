@@ -16,6 +16,7 @@ registry makes ``create_app`` raise ``ToolRegistryError``.
 
 import argparse
 import asyncio
+import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ import structlog
 import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
+from opentelemetry.sdk.trace import TracerProvider
 
 from ecommerce_ai.agents.assistant.approvals import APPROVAL_ACTIONS, TARGET_ARGUMENT
 from ecommerce_ai.agents.assistant.graph import ChatGraph, load_assistant_prompt
@@ -47,6 +49,7 @@ from ecommerce_ai.agents.guardrails.input_rules import RuleInputGuard, load_inpu
 from ecommerce_ai.agents.guardrails.output_checks import LeakChecks
 from ecommerce_ai.agents.guardrails.quotas import QuotaLimits, UserQuotas
 from ecommerce_ai.agents.guardrails.tool_guard import CallGuard
+from ecommerce_ai.agents.ports import LlmCallRecorder
 from ecommerce_ai.agents.prompts.loader import load_prompt
 from ecommerce_ai.agents.triage.gatekeeper import check
 from ecommerce_ai.agents.triage.graph import TriageLimits, build_triage_graph
@@ -60,10 +63,12 @@ from ecommerce_ai.agents.triage.ports import (
 from ecommerce_ai.agents.triage.service import TriageService
 from ecommerce_ai.agents.triage.worker import TriageWorker, WorkerState
 from ecommerce_ai.agents.triage_intake.service import TriageIntakeService
+from ecommerce_ai.agents.usage import LlmUsage, UsageSummaryStore
 from ecommerce_ai.api.app import build_api
 from ecommerce_ai.api.auth import require_caller
 from ecommerce_ai.api.chat import build_chat_router
 from ecommerce_ai.api.mcp import mcp_endpoint
+from ecommerce_ai.api.usage import ADMIN_ROLE, build_usage_router
 from ecommerce_ai.infrastructure.auth import TokenVerifier
 from ecommerce_ai.infrastructure.db.approval_repository import ApprovalRepository
 from ecommerce_ai.infrastructure.db.checkpoint_saver import PostgresCheckpointSaver
@@ -71,22 +76,27 @@ from ecommerce_ai.infrastructure.db.conversation_repository import ConversationR
 from ecommerce_ai.infrastructure.db.dead_letter_repository import DeadLetterRepository
 from ecommerce_ai.infrastructure.db.engine import build_engine, is_transient_db_error
 from ecommerce_ai.infrastructure.db.guardrail_event_repository import GuardrailEventRepository
+from ecommerce_ai.infrastructure.db.llm_call_repository import LlmCallRepository
 from ecommerce_ai.infrastructure.db.migrate import run_migrations
 from ecommerce_ai.infrastructure.db.outbox_repository import OutboxRepository
 from ecommerce_ai.infrastructure.db.token_budget_repository import TokenBudgetRepository
 from ecommerce_ai.infrastructure.db.triage_queue_repository import TriageQueueRepository
 from ecommerce_ai.infrastructure.db.triage_repository import TriageRepository
+from ecommerce_ai.infrastructure.db.usage_summary_repository import UsageSummaryRepository
 from ecommerce_ai.infrastructure.db.user_usage_repository import UserUsageRepository
 from ecommerce_ai.infrastructure.errors import error_fields
 from ecommerce_ai.infrastructure.health import DependencyProbe, ReadinessChecker, build_probes
 from ecommerce_ai.infrastructure.jwks import JwksCache
+from ecommerce_ai.infrastructure.langsmith import configure_langsmith
 from ecommerce_ai.infrastructure.llm.anthropic_chat_model import build_anthropic_chat_model
 from ecommerce_ai.infrastructure.llm.anthropic_model import build_anthropic_model
 from ecommerce_ai.infrastructure.logging import configure_logging
 from ecommerce_ai.infrastructure.orders_client import OrdersClient
+from ecommerce_ai.infrastructure.pricing import load_model_prices
 from ecommerce_ai.infrastructure.rate_limit import SlidingWindowLimiter
 from ecommerce_ai.infrastructure.rest_client import RestClient
 from ecommerce_ai.infrastructure.settings import Settings
+from ecommerce_ai.infrastructure.tracing import build_tracer_provider, shutdown_tracer_provider
 from ecommerce_ai.infrastructure.upstream import UpstreamTransport
 from ecommerce_ai.messaging.consumer_state import ConsumerState
 from ecommerce_ai.messaging.contracts import TOPIC_MODELS
@@ -99,6 +109,7 @@ from ecommerce_ai.messaging.kafka import (
 from ecommerce_ai.messaging.outbox_relay import OutboxRelay, OutboxStore, RelayState
 from ecommerce_ai.messaging.triage_consumer import TriageConsumer
 from ecommerce_ai.messaging.triage_published import to_outbox_message
+from ecommerce_ai.telemetry.tracing import use_provider
 from ecommerce_ai.tools.inventory import get_product_tool, list_products_tool
 from ecommerce_ai.tools.invoker import ToolInvoker
 from ecommerce_ai.tools.mutating.cancel_order import cancel_order_tool
@@ -209,10 +220,12 @@ def build_triage_worker(
     budget: TokenBudget,
     model: TriageModel | None,
     wake: asyncio.Event,
+    usage: LlmUsage | None = None,
 ) -> TriageWorker:
     """Build the triage worker, which sets ``wake`` after each saved result.
 
-    ``model=None`` (no key or model id) gives every case its cause's template.
+    ``model=None`` (no key or model id) gives every case its cause's template; ``usage`` records
+    every model call (``None``: nothing is recorded).
     """
     clock = SystemClock()
     graph = build_triage_graph(
@@ -227,6 +240,7 @@ def build_triage_worker(
             backoff_base_seconds=settings.triage_backoff_base_seconds,
         ),
         clock=clock,
+        usage=usage,
     )
     service = TriageService(
         queue,
@@ -257,6 +271,16 @@ def build_guardrails(settings: Settings) -> Guardrails:
     )
 
 
+async def _stop_tracing(provider: TracerProvider | None, *, owns: bool) -> None:
+    """Flush ``provider`` off the event loop, and shut it down when this app built it."""
+    if provider is None:
+        return
+    if owns:
+        await asyncio.to_thread(shutdown_tracer_provider, provider)
+    else:
+        await asyncio.to_thread(provider.force_flush)
+
+
 def create_app(
     settings: Settings | None = None,
     probes: Sequence[DependencyProbe] | None = None,
@@ -274,18 +298,31 @@ def create_app(
     guard_store: GuardrailEventStore | None = None,
     guardrails: Guardrails | None = None,
     user_usage_store: UserUsageStore | None = None,
+    tracer_provider: TracerProvider | None = None,
+    llm_call_recorder: LlmCallRecorder | None = None,
+    usage_summary_store: UsageSummaryStore | None = None,
 ) -> FastAPI:
     """Build the application; ``probes``, the Kafka factories, the stores, the chat model, the
     checkpointer, the chat's tool runner, the token budget, the approval store, the chat's
-    clock, the guard audit store, the chat's guardrails and the per-user usage store replace the
-    real ones in tests.
+    clock, the guard audit store, the chat's guardrails, the per-user usage store, the tracer
+    provider, the per-call usage recorder and the usage summary store replace the real ones in
+    tests.
 
     Without ``chat_model`` the chat uses the Anthropic model when ``model_configured`` (else every
     answer ends ``LLM_UNAVAILABLE``); without ``checkpointer`` the graph state goes to PostgreSQL.
     ``/mcp`` serves only the MCP-exposed tools; the chat also gets ``cancel_order`` (US-06).
+    Without ``tracer_provider`` the provider comes from the standard ``OTEL_*`` variables (none by
+    default); one built here is flushed and shut down last when the app stops, an injected one is
+    only flushed. The model price file (``MODEL_PRICES_PATH``) is read here: a missing or
+    invalid file raises ``PriceFileError``.
     """
     settings = settings or Settings()
     configure_logging(settings.log_level.value)
+    configure_langsmith(settings, os.environ)
+    prices = load_model_prices(settings.model_prices_path)
+    owns_provider = tracer_provider is None
+    provider = build_tracer_provider(os.environ) if owns_provider else tracer_provider
+    use_provider(provider)
     checker = ReadinessChecker(build_probes(settings) if probes is None else probes)
 
     # No connection is opened here: httpx connects on first request only.
@@ -342,6 +379,7 @@ def create_app(
         if chat_model is None:
             chat_model = build_anthropic_chat_model(settings, llm_client)
     wake = asyncio.Event()
+    usage = LlmUsage(llm_call_recorder or LlmCallRepository(engine), prices)
     budget = token_budget or TokenBudgetRepository(engine, settings.daily_token_budget)
     worker = build_triage_worker(
         settings,
@@ -349,6 +387,7 @@ def create_app(
         budget,
         model,
         wake,
+        usage,
     )
     relay_state = RelayState()
     relay = OutboxRelay(
@@ -375,6 +414,7 @@ def create_app(
         clock=chat_clock,
         approval_ttl_seconds=settings.approval_ttl_seconds,
         guardrails=guardrails or build_guardrails(settings),
+        usage=usage,
     )
     guard_events = guard_store or GuardrailEventRepository(engine)
     user_usage = user_usage_store or UserUsageRepository(engine)
@@ -416,11 +456,19 @@ def create_app(
         keepalive_seconds=settings.chat_keepalive_seconds,
         quotas=quotas,
     )
+    usage_router = build_usage_router(
+        usage_summary_store or UsageSummaryRepository(engine),
+        require_caller(verifier, required_role=ADMIN_ROLE, rejected_event="usage_auth_rejected"),
+        clock=lambda: datetime.now(UTC),
+        is_unavailable=is_transient_db_error,
+    )
     shutdown_timeout = settings.consumer_shutdown_timeout_seconds
 
     @asynccontextmanager
     async def resources() -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
+            # Pushed first, so it runs last: spans of the stopping tasks are still exported.
+            stack.push_async_callback(_stop_tracing, provider, owns=owns_provider)
             for client in (orders_http, inventory_http, notifications_http):
                 stack.push_async_callback(client.aclose)
             stack.push_async_callback(engine.dispose)
@@ -447,6 +495,7 @@ def create_app(
         mcp=mcp,
         resources=resources,
         chat=chat,
+        usage=usage_router,
         consumer_state=consumer_state if settings.triage_consumer_enabled else None,
         worker_state=worker.state if settings.triage_worker_enabled else None,
         relay_state=relay_state if settings.triage_worker_enabled else None,

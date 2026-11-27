@@ -1,6 +1,6 @@
 """In-memory stores with injectable failures: triage cases, dead letters, the triage queue,
 the token budget, the outbox, the chat conversations, the approvals (with their audit rows), the
-guard audit and the per-user usage (US-07).
+guard audit and the per-user usage (US-07), and the per-call usage records (US-08).
 
 Every store keeps unit-of-work semantics: changes made inside a transaction or claim become
 visible only when the block exits normally and are discarded when it raises. Queue exceptions
@@ -39,6 +39,7 @@ from ecommerce_ai.agents.guardrails.events import (
     GuardSeverity,
     GuardStage,
 )
+from ecommerce_ai.agents.ports import LlmCall
 from ecommerce_ai.agents.triage.model import CaseForTriage, TriageResult
 from ecommerce_ai.agents.triage_intake.model import (
     LockedCase,
@@ -842,6 +843,21 @@ class InMemoryGuardrailEventStore:
             if row.user_id == user_id and row.event.action is GuardAction.COOLDOWN
         ]
         return max(times, default=None)
+
+
+class InMemoryLlmCallRecorder:
+    """An ``LlmCallRecorder`` in memory; queue exceptions in ``failures`` to fail the next calls."""
+
+    def __init__(self) -> None:
+        """Start without records."""
+        self.calls: list[LlmCall] = []
+        self.failures: deque[BaseException] = deque()
+
+    async def record(self, call: LlmCall) -> None:
+        """Keep ``call``, unless a failure is queued."""
+        if self.failures:
+            raise self.failures.popleft()
+        self.calls.append(call)
 
 
 @dataclass

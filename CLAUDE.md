@@ -56,7 +56,8 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 
 ## Layering
 
-**api → agents → tools → infrastructure**, and **messaging → agents**.
+**api → agents → tools → infrastructure**, and **messaging → agents**. `telemetry` is
+cross-cutting (like structlog): any layer may import it.
 
 - `api`: routers and schemas, I/O only (auth, validation, SSE). One agent entry point per route.
   `auth.py` (`require_caller`, shared 401/403/503 bodies with `/mcp`), `chat.py` (`/chat` routes,
@@ -99,6 +100,16 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   (`UserQuotas`: cooldown → minute in the API dependency, day in `ChatService.start`; cooldown
   event after the audit). `RunAllowance` reserves the user budget then the global one
   (`denied_scope`); `ActiveStreams` holds one stream per user; 429s carry `scope`.
+- `api/usage.py` (US-08): `GET /usage/summary`, `x-roles: [ADMIN]`, `from`/`to` (default last 7
+  days, ≤ 90, 422 otherwise), `groupBy` `day|model|kind`, frozen camelCase models over
+  `agents/usage.py::UsageSummaryStore`. `agents/usage.py` also holds `LlmUsage` (records one
+  `LlmCall` per model call through the `LlmCallRecorder` port in `agents/ports.py`, priced by a
+  `CostEstimator` so span and row agree; fails open, class name logged).
+- `telemetry` (US-08, OpenTelemetry API only, no I/O): `attributes.py` (allowlisted keys,
+  `ALLOWED_KEYS`), `spans.py` (span names, `llm.call` attributes), `tracing.py` (`use_provider`,
+  `get_tracer`, `span(...)`: never records exceptions, sets `error.type` = class name), `nodes.py`
+  (`traced_node` wraps every graph node at build time). A new attribute key must be added to the
+  allowlist or the scrubber drops it.
 - `tools`: MCP server and tools, one documented endpoint each. `invoker.py::ToolInvoker` runs a
   tool in process (allowlist, input validation, timeout, error mapping) for `/mcp` and the chat;
   `invoke` refuses mutating tools, only `invoke_approved` runs them (no retry). `tools/mutating/`:
@@ -125,17 +136,32 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   (cascade with the conversation, one `pending` per conversation) and append-only `chat_actions`
   (audit, trigger-enforced, migration 0004); migration 0005: append-only `guardrail_events` (no
   FK, no content), `chat_user_usage` (per user and UTC day), `chat_conversations.tool_allowlist`;
-  `GuardrailEventRepository`, `UserUsageRepository` (conditional token upsert).
+  `GuardrailEventRepository`, `UserUsageRepository` (conditional token upsert). Migration 0006:
+  `llm_calls` (one row per model call: kind, conversation or case id, request id, model, prompt
+  version, tokens, `estimated_cost_usd`, latency, outcome `ok|timeout|error|budget|fallback`; no
+  FK, no content); `LlmCallRepository` (insert only), `UsageSummaryRepository` (SQL aggregates,
+  `percentile_cont`, guardrail `blocked` counts).
 - `infrastructure/llm/anthropic_model.py`: `AnthropicTriageModel` (`messages.parse`,
   `output_format=DraftOutput`, `max_retries=0`, per-call timeout, effort; refusal/truncation/schema
   → `ModelOutputInvalid`, API errors → `ModelUnavailable`); `build_anthropic_model(settings)`.
   `anthropic_chat_model.py`: `AnthropicChatModel` (`messages.stream` → `TextDelta`/`ToolUseRequest`/
   `ModelTurnEnd`), `build_anthropic_chat_model(settings, client)` shares the triage client.
+- `infrastructure/tracing.py`: `build_tracer_provider(env)` (`OTEL_TRACES_EXPORTER`
+  `none`(default)/`console`/`otlp` HTTP, `OTEL_SDK_DISABLED`, unknown → off + one warning),
+  `BatchSpanProcessor(ScrubbingSpanExporter(...))` (allowlisted attributes only, events/status
+  descriptions dropped, resource `service.*` only, exporter errors → FAILURE + class-name warning
+  ≤ 1/min). `pricing.py`: `ModelPrices` from `MODEL_PRICES_PATH` (`config/model_prices.json`,
+  startup error when missing/invalid), `Decimal` cost, unknown model → `None` + one warning.
+  `langsmith.py::configure_langsmith` writes LangSmith's tracing/hide variables from settings at
+  startup (off by default, overriding stray env; hide inputs/outputs default true).
 - `infrastructure`: settings, logging, probes, HTTP/DB/LLM clients. No business decisions.
 - `main.py` is the composition root (`create_app(settings=None, probes=None,
   consumer_factory=None, producer_factory=None, triage_queue=None, outbox_store=None,
   conversation_store=None, chat_model=None, checkpointer=None, tool_runner=None,
-  token_budget=None, approval_store=None, clock=None)`): builds
+  token_budget=None, approval_store=None, clock=None, guard_store=None, guardrails=None,
+  user_usage_store=None, tracer_provider=None, llm_call_recorder=None,
+  usage_summary_store=None)`): configures LangSmith, loads the price file, builds the tracer
+  provider (flushed, and shut down when owned, after the workers stop), builds
   the engine, repositories and (only when `model_configured`) the Anthropic client; starts the
   consumer (`TRIAGE_CONSUMER_ENABLED`) and the worker + relay (`TRIAGE_WORKER_ENABLED`) tasks in
   the lifespan and stops them (cancel after `CONSUMER_SHUTDOWN_TIMEOUT_SECONDS`) before closing
@@ -187,6 +213,13 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
   `main.py::build_tool_definitions`, are checked against `tools/registry.py::ALLOWLIST` at
   startup, and their schemas are pinned in `tests/contract/snapshots/tools.json`
   (`UPDATE_SNAPSHOTS=1` regenerates it). Settings: `JWKS_*`, `TOOL_*`, `UPSTREAM_*`.
+- `GET /usage/summary` (`x-roles: [ADMIN]`, US-08): usage aggregates from `llm_calls`; see
+  `docs/observability.md`. US-08 settings: `MODEL_PRICES_PATH`, `LANGSMITH_TRACING` (false),
+  `LANGSMITH_HIDE_INPUTS`/`_OUTPUTS` (true); tracing uses the standard `OTEL_*` variables. Spans
+  (`http.request`, `chat.run`/`chat.resume`, `node.<name>`, `llm.call`, `tool.call`,
+  `upstream.http`, `approval.pause`/`.resume`, `triage.run`, `triage.consume`, `outbox.publish`)
+  never carry text, prompts, tool data or tokens. The relay sends Kafka headers
+  `correlation-id: <orderId>` and `traceparent` (`ProducerPort.send(headers=...)`).
 - Every route declares access through `openapi_extra`: `PUBLIC` (`api/route_policy.py`),
   `AUTHENTICATED` (any role) or `x-roles`. `assert_route_policies` fails `build_api` for an undeclared route (default deny).
 - Protected routes (`/mcp`, `/chat`): RS256 bearer from ecommerce-identity, verified locally against
@@ -216,6 +249,9 @@ network: fake LLM, httpx `MockTransport`/respx, fake probes (`tests/support/prob
 
 ## Tests
 
+- Spans: `tests/support/tracing.py` (`SpanRecorder` through the scrubber, `assert_parent`);
+  span trees, privacy and exporter-failure tests in `tests/unit/telemetry/`. `tests/conftest.py`
+  also clears the `OTEL_*`/`LANGCHAIN_*` variables and LangSmith's env cache.
 - `tests/unit/`: no network, no containers; Kafka via `tests/support/kafka.py::FakeConsumer`/
   `FakeProducer` and payload builders, the LLM via `tests/support/llm.py::ScriptedModel` /
   `ScriptedChatModel`, the chat via `tests/support/chat.py` (`FakeToolRunner`, `chat_app`,
@@ -265,15 +301,16 @@ layers (evals) extend `ci.yml` in the story that adds them. The image's entrypoi
 
 - ADRs in `docs/adr/` (template `docs/adr/template.md`, index `docs/adr/README.md`). Current: 0001
   token passthrough, 0002 human-in-the-loop, 0003 fallback and cost caps, 0004 evals as release
-  gate, 0005 layered guardrails. Threat model: `docs/threat-model.md` (OWASP LLM mapping).
+  gate, 0005 layered guardrails, 0006 vendor-neutral tracing. Observability guide:
+  `docs/observability.md`. Threat model: `docs/threat-model.md` (OWASP LLM mapping).
 - Keep `README.md`, this file and the `Dockerfile` up to date with every behaviour change.
-- Constitution 2.0.0 (US-04): IV one result per order + outbox relay, `modelId` null on fallback;
-  VI interim LLM gate until US-09 (gatekeeper/injection tests, pinned prompt hash, `live_llm`);
-  VII one structured log line per graph run until US-08 adds tracing.
+- Constitution 2.0.1 (US-04, US-08): IV one result per order + outbox relay, `modelId` null on
+  fallback; VI interim LLM gate until US-09 (gatekeeper/injection tests, pinned prompt hash,
+  `live_llm`); VII traced with OpenTelemetry (ADR 0006) plus one structured log line per run.
 - ecommerce-infra has the `ai.order-triage-completed` contract (`docs/events.md`: `cause` and
   `suggestedAction` enums, consumer group `ai-triage`, the HTTP exception for calls with the
   caller's token), the topic in `kafka-init`, `postgres-ai` on `5436` and the `ai` compose service.
   The gateway routes `/api/ai/health` and the `/api/ai/chat/...` routes by allowlist (the stream
   route without the buffering body limit; entrypoint write timeout 300 s); `/mcp` is internal only
   (`http://ai:8002/mcp`), never routed. Follow-up there (US-06): route the approval decision
-  endpoint like the message stream.
+  endpoint like the message stream. Follow-up (US-08): route `/api/ai/usage/summary` (ADMIN).

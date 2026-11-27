@@ -19,6 +19,7 @@ from ecommerce_ai.agents.triage.model import DraftOutput
 from ecommerce_ai.agents.triage.ports import (
     ModelOutputInvalid,
     ModelReply,
+    ModelTimeout,
     ModelUnavailable,
     PromptInput,
 )
@@ -86,6 +87,9 @@ class AnthropicTriageModel:
                 "the model output does not match the schema",
                 output_tokens=self._max_output_tokens,
             ) from None
+        except anthropic.APITimeoutError as error:
+            logger.warning("llm_call_failed", error_type=type(error).__name__)
+            raise ModelTimeout("the model did not answer in time") from None
         except anthropic.APIError as error:
             logger.warning("llm_call_failed", error_type=type(error).__name__)
             raise ModelUnavailable("the model did not answer") from None

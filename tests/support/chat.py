@@ -13,6 +13,7 @@ from uuid import UUID
 
 from fastapi import FastAPI
 from langgraph.checkpoint.memory import InMemorySaver
+from opentelemetry.sdk.trace import TracerProvider
 from pydantic import JsonValue
 
 from ecommerce_ai.agents.assistant.graph import ChatGraph, GraphEvent, load_assistant_prompt
@@ -27,7 +28,7 @@ from ecommerce_ai.agents.assistant.ports import (
 )
 from ecommerce_ai.agents.guardrails import Guardrails
 from ecommerce_ai.agents.guardrails.events import GuardrailEventStore, UserUsageStore
-from ecommerce_ai.agents.ports import Clock, TokenBudget
+from ecommerce_ai.agents.ports import Clock, LlmCallRecorder, TokenBudget
 from ecommerce_ai.infrastructure.caller import NoCallerError, current_caller
 from ecommerce_ai.infrastructure.settings import Settings
 from ecommerce_ai.main import create_app
@@ -35,6 +36,7 @@ from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
     InMemoryGuardrailEventStore,
+    InMemoryLlmCallRecorder,
     InMemoryTokenBudget,
     InMemoryUserUsageStore,
 )
@@ -225,12 +227,16 @@ def chat_app(
     guard_store: GuardrailEventStore | None = None,
     guardrails: Guardrails | None = None,
     user_usage: UserUsageStore | None = None,
+    tracer_provider: TracerProvider | None = None,
+    llm_calls: LlmCallRecorder | None = None,
 ) -> FastAPI:
     """The app with the chat on fakes: in-memory stores, saver and budget, fake tools, no probes.
 
     Without ``approvals`` an ``InMemoryApprovalStore`` over ``store`` is used; without
     ``guard_store`` a fresh ``InMemoryGuardrailEventStore`` (stamped by ``clock`` when given);
-    without ``user_usage`` a fresh ``InMemoryUserUsageStore``.
+    without ``user_usage`` a fresh ``InMemoryUserUsageStore``; ``tracer_provider`` as in
+    ``create_app`` (a test recording spans passes its own); without ``llm_calls`` a fresh
+    ``InMemoryLlmCallRecorder``.
     """
     conversations = store or InMemoryConversationStore()
     return create_app(
@@ -251,4 +257,6 @@ def chat_app(
         ),
         guardrails=guardrails,
         user_usage_store=user_usage or InMemoryUserUsageStore(),
+        tracer_provider=tracer_provider,
+        llm_call_recorder=llm_calls or InMemoryLlmCallRecorder(),
     )

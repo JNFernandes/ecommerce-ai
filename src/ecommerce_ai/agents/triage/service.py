@@ -3,6 +3,7 @@
 The case stays locked for the whole run; its result, outbox event and COMPLETED status are saved
 in the same transaction, or nothing is (FR-015). After the commit one ``triage_case`` log line
 records ids, source, revisions, tokens and latency, never evidence, reasons or text (FR-020).
+The run is one ``triage.run`` span (ids, source, revisions), the parent of its node and model spans.
 """
 
 from datetime import timedelta
@@ -11,6 +12,9 @@ import structlog
 
 from ecommerce_ai.agents.triage.graph import TriageGraph
 from ecommerce_ai.agents.triage.ports import Clock, TriageCaseQueue
+from ecommerce_ai.telemetry.attributes import CASE_ID, ORDER_ID, TRIAGE_REVISIONS, TRIAGE_SOURCE
+from ecommerce_ai.telemetry.spans import TRIAGE_RUN
+from ecommerce_ai.telemetry.tracing import span
 
 logger = structlog.get_logger(__name__)
 
@@ -38,10 +42,14 @@ class TriageService:
             case = claim.case
             if case is None:
                 return False
-            # Every log line of the run (model calls included) carries the order id (VII).
-            with structlog.contextvars.bound_contextvars(order_id=str(case.order_id)):
-                result = await self._graph.run(case)
-            await claim.complete(result)
+            ids = {CASE_ID: str(case.case_id), ORDER_ID: str(case.order_id)}
+            with span(TRIAGE_RUN, ids) as run:
+                # Every log line of the run (model calls included) carries the order id (VII).
+                with structlog.contextvars.bound_contextvars(order_id=str(case.order_id)):
+                    result = await self._graph.run(case)
+                run.set_attribute(TRIAGE_SOURCE, result.source.value)
+                run.set_attribute(TRIAGE_REVISIONS, result.revisions)
+                await claim.complete(result)
         logger.info(
             "triage_case",
             case_id=str(case.case_id),

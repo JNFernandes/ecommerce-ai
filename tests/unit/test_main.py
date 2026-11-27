@@ -59,6 +59,7 @@ from tests.support.stores import (
     InMemoryApprovalStore,
     InMemoryConversationStore,
     InMemoryGuardrailEventStore,
+    InMemoryLlmCallRecorder,
     InMemoryOutboxStore,
     InMemoryTriageCaseQueue,
     InMemoryUserUsageStore,
@@ -344,6 +345,7 @@ async def test_should_triage_and_publish_in_the_background_then_stop_both_on_shu
         producer_factory=lambda: producer,
         triage_queue=queue,
         outbox_store=outbox,
+        llm_call_recorder=InMemoryLlmCallRecorder(),
     )
 
     async with serve_app(app):
